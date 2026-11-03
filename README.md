@@ -2,7 +2,11 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립적인 Burp Extension MVP입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> 개발 후보입니다. 합성·로컬 테스트와 실제 Burp 검증을 구분합니다. 실제 Burp 설치/프로젝트에 자동으로 로드하거나 설정을 변경하지 않습니다. 검증 현황은 [VERIFICATION.md](docs/VERIFICATION.md)를 확인하세요. 허용 목록의 초기값은 비어 있어 모든 검사 대상 Proxy 요청이 차단됩니다.
+> 개발용 프리뷰입니다. 합성·로컬 테스트와 실제 Burp 검증을 구분합니다. 확장 자체가 Burp에 자동 설치되거나 사용자 프로젝트/전역 설정을 변경하지 않습니다. 허용 목록의 초기값은 비어 있어 모든 검사 대상 Proxy 요청이 차단됩니다.
+
+**[개발용 JAR 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-03)** · [검증 현황](docs/VERIFICATION.md) · [실제 Burp 결과](docs/NATIVE_BURP_RESULTS.md)
+
+2026-11-03: Java **584개** + Python **28개** 자동 검사, 격리된 Burp Community2026.10.1에서 **54개 실제 HTTP/HTTPS 시나리오**를 통과했습니다. 라이브 CAIRN/Pi 보고서 E2E, HTTP/2, Professional 디스크 프로젝트와 강제 egress는 아직 검증하지 않았습니다. 운영 안전성을 인증한 릴리스가 아닙니다.
 
 ## 역할과 제외 범위
 
@@ -46,6 +50,7 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 ```sh
 ./gradlew clean test jar
 python3 scripts/verify_templates.py
+python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
 산출물:
@@ -90,4 +95,4 @@ build/libs/cairn-proxy-guard-0.1.0-SNAPSHOT.jar
 
 ## 문서
 
-[정책](docs/POLICY.md) · [속도/승인](docs/RATE_APPROVAL.md) · [UI](docs/UI.md) · [증거](docs/EVIDENCE.md) · [Burp adapter](docs/BURP_ADAPTER.md) · [검증](docs/VERIFICATION.md) · [수동 smoke](docs/MANUAL_BURP_SMOKE.md)
+[정책](docs/POLICY.md) · [속도/승인](docs/RATE_APPROVAL.md) · [UI](docs/UI.md) · [증거](docs/EVIDENCE.md) · [Burp adapter](docs/BURP_ADAPTER.md) · [검증](docs/VERIFICATION.md) · [실제 Burp 결과](docs/NATIVE_BURP_RESULTS.md) · [수동 smoke](docs/MANUAL_BURP_SMOKE.md)

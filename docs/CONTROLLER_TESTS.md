@@ -2,6 +2,8 @@
 
 ## Verification boundary
 
+This document records the original isolated controller task and its repeat runs, not the current full-project status. Later public development and installed-Burp experiments are separately documented in [VERIFICATION.md](VERIFICATION.md) and [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
+
 These tests invoke the **actual `GuardController`, `PolicyEngine`, `RateGate`,
 `ApprovalQueue`, and `EvidenceStore`**. They do not substitute a policy-only fake
 for the controller.
@@ -49,6 +51,8 @@ A subsequent full `./gradlew test --offline --no-daemon --rerun-tasks` run saw
 `unloadReentrantDuringSuiteTabRegistrationCannotLeaveLateRegistrationOrTimer`).
 The 99 owned cases passed in that run. The adapter owner was notified; these
 results must not be presented as a passing full suite until separately rerun.
+
+**Subsequent integration update:** those concurrent failures were resolved, and the current full suite passes **584 cases with zero failures/errors/skips**. A pause-category expectation now checks the preserved `PAUSED` label rather than its former generic evidence fallback. See the current verification document; the historical99-case repeat result above remains a distinct observation.
 
 JUnit XML is generated under `build/test-results/test/` and the HTML report under
 `build/reports/tests/test/`. These build outputs are not new source/evidence

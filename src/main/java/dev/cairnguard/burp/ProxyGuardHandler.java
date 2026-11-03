@@ -7,6 +7,7 @@ import burp.api.montoya.http.handler.HttpRequestToBeSent;
 import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
+import dev.cairnguard.model.DenialReasons;
 import dev.cairnguard.runtime.GuardController;
 import dev.cairnguard.runtime.GuardController.Admission;
 import dev.cairnguard.runtime.GuardController.Prepared;
@@ -25,19 +26,6 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     static final int MAX_CALLBACKS = 128;
     static final int MAX_INSPECTIONS = 8;
     static final int MAX_IN_FLIGHT = 100;
-    private static final Set<String> REASONS = Set.of(
-            "SCOPE_BLOCKED", "SCOPE_NOT_ALLOWED", "DEFAULT_BLOCK", "RULE_BLOCK", "INVALID_CONFIG",
-            "INVALID_REQUEST", "INVALID_METHOD", "INVALID_URI", "UNSUPPORTED_SCHEME", "AUTHORITY_MISMATCH",
-            "INVALID_AUTHORITY", "INVALID_HOST", "INVALID_HEADERS", "REQUEST_TOO_LARGE", "WEBSOCKET_UNSUPPORTED",
-            "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "AMBIGUOUS_PATH", "UNSUPPORTED_BODY",
-            "INVALID_TEXT_ENCODING", "INVALID_CONTENT_LENGTH", "MALFORMED_CONTENT_TYPE", "UNSUPPORTED_CHARSET",
-            "INSPECTION_LIMIT", "MALFORMED_JSON", "AMBIGUOUS_JSON_KEYS", "ENCODING_DEPTH_EXCEEDED",
-            "MALFORMED_PERCENT_ENCODING", "INSPECTION_ERROR", "QUEUE_TIMEOUT", "QUEUE_FULL", "SHUTDOWN",
-            "POLICY_CHANGED", "PROJECT_CHANGED", "PAUSED", "IN_FLIGHT_TIMEOUT", "HOST_CAPACITY", "DENIED",
-            "APPROVAL_TIMEOUT", "APPROVAL_CAPACITY", "CANCELLED", "CAPTURE_FAILED", "CAPTURE_LIMIT",
-            "UNSUPPORTED_HTTP_VERSION", "HTTP2_INCONSISTENT", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY",
-            "CALLBACK_ON_EDT", "MESSAGE_ID_COLLISION", "CORRELATION_CAPACITY", "CONTINUATION_FAILED",
-            "FINAL_CHECK_REJECTED", "ADAPTER_ERROR");
     private record Flight(String evidenceId, RateGate.Permit permit) {}
     private final GuardController controller;
     private final NativeActions actions;
@@ -199,7 +187,7 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
         } finally { if (inspection) inspections.release(); }
     }
 
-    private static String category(String value) { return value != null && REASONS.contains(value) ? value : "ADAPTER_ERROR"; }
+    private static String category(String value) { return DenialReasons.category(value); }
     private static String evidenceId(String id) {
         if (id == null || id.length() != 36) return "unavailable";
         for (int i = 0; i < id.length(); i++) {

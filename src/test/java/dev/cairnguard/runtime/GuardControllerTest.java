@@ -534,7 +534,7 @@ class GuardControllerTest {
         assertEquals(switch (change) {
             case POLICY -> "POLICY_CHANGED";
             case PROJECT, REFRESH_PROJECT -> "PROJECT_CHANGED";
-            case PAUSE -> "OUTCOME_RECORDED"; // Evidence accepts only its fixed reason vocabulary.
+            case PAUSE -> "PAUSED"; // Shared fixed native vocabulary is preserved in evidence.
             case CLOSE -> "SHUTDOWN";
         }, row(p).reason());
         assertEquals(0, evidence("forwarded"));

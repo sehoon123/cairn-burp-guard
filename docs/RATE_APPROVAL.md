@@ -233,4 +233,4 @@ No native Burp project, real target, proxy loopback, installed application,
 license state, system settings, credentials, or production request was used for
 these tests. They do not establish native callback coverage, byte-for-byte
 continuation, response correlation, true on-wire pacing, or real target
-delivery; those remain separate adapter/native integration obligations.
+delivery; those remain separate adapter/native integration obligations. Later installed-Burp pacing, held-response concurrency, approval/queue and late-response quarantine observations are recorded separately in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md); they do not convert these unit tests into native tests.

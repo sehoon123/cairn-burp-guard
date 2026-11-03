@@ -80,8 +80,10 @@ URL, project name, rule name, or innocent-looking `echo` property.
   be retroactively changed; consumers should refresh their view rather than
   keeping an unbounded history of snapshots.
 - Arbitrary decision/outcome/error strings are **not** stored. Recognized fixed
-  categorical reasons are accepted (case/hyphen/space normalized); unknown reasons
-  become `POLICY_DECISION` / `OUTCOME_RECORDED`. Unknown dispositions become
+  categorical reasons are accepted (case/hyphen/space normalized), including the
+  shared finite `model.DenialReasons.ALL` vocabulary. Native `PAUSED`,
+  `IN_FLIGHT_TIMEOUT` and adapter/capacity failure labels are preserved, not replaced
+  by a generic label. Unknown reasons become `POLICY_DECISION` / `OUTCOME_RECORDED`. Unknown dispositions become
   `ERROR`. No parser exception text, captures, raw URL, or raw secret is placed in
   an error string. Status codes outside 100–599 become unknown.
 
@@ -182,7 +184,7 @@ Both formats are labeled **`REDACTED_EVIDENCE_NOT_WIRE_CAPTURE`**,
 `forwardedMeans: NATIVE_RELEASE_NOT_PROVEN_DELIVERY`. Truncation, omission and the
 local disposition must accompany excerpts in downstream reports.
 
-## Local verification only
+## Unit verification (separate from native experiments)
 
 Tests are under `src/test/java/dev/cairnguard/evidence/` and use synthetic fixture
 hosts/credentials only:
@@ -199,8 +201,10 @@ callbacks/export, JSON parseability, HAR required fields/provenance, and forged
 export rejection. These are **unit tests**, not real Burp smoke or wire fidelity
 validation. No real target traffic or installed Burp project is required.
 
-Verification on 2026-11-03: Java 21 main compilation succeeded; the focused Gradle
+Initial isolated evidence-module verification on 2026-11-03 (historical): Java 21 main compilation succeeded; the focused Gradle
 suite passed **60 synthetic unit cases**. The first offline test attempt lacked
 cached test dependencies; the normal wrapper test invocation resolved those
 existing build dependencies, and the focused suite then passed offline. No
-build/shared model files were changed and no native Burp smoke was run.
+build/shared model files were changed and no native Burp smoke was run **in that initial module task**.
+
+Subsequent native integration work found and fixed generic fallback labels for some runtime denials. Parameterized regressions now check **all 53 native denial categories** in snapshots and both exports, while unknown raw text remains excluded. See [VERIFICATION.md](VERIFICATION.md) and [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md) for the current full suite and actual installed-Burp observations.

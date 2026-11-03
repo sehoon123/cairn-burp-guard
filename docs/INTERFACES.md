@@ -17,6 +17,8 @@ Root: this repository; Java package `dev.cairnguard`.
 
 `model.Decision(Mode mode,String reason,List<RuleHit> hits)` with `RuleHit(String id,String name,Mode mode)`; reason must be categorical, no request values or regex captures. Decision only ALLOW/MONITOR/BLOCK/ASK. Hard scope/inspection errors are BLOCK.
 
+`model.DenialReasons.ALL` is the immutable, finite native denial vocabulary shared by the adapter and evidence boundary. `category(String)` maps unknown/null adapter inputs to `ADAPTER_ERROR`. Evidence must preserve every listed category (including `PAUSED`, `IN_FLIGHT_TIMEOUT` and capacity/capture failures) in snapshots and JSON/HAR; arbitrary text still maps to fixed generic fallbacks.
+
 `model.Json` static `ObjectMapper MAPPER`, `String write(Object)`, `<T>T read(String,Class<T>)`; strict duplicate keys, trailing tokens, unknown config properties, bounded input/depth; no default typing.
 
 ## Policy task-owned public API

@@ -2,11 +2,14 @@ package dev.cairnguard.evidence;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.cairnguard.model.Decision;
+import dev.cairnguard.model.DenialReasons;
 import dev.cairnguard.model.GuardConfig.Mode;
 import dev.cairnguard.model.Json;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.model.RequestData.Header;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -76,6 +79,32 @@ class EvidenceStoreTest {
         assertEquals(0, count(store, "upstreamResponses"));
         assertDoesNotThrow(() -> URI.create(entry.url()));
         assertEquals("safe", Json.MAPPER.readTree(entry.requestCapture().body()).path("ok").asText());
+    }
+
+    static java.util.stream.Stream<String> nativeDenialReasons() {
+        return DenialReasons.ALL.stream().sorted();
+    }
+
+    @ParameterizedTest @MethodSource("nativeDenialReasons")
+    void everyNativeDenialKeepsItsFixedCategoryInSnapshotsAndBothExports(String reason) throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("local", "Synthetic fixture", empty(), Decision.blocked(reason), 1);
+        assertEquals(reason, only(store).reason());
+        store.outcome(id, "BLOCKED", reason, 451);
+        assertEquals(reason, only(store).reason());
+        assertEquals(reason, Json.MAPPER.readTree(store.exportJson(store.snapshot())).at("/entries/0/reason").asText());
+        assertEquals(reason, Json.MAPPER.readTree(store.exportHar(store.snapshot())).at("/log/entries/0/_cairnGuard/reason").asText());
+    }
+
+    @Test void unknownNativeDenialCannotBecomeRawAdapterOrEvidenceText() {
+        assertEquals("ADAPTER_ERROR", DenialReasons.category("fixture-secret-not-a-category"));
+        assertEquals("ADAPTER_ERROR", DenialReasons.category(null));
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("local", "Synthetic fixture", empty(), Decision.blocked("fixture-secret-not-a-category"), 1);
+        store.outcome(id, "BLOCKED", "fixture-secret-not-a-category", 451);
+        assertEquals("OUTCOME_RECORDED", only(store).reason());
+        assertFalse(store.exportJson(store.snapshot()).contains("fixture-secret-not-a-category"));
+        assertFalse(store.exportHar(store.snapshot()).contains("fixture-secret-not-a-category"));
     }
 
     @Test void responseCredentialDiscoveryRemasksEarlierCopiesWithoutRetainingPlaintextSecrets() {

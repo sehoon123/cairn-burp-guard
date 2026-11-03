@@ -1,6 +1,7 @@
 package dev.cairnguard.evidence;
 
 import dev.cairnguard.model.Decision;
+import dev.cairnguard.model.DenialReasons;
 import dev.cairnguard.model.Json;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.model.RequestData.Header;
@@ -320,7 +321,10 @@ public final class EvidenceStore {
     }
     private static Integer validStatus(Integer status) { return status != null && status >= 100 && status <= 599 ? status : null; }
     private static String category(String text) { return text == null || text.length() > 64 ? "" : text.toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_'); }
-    private static String reason(String text, String fallback) { String candidate = category(text); return REASONS.contains(candidate) ? candidate : fallback; }
+    private static String reason(String text, String fallback) {
+        String candidate = category(text);
+        return REASONS.contains(candidate) || DenialReasons.ALL.contains(candidate) ? candidate : fallback;
+    }
 
     private TrafficEntry copy(TrafficEntry old, String disposition, String reason, Integer status, boolean bookmark,
                               TrafficEntry.Message request, TrafficEntry.Message response, boolean truncated, SecretFingerprints secrets) {

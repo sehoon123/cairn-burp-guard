@@ -1,6 +1,6 @@
 # Runtime/UI contracts for second implementation wave
 
-Read AGENTS.md and INTERFACES.md first. No commits, native traffic or system changes. Policy/evidence already implemented and 202 tests pass. `./gradlew test` dependencies cached. Shared `GuardUiAccess.java` exists; preserve it.
+Read AGENTS.md and INTERFACES.md first. This document records the second implementation wave's technical contract. That initial local/synthetic wave began after202 tests and did not include publication or native traffic. Current public-development/isolated-Burp authorization is in AGENTS.md; current results are in [VERIFICATION.md](VERIFICATION.md) and [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md). Historical task restrictions do not supersede the user's subsequent explicit authorization. Shared `GuardUiAccess.java` remains the UI/controller boundary.
 
 ## Runtime task files (only RateGate.java, ApprovalQueue.java and corresponding tests/docs)
 
