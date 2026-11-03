@@ -23,6 +23,8 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JSplitPane;
 import javax.swing.JSpinner;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
@@ -36,6 +38,7 @@ import javax.swing.plaf.basic.BasicHTML;
 import javax.swing.text.AbstractDocument;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.GridLayout;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -81,6 +84,36 @@ class GuardPanelTest {
         int refreshes = access.refreshes;
         edt(() -> { panel.refreshNow(); return null; });
         assertEquals(refreshes, access.refreshes);
+    }
+
+    @Test void trafficFiltersStayCompactAndSplitPanesReserveBothViews() throws Exception {
+        open();
+        edt(() -> {
+            JPanel filters = (JPanel) get("traffic.search", JTextField.class).getParent();
+            assertEquals(4, ((GridLayout) filters.getLayout()).getColumns());
+            assertEquals(12, filters.getComponentCount());
+            JSplitPane split = (JSplitPane) SwingUtilities.getAncestorOfClass(JSplitPane.class, get("traffic.table", JTable.class));
+            assertEquals(70, split.getTopComponent().getMinimumSize().height);
+            assertEquals(70, split.getBottomComponent().getMinimumSize().height);
+            assertEquals(.5, split.getResizeWeight());
+            return null;
+        });
+    }
+
+    @Test void publishedNativeSmokePolicyUsesStrictCanonicalJsonAndAppliesAtomically() throws Exception {
+        GuardConfig fixture = Json.read(Files.readString(Path.of("templates", "examples", "guard.loopback-smoke.json")), GuardConfig.class);
+        new PolicyEngine().validate(fixture);
+        open();
+        edt(() -> {
+            get("rules.json", JTextArea.class).setText(Json.write(fixture.rules()));
+            get("scope.allow", JTextArea.class).setText(Json.write(fixture.allowScope()));
+            get("scope.block", JTextArea.class).setText(Json.write(fixture.blockScope()));
+            click("draft.apply");
+            assertEquals(1, access.updates);
+            assertEquals(fixture, access.policy);
+            return null;
+        });
+        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
     }
 
     @Test void closeStopsOneSecondRefreshTimer() throws Exception {

@@ -21,6 +21,8 @@ jobs:
         run: ./gradlew --no-daemon clean test jar
       - name: Template contract checks (not a live worker run)
         run: python3 scripts/verify_templates.py
+      - name: Offline native-smoke harness self-checks (not a Burp run)
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - uses: actions/upload-artifact@v4
         with:
           name: development-jar-and-test-reports

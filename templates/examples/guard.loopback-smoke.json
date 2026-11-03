@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "allowScope": [
+    {"enabled": true, "host": "127.0.0.1", "scheme": "http", "port": 18080, "pathRegex": "/(?:safe|echo|rate|hold|ask|scope-block|DeLeTe|delete|%[A-Za-z0-9%]+)"},
+    {"enabled": true, "host": "127.0.0.2", "scheme": "http", "port": 18081, "pathRegex": "/(?:safe|echo|rate|hold|ask|scope-block|DeLeTe|delete|%[A-Za-z0-9%]+)"},
+    {"enabled": true, "host": "localhost", "scheme": "https", "port": 18080, "pathRegex": "/(?:safe|echo|rate|hold|ask|scope-block|DeLeTe|delete|%[A-Za-z0-9%]+)"}
+  ],
+  "blockScope": [
+    {"enabled": true, "host": "127.0.0.1", "scheme": "http", "port": 18080, "pathRegex": "/scope-block"},
+    {"enabled": true, "host": "localhost", "scheme": "https", "port": 18080, "pathRegex": "/scope-block"}
+  ],
+  "rules": [
+    {"id": "delete-method", "name": "Block DELETE method", "enabled": true, "mode": "BLOCK", "condition": {"logic": "LEAF", "field": "METHOD", "name": "", "match": "EXACT", "value": "DELETE", "caseSensitive": false, "children": []}},
+    {"id": "delete-string", "name": "Block delete string", "enabled": true, "mode": "BLOCK", "condition": {"logic": "LEAF", "field": "ANY", "name": "", "match": "CONTAINS", "value": "delete", "caseSensitive": false, "children": []}},
+    {"id": "fixture-composite", "name": "Owned fixture AND/OR case-sensitive selectors", "enabled": true, "mode": "BLOCK", "condition": {"logic": "AND", "field": null, "name": "", "match": null, "value": "", "caseSensitive": false, "children": [
+      {"logic": "LEAF", "field": "METHOD", "name": "", "match": "EXACT", "value": "POST", "caseSensitive": true, "children": []},
+      {"logic": "OR", "field": null, "name": "", "match": null, "value": "", "caseSensitive": false, "children": [
+        {"logic": "LEAF", "field": "HEADER", "name": "X-Fixture-Action", "match": "REGEX", "value": "^purge-[0-9]+$", "caseSensitive": true, "children": []},
+        {"logic": "LEAF", "field": "JSON", "name": "/operation", "match": "EXACT", "value": "purge", "caseSensitive": true, "children": []},
+        {"logic": "LEAF", "field": "FORM", "name": "operation", "match": "EXACT", "value": "purge", "caseSensitive": true, "children": []}
+      ]}
+    ]}},
+    {"id": "fixture-allow", "name": "Allow cannot override hard gates or BLOCK/ASK", "enabled": true, "mode": "ALLOW", "condition": {"logic": "LEAF", "field": "PATH", "name": "", "match": "REGEX", "value": ".*", "caseSensitive": true, "children": []}},
+    {"id": "fixture-monitor", "name": "Monitor cannot override hard gates or BLOCK/ASK", "enabled": true, "mode": "MONITOR", "condition": {"logic": "LEAF", "field": "PATH", "name": "", "match": "REGEX", "value": ".*", "caseSensitive": true, "children": []}},
+    {"id": "fixture-ask", "name": "Human approval for owned fixture only", "enabled": true, "mode": "ASK", "condition": {"logic": "LEAF", "field": "PATH", "name": "", "match": "EXACT", "value": "/ask", "caseSensitive": true, "children": []}}
+  ],
+  "defaultMode": "ALLOW",
+  "limits": {"globalRps": 5, "perHostRps": 5, "hostRps": {}, "maxConcurrent": 5, "maxQueued": 100, "queueTimeoutMillis": 30000, "approvalTimeoutMillis": 30000, "requestTimeoutMillis": 60000}
+}

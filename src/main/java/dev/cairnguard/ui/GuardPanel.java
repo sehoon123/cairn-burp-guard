@@ -47,8 +47,11 @@ import javax.swing.text.DocumentFilter;
 import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridLayout;
+import java.awt.event.HierarchyEvent;
+import java.awt.event.HierarchyListener;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -242,11 +245,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
 
     private JPanel trafficTab() {
         JPanel panel = new JPanel(new BorderLayout(4, 4));
-        JPanel filters = new JPanel(new GridLayout(0, 2, 4, 4));
-        addField(filters, "Literal search (masked URL / method / time / status / reason / ID)", search);
+        JPanel filters = new JPanel(new GridLayout(0, 4, 4, 4));
+        addField(filters, "Search masked values", search);
         addField(filters, "Method contains", methodFilter);
         addField(filters, "Status contains", statusFilter);
-        addField(filters, "Timestamp contains (ISO UTC)", timeFilter);
+        addField(filters, "UTC timestamp contains", timeFilter);
         addField(filters, "Project ID", projectFilter);
         filters.add(bookmarksOnly);
         filters.add(button("traffic.bookmark", "Toggle selected bookmark(s)", this::bookmarkSelected));
@@ -802,8 +805,20 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private static JSplitPane split(Component top, Component bottom, double weight) {
+        // Native Burp look-and-feel has taller controls than headless Swing. Reserve
+        // both panes and defer the initial ratio until this tab is actually visible.
+        top.setMinimumSize(new Dimension(0, 70));
+        bottom.setMinimumSize(new Dimension(0, 70));
         JSplitPane pane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, top, bottom);
         pane.setResizeWeight(weight);
+        pane.addHierarchyListener(new HierarchyListener() {
+            @Override public void hierarchyChanged(HierarchyEvent event) {
+                if ((event.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && pane.isShowing()) {
+                    pane.removeHierarchyListener(this);
+                    SwingUtilities.invokeLater(() -> pane.setDividerLocation(weight));
+                }
+            }
+        });
         return pane;
     }
 
