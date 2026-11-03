@@ -1,94 +1,104 @@
-# Human-only Swing UI
+# 사람이 사용하는 화면 — 2026-11-04
 
-`dev.cairnguard.ui.GuardPanel` implements the in-process `GuardUiAccess` contract. Construct, interact with, and close the panel on the Swing event-dispatch thread (EDT). The public constructor is `GuardPanel(GuardUiAccess)`; `close()` is idempotent, stops the coalescing one-second refresh timer and cancels an outstanding export worker. It does **not** close the controller or recycle network permits.
+일반적인 대상 등록·규칙 편집·속도 설정에는 **JSON을 작성할 필요가 없습니다.** `Cairn Guard`의 여섯 탭에서 작업하고, 각 편집 창의 **저장하고 적용**으로 그 작업만 저장합니다. 전체 정책 JSON과 내부 진단은 `설정`의 고급 기능으로 분리했습니다.
 
-This panel has no HTTP client, socket, MCP endpoint, agent-control API, native request sender/editor, authentication editor, session recovery or credential injection. It calls `refreshProject()` during refresh and before policy/approval actions, but never waits for an approval, rate admission or native HTTP completion. The controller/runtime still owns all final policy, project, queue and release checks.
+이 화면은 Burp 안에서 사람이 조작하는 Swing UI입니다. 워커용 제어 API, 요청 전송/재실행 도구, 인증 편집기나 세션 복구 기능은 없습니다. 확장을 언로드하면 보호도 사라집니다.
 
-## Six tabs
+## 처음 사용하기
 
-| Tab | Local human operations |
+1. 사용자 작업과 분리된 검증용 Burp 프로젝트에 JAR을 추가하고 **개요**를 엽니다.
+2. 처음에는 **허용 대상 없음 · 모든 요청 차단**입니다. 오류가 아니라 안전한 초기 상태입니다.
+3. **허용 대상 등록…**을 누르고 허가받은 전체 HTTP(S) URL을 입력한 뒤 **폼에 반영**을 누릅니다.
+4. 호스트·연결 방식·포트·경로와 **저장될 실제 범위 미리보기**를 확인합니다. URL 반영은 기본적으로 **정확히 이 경로만**이며, 하위 경로나 다른 포트를 자동 허용하지 않습니다.
+5. **저장하고 적용**을 누릅니다. **규칙**에서 기본 DELETE 차단 규칙을 확인하고, 필요할 때만 추가/편집합니다.
+6. 이 Burp Proxy를 통해 요청을 보내고 **요청 기록**에서 결과를 확인합니다. 차단된 항목의 **선택 요청 상세…**에는 이유와 다음 행동이 나옵니다.
+
+`https://example.test/api` 같은 주소는 설명용입니다. 실제 소유·허가한 주소로 바꾸세요. 워커의 프록시 설정/CA 신뢰 준비는 별도 작업이며 이 화면이 전역 설정을 변경하지 않습니다.
+
+## 여섯 탭
+
+| 탭 | 할 수 있는 일 |
 | --- | --- |
-| **Dashboard** | Read safe operational status as plain-text JSON, including project ID, revision, paused/closed state, evidence statistics, shared-gate active/queued/stalled counters and approval count. Pause/resume new Proxy admissions. Clear retained redacted evidence only after confirmation. |
-| **Rules** | Review the rule table; add a disabled rule, delete/toggle a selected rule, set its mode, or edit the full JSON list including nested AND/OR conditions. **Parse / preview draft** refreshes the table without applying policy. |
-| **Scope** | Edit separate allow/block `ScopeEntry` JSON lists. **Add disabled … example** appends only `example.test`, HTTPS, port 443, exact path `/`, disabled. No automatic wildcard or broad allow entry is installed. |
-| **Traffic** | Sort bounded masked observations; literal case-insensitive search across masked URL, method, timestamp, status, reason and evidence ID; additional method/status/time substring filters, exact project-ID and bookmarked-only filters. Toggle selected bookmarks. Read selected metadata/rule hits/revision, masked request and masked response. Export filtered or selected rows as redacted JSON/HAR. |
-| **Approval** | View bounded pending IDs, evidence IDs, project IDs and timestamps. Resolve details only from the masked evidence snapshot; no raw fallback if evidence was evicted. Approve once or deny a selected pending ASK. Expired/stale decisions are not retried. Hard blocks never appear as approvable requests. |
-| **Settings** | Edit global/default per-host RPS, concurrency, queue bound, queue/approval/in-flight timeouts, exact-host RPS overrides and default mode. Applying validates atomically and updates live runtime settings. |
+| **개요** | 현재 보호/차단 상태, 다음 행동, 대상·규칙 수, 진행/전송 대기/승인 대기, 최근 차단 이유 확인. 대상 등록, 승인 목록 이동, 새 요청 일시중지/재개. |
+| **대상** | 허용/차단 목록을 따로 관리. 폼으로 추가/편집하고 선택 항목을 사용/중지하거나 삭제. |
+| **규칙** | 이름·동작·조건 폼과 AND/OR 트리로 추가/편집. 선택 규칙 사용/중지·삭제. |
+| **요청 기록** | 마스킹된 관찰 검색·필터·북마크, 별도 상세 창에서 결과/요청/응답 확인, JSON/HAR 내보내기. |
+| **승인 대기** | 메서드·마스킹 URL·승인 이유·남은 시간 확인. 마스킹된 증거를 검토한 뒤 그 요청을 한 번 승인하거나 거절. |
+| **설정** | 전체/호스트별 속도·동시성 폼, 상세 대기 설정과 호스트 예외 표. 고급 전체 정책 JSON, 읽기 전용 진단, 확인 후 보관 기록 비우기. |
 
-All request/response/details/config widgets are `JTextArea`/plain text, not HTML viewers. Traffic and rules tables are read-only; captured text renderers and the project-filter renderer disable Swing HTML interpretation. There is no clickable captured-URL navigation or send/replay control.
+## 대상 등록과 범위 확인
 
-## Policy editing and draft safety
+- URL 입력만으로 정책이 바뀌지 않습니다. **폼에 반영**도 입력 폼만 채우며, 실제 변경은 저장할 때 일어납니다. 아직 반영하지 않은 URL이 있으면 저장을 거절합니다.
+- 사용자 정보(`user:password@`), 쿼리(`?…`), 조각(`#…`)이 있는 URL은 조용히 제거하지 않고 거절합니다. 직접 제거하고 범위를 확인하세요. 쿼리 조건은 별도의 규칙으로 만듭니다.
+- 정확한 호스트는 그 호스트만 포함합니다. `*.example.test`는 하위 도메인만 포함하며 `example.test` 자체는 제외합니다. wildcard, HTTP/HTTPS 모두, 모든 포트는 명시적으로 선택해야 합니다.
+- 경로 방식은 **정확히 이 경로만 / 이 경로와 하위 경로 / 모든 경로 / 고급: RE2 정규식**입니다. `/api`의 하위 경로 방식은 `/api/one`은 포함하지만 `/apix`는 포함하지 않습니다. 끝의 `/`도 구분합니다.
+- URL의 원문 경로·포트와 `%` 인코딩을 임의로 정규화하지 않습니다. 정책의 원문/디코딩 경로 안전 검사는 그대로 유지됩니다. 기존 고급 정규식은 폼을 열었다는 이유로 다른 범위로 바뀌지 않습니다.
+- 저장 전 미리보기에는 실제 호스트·연결·포트·경로와 저장할 RE2 식이 나옵니다. **차단 대상과 필수 검사가 우선**합니다.
+- 사용 중인 허용 항목을 모두 없애거나 중지하면 모든 새 Proxy 요청을 차단합니다. 삭제·사용 변경 시 확인을 요구합니다.
 
-The top-level **Apply ALL policy drafts** button commits Rules + both Scope lists + Settings together. It does not silently discard unsaved work in another tab. The section editors are loaded from one coherent `(projectId, revision, config)` observation. `schemaVersion` is preserved. All text editors accept at most **2,097,152 Java characters** (the same bounded input length used by `model.Json`); an over-limit interactive replacement is rejected with the categorical `EDITOR_LENGTH_LIMIT` status, not silently truncated into a different policy. Search fields are limited to 4,096 characters, and numeric editors to 32.
+RE2/authority/IDN/검사 한계는 [정책](POLICY.md)을 참고하세요. 허용 규칙이나 사람의 승인으로 범위 밖 요청을 통과시킬 수 없습니다.
 
-The controller's `updateConfig(candidate, draftProjectId, draftRevision)` always receives the **original loaded editor baseline**, never the current project's freshly fetched version. A timer refresh, project switch, external policy revision, pause/resume revision, controller closure or failed refresh makes the old draft stale and disables Apply. Old text stays visible for review, but cannot overwrite a new project's configuration. **Reload policy / discard drafts** explicitly loads the current project; if there are unsaved edits, discarding them requires confirmation. A race after the UI's preliminary check is rejected by the controller's atomic baseline comparison. A rejected/uncertain update requires reload rather than automatic retry.
+## 규칙을 폼으로 만들기
 
-JSON uses a per-read view of the shared `model.Json` mapper: unknown properties, duplicate keys, trailing tokens, overlong input and excessive nesting are rejected. The UI additionally rejects null/missing primitive values and fractional-to-integer coercion, so a missing/null scope port cannot silently become any-port and a fractional host rate is not truncated. It never changes global mapper settings. Preview is a structural JSON preview, **not** policy validation. Final full policy validation occurs atomically through `GuardUiAccess.updateConfig`. The UI additionally bounds rules, each scope list and host overrides to 256 rows, matching the policy limits. Errors display fixed categories only; exception messages, causes, operator-authored expressions and request values are never printed to a dialog or console.
+1. **규칙 만들기…**에서 알아보기 쉬운 이름과 동작을 선택합니다: **차단 / 승인 요청 / 허용 / 기록만**.
+2. 왼쪽 트리에서 조건을 선택하고 오른쪽에서 비교 항목·이름/selector·비교 방법·값·대소문자 구분을 편집합니다. 비교 항목에는 메서드, URL/경로, query/header/body, JSON pointer, form 등이 있습니다.
+3. 여러 조건이 필요하면 선택 조건을 **모두 묶기(AND)** 또는 **하나라도 묶기(OR)**로 감쌉니다. 묶음을 선택한 다음 조건/하위 묶음을 추가할 수 있습니다. 빈 묶음이나 잘못된 값은 저장할 수 없습니다.
+4. **빠른 시작** 예제는 선택 후 **예제 적용**을 눌러야 반영됩니다. 이름·동작·조건을 바꾸므로 기존 조건을 유지하려면 적용하지 마세요.
+5. 조건과 **이 규칙 사용**을 확인하고 저장합니다. 편집은 기존 rule ID를 유지하며, 새 규칙의 ID는 자동으로 만듭니다.
 
-For example, a complete condition may be:
+큰 폰트에서도 조건 편집 영역이 접히지 않도록 **규칙 폼 전체를 스크롤**합니다. 트리 아래의 조건 추가/삭제/묶기 버튼은 아래로 내려 확인할 수 있습니다. 저장/취소 버튼은 편집 창 하단에 따로 있습니다.
 
-```json
-{
-  "logic": "AND",
-  "field": null,
-  "name": null,
-  "match": null,
-  "value": null,
-  "caseSensitive": false,
-  "children": [
-    {
-      "logic": "LEAF", "field": "METHOD", "name": "",
-      "match": "EXACT", "value": "POST", "caseSensitive": false, "children": []
-    },
-    {
-      "logic": "LEAF", "field": "JSON", "name": "/operation",
-      "match": "EXACT", "value": "review", "caseSensitive": false, "children": []
-    }
-  ]
-}
-```
+동작 우선순위는 **차단 > 승인 요청 > 허용**이며 `기록만`은 다른 동작을 덮어쓰지 않습니다. 기본 `delete` substring 규칙은 정상 설명문/토큰에도 일치할 수 있는 보수적인 규칙입니다. 이름만 보고 끄지 말고 조건과 차단 이유를 먼저 확인하세요. 일반 문자열 비교와 고급 RE2 비교는 구분되며 Java/PCRE backreference·lookaround를 지원하지 않습니다.
 
-Put it in a rule's `condition`; the Rules editor contains the **whole rules list**, not just one condition. Preserve the existing DELETE guards unless intentionally changing them. Rule actions use selected **IDs** after reparsing the current draft, so stale table indices cannot edit a different rule. Changing enabled/mode in the table tools remains a local draft until Apply.
+## 요청 제어 설정
 
-Scope entries have `enabled`, `host`, `scheme`, `port`, `pathRegex`. An empty or wholly disabled allowlist permits **nothing**. Block scope and unsupported inspection are mandatory gates; neither ALLOW nor MONITOR overrides them. Path regex is a full path match, not a query match. See [POLICY.md](POLICY.md) for authority/IDN handling, RE2 syntax and inspection limits.
+**요청 제어 설정 변경…**의 기본 화면은 전체 RPS, 기본 호스트당 RPS, 최대 동시 요청 수입니다. 숫자는 직접 입력할 수 있습니다.
 
-Host overrides use this Settings JSON wrapper (not a naked map):
+- RPS: 1–1,000, 동시 요청 수: 1–100.
+- **상세 설정 펼치기**: 전송 대기열 0–10,000, 전송/승인/응답 대기 제한, 일치 규칙이 없을 때의 동작, 정확한 호스트별 속도 예외 표.
+- 시간은 **초** 단위이며 0.001–600초, 0.001초(1ms) 단위입니다. 기존 밀리초 값을 반올림해서 다른 정책으로 저장하지 않습니다.
+- 호스트 예외는 기본 호스트 속도만 바꿉니다. 전체 속도와 허용 범위는 계속 적용됩니다. URL·경로·wildcard가 아닌 정확한 호스트를 입력합니다.
+- 응답 대기 제한을 넘겨도 이미 시작한 요청을 취소하거나 동시성 자리를 자동 반환하지 않습니다. 불확실한 요청은 격리하고 새 admission을 막습니다.
 
-```json
-{"hostRps":{"example.test":2}}
-```
+설정 폼 저장은 대상·규칙을 바꾸지 않습니다. 폼을 읽고 취소하거나 값이 같은 상태로 저장하면 기존 정책을 유지합니다.
 
-Use `{ "hostRps": {} }` for defaults. Rates are 1–1000, concurrency 1–100, max queued 0–10000 and timeouts 1–600000 milliseconds. Invalid settings never partially apply. This UI intentionally does not automatically persist/export traffic, import arbitrary files, or create a full-policy backup file; operator-authored configuration sections may be copied/edited locally. It never harvests secret values into policy.
+## 요청 기록과 승인
 
-## Traffic and approvals
+빠른 검색은 마스킹 URL·메서드·이유 등에서 **문자열 그대로** 찾습니다. `.*`나 `[`를 정규식으로 해석하지 않습니다. 결과/북마크 필터와 **상세 필터**의 메서드·HTTP 상태·UTC 시각·프로젝트 조건은 AND로 결합합니다. **대기 중**에는 실제 runtime의 승인 대기와 전송 대기를 모두 포함합니다.
 
-At most 2,000 evidence entries and 100 pending approvals are retained by the panel. It keeps only current bounded snapshots, not an accumulating event log. Table refreshes preserve selection by evidence/approval ID across sorting and new observations, convert view indices to model indices, and refresh read-only details. A project filter is retained even if its last entry disappears, rather than silently broadening to all projects. Filters combine with AND. Search treats punctuation such as `[` and `.*` literally; it never compiles traffic into a regex.
+- **선택 요청 상세…**는 별도 창입니다. 결과/이유/다음 행동, 마스킹된 요청, 마스킹된 응답을 읽기 전용 탭으로 봅니다. 관련 설정 열기는 해당 화면으로 이동할 뿐 자동으로 정책을 바꾸지 않습니다.
+- `전송 해제`는 Burp의 native continuation을 허용했다는 뜻입니다. 대상 수신/처리 성공이나 완전한 wire capture의 증명이 아닙니다. 응답이 없으면 성공 응답을 만들어 표시하지 않습니다.
+- `보관`은 북마크입니다. 영구 저장이나 퇴출 방지를 뜻하지 않습니다. 증거는 메모리 한도/수명 때문에 없어질 수 있습니다.
+- 승인 탭은 ASK 요청만 표시합니다. **선택 요청 검토…**에서 주소·이유·마스킹 내용을 확인하고 **한 번만 승인** 또는 **거절**합니다. 상세 창을 닫는 것만으로 승인하지 않습니다.
+- 만료/정책 변경/프로젝트 변경/일시중지는 대기를 취소합니다. 현재 프로젝트·정책 버전과 맞는 보관 증거가 없으면 승인할 수 없습니다. 원본 요청을 다시 가져오는 fallback도 없습니다. 필수 안전 차단은 승인 목록에 만들지 않습니다.
 
-Only the evidence store's masked snapshots reach this UI. Missing responses remain empty, not invented successful responses. Details identify body omission/truncation and the policy revision/hits. **FORWARDED means native continuation released, not confirmed upstream delivery.** An in-flight timeout is operational uncertainty/quarantine, not proof that a request ended: the panel displays the gate's stalled counter and never frees its permits. Quiesce native traffic before starting a fresh run. See [EVIDENCE.md](EVIDENCE.md) and [INTERFACES.md](INTERFACES.md) for capture/enforcement limits.
+정렬·주기 갱신 시 선택은 가능한 한 evidence/approval ID로 유지합니다. 오래된 항목이 사라지면 다른 요청을 대신 선택하지 않습니다. 프로젝트 필터의 항목이 퇴출돼도 필터를 자동으로 넓히지 않습니다.
 
-Approvals contain references and safe timestamps, never raw request fields. Only matching project/evidence IDs resolve details. A decision is sent once to `decideApproval`; the bounded runtime queue owns timeout, stale-policy cancellation and one-shot semantics, and final native release remains subject to scope/policy/rate/concurrency checks. The UI rejects decisions for a different/closed/paused project and never manufactures a pending entry for a hard block.
+## 마스킹 JSON/HAR 내보내기
 
-## Explicit redacted JSON/HAR export
+1. 요청 기록 아래에서 **현재 표의 요청** 또는 **선택한 요청만**을 고릅니다. 현재 표는 필터가 적용된 표시 목록이며 선택 내보내기는 표시된 선택 행만 포함합니다.
+2. **JSON / HAR**를 선택하고 **내보내기…**를 누릅니다.
+3. 사람이 파일 선택기에서 신뢰하는 로컬 위치를 정합니다. 취소하면 쓰지 않으며 기존 파일 교체에는 별도 동의가 필요합니다.
+4. 완료 문구를 확인합니다. 내보내기는 **마스킹·생략·잘림이 가능한 검사 사본**이며 원본 통신/도착 증명이 아닙니다. 보고서에도 그 한계를 적으세요.
 
-1. Choose **Export FILTERED JSON/HAR** for the currently displayed filtered rows, or **Export SELECTED JSON/HAR** for selected displayed rows in current view order.
-2. A native human file chooser selects the destination. There is no automatic export directory or automatic background persistence; a cancelled chooser writes nothing.
-3. Existing regular files require an explicit overwrite confirmation. Target symlinks (including dangling links), directories and missing/unavailable parents are rejected. The chosen parent directory is resolved before background work; an explicitly chosen symlinked parent resolves to that real directory, but the target itself is not dereferenced.
-4. The panel freezes only the displayed immutable redacted selection. A `SwingWorker` calls the access-layer JSON/HAR serializer and performs UTF-8 filesystem I/O off the EDT. A second export cannot queue an unbounded backlog.
-5. Output is written to a random **same-directory** temporary file, `0600` on POSIX filesystems. The write does not follow a temporary symlink. Publication uses `ATOMIC_MOVE`; there is **no non-atomic fallback**. A new destination is exclusively reserved with an owner-only empty file immediately before publication, because Java's atomic move may otherwise replace a concurrently appearing unconfirmed file. Only that reservation is replaced. Confirmed existing targets are checked for identity/size/timestamp changes before replacement. On ordinary failure, temporary files and this export's unchanged reservation are removed; another file is not deleted.
-6. Replacing an existing file installs the owner-only temporary file rather than writing through the old inode/hard links. Non-POSIX permissions follow the provider's native behavior; owner-only ACLs are **not** claimed on unsupported filesystems. Failures show only `EXPORT_*` categories, never paths, raw exception content or credentials.
+직렬화와 파일 쓰기는 EDT 밖에서 처리하며 한 번에 한 작업만 실행합니다. POSIX에서는 임시/결과 파일을 `0600`으로 만들고 같은 디렉터리의 atomic move로 게시합니다. target symlink(깨진 링크 포함), 디렉터리, 없는 부모는 거절하며 비원자적 fallback은 없습니다. 명시적으로 고른 symlink 부모는 실제 디렉터리로 해석합니다. 동의 이후 관찰 가능한 파일 identity/size/time 변경은 거절합니다. 기존 파일은 새 owner-only inode로 교체하므로 기존 hard link에 쓰지 않습니다.
 
-The chooser title, traffic footer and completion status all label exports **redacted, possibly omitted/truncated callback inspection copies — not complete wire capture or proof of delivery**. HAR schema/provenance and authenticity checks belong to the evidence serializer; the UI never reconstructs raw native messages. Export filenames are exactly those the human chooses (no hidden path or extension rewrite).
+이는 악의적인 동시 writer가 있는 공유 디렉터리의 보안 sandbox나 fsync 내구성 보장이 아닙니다. 비POSIX owner-only ACL/다른 플랫폼의 atomic move도 검증하지 않았습니다. 프로세스가 중간에 죽으면 비어 있는 `0600` 예약 파일 또는 `.cairn-guard-*.tmp`가 남을 수 있으므로 완성 증거로 보지 마세요. 마스킹 증거도 민감한 운영 자료로 취급합니다. [증거 형식과 한계](EVIDENCE.md)
 
-Use a trusted local directory. Java NIO cannot make consent checks and rename an atomic transaction against arbitrary concurrent malicious directory writers. Identity checks reject ordinary observed replacement races, but this is not a hardened sandbox for a hostile shared directory. Atomic rename is not a filesystem durability/fsync guarantee. A process crash between a new destination reservation and its rename can leave an empty `0600` reservation or an owner-only `.cairn-guard-*.tmp` file; inspect/remove that incomplete export locally before retrying. Never interpret it as complete evidence. There are no credentials in those serialized copies, but redacted evidence is still sensitive operational data.
+## 저장·취소와 고급 JSON
 
-## Verification and remaining scope
+- 각 편집 창은 **열었을 때의 프로젝트/설정 버전**을 기억합니다. 저장은 그 작업만 바꾸며 다른 탭의 숨은 초안을 함께 적용하지 않습니다. 예전 **Apply ALL policy drafts** 흐름은 없습니다.
+- 취소/Escape/창 닫기는 변경하지 않습니다. 삭제·사용 변경·기록 비우기는 확인을 요구합니다.
+- 열어 둔 사이 정책/프로젝트/일시중지 버전이 바뀌면 오래된 저장을 거절합니다. 창을 닫고 새로고침한 뒤 현재 값으로 다시 여세요. 현재 버전을 몰래 대입하거나 자동 재시도하지 않습니다. 실제 정책 변경은 기존 승인 대기를 취소합니다.
+- `설정 → 고급: 정책 JSON 가져오기 / 복사…`는 전체 정책을 복사/붙여넣기하는 선택 기능입니다. **전체 정책 저장**은 모든 섹션을 교체하므로 대상·규칙·설정을 모두 검토해야 합니다. 자동 파일 import/backup이나 원본 로그 저장 기능은 아닙니다. 인증정보/비밀을 넣지 마세요.
+- 전체 JSON은 최대 **2,097,152 Java 문자**입니다. unknown/duplicate key, trailing token, missing/null primitive, 소수를 정수로 바꾸는 입력, 잘못된 정책을 거절합니다. JSON preview만 하고 적용했다고 오인하는 중간 단계는 없습니다.
 
-Run from the project root:
+## 구현/검증 메모
 
-```sh
-./gradlew test --tests 'dev.cairnguard.ui.*' --offline --no-daemon
-```
+`GuardPanel(GuardUiAccess)` 및 폼은 EDT-only입니다. 1초 coalescing timer는 현재의 bounded snapshot만 유지하며 panel `close()`는 timer/내보내기 worker/열린 창을 정리합니다. controller나 진행 중 네트워크 permit을 대신 닫지 않습니다. 최종 저장은 controller의 `(candidate, originalProjectId, originalRevision)` compare-and-set을 거칩니다. 정책/저장/프록시 backend API는 이번 UI 재설계에서 바꾸지 않았습니다.
 
-**40 UI tests pass** (31 headless EDT/access tests + 9 temporary-filesystem tests). Two later regressions cover compact/reserved Traffic layout and strict application of the published native-fixture policy. Headless EDT tests use a purely in-process fake `GuardUiAccess` and synthetic masked observations. They cover exact tab names, EDT lifecycle/timer shutdown, rule AND/OR preservation and local add/delete/toggle/mode controls, scope presets, live-limit atomic saves, strict JSON/primitive-number/row/editor bounds, stale project/revision/race/coherent-load guards, draft preservation during refresh recovery, pause/clear confirmations, literal multi-filters, bounded/sorted/disappearing selection/bookmarks, disabled HTML interpretation, pending/missing/expired/other-project approvals, filtered/selected export snapshots, cancellation/overwrite consent/symlink errors, background error categories, and real `EvidenceStore` redacted JSON/HAR serialization through the UI worker/writer. Filesystem tests use only temporary local paths for UTF-8, owner-only permissions, no-clobber races, changed consent identities, symlink/hard-link safety, interruption and temporary-file cleanup.
+요청·응답·규칙 이름·정책 입력은 plain text이며 Swing HTML 해석을 끕니다. 새 요청을 보내거나 URL을 클릭해 여는 viewer가 아닙니다. 패널 증거/승인은 각각 최대2,000/100 snapshot이며 목록·입력·조건 트리도 제한합니다. 오류는 고정된 설명이고 원본 exception/cause/traffic 값을 오류 메시지에 붙이지 않습니다.
 
-These40 remain headless/filesystem tests: they do not themselves establish live/native Burp behavior, HiDPI behavior, non-POSIX ACLs, cross-platform atomic moves or hostile-directory concurrent-attacker resistance. The original isolated UI task did not include publication or native traffic. Subsequent Linux/Community native work found and corrected a collapsed Traffic pane; compact three-row filters, minimum split heights and an initial visible-tab divider ratio were then checked in the actual product. GUI search/bookmark/filter/selected exports and owner-only permissions were also observed. See [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md), not the unit count, for those limited native results and remaining gaps.
+현재 **771 Java 테스트**에는 headless EDT/access·실제 controller/queue 연동·폼·임시 filesystem 회귀가 포함됩니다. 이것만으로 native/시각 검증을 대신하지 않습니다. 최종 JAR을 로드한 격리 Community Burp에서 JSON 없이 대상 등록, AND 규칙, 숫자 입력/초 단위 변경, 승인/거절/만료/설정 변경 취소, 상세 창과 JSON/HAR 내보내기를 별도로 확인했습니다. 정확한 hash·12개 HTTP 시나리오와 이전54개 native 결과의 구분은 [실제 Burp 결과](NATIVE_BURP_RESULTS.md)를 보세요.
+
+native 확인은 Linux의 한 제품/디스플레이 환경에 한정됩니다. `1100×760` 목표는 이번 Burp의 최소 창 크기 제약 때문에 native에서 검증하지 못했습니다. headless 큰 폰트/레이아웃 회귀가 전체 HiDPI·다른 OS·접근성 검증을 뜻하지 않습니다.

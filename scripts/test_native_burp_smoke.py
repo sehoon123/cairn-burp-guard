@@ -5,7 +5,7 @@ import subprocess
 import sys
 import unittest
 
-from native_burp_smoke import Run, State, loopback
+from native_burp_smoke import BODY, SYNTHETIC_AUTH, SYNTHETIC_COOKIE, Run, State, loopback
 
 
 class NativeSmokeHarnessTest(unittest.TestCase):
@@ -55,6 +55,31 @@ class NativeSmokeHarnessTest(unittest.TestCase):
         first.events.append({"synthetic": True})
         self.assertFalse(second.snapshot())
         self.assertIsNot(first.lock, second.lock)
+
+    def test_exact_phase_checks_narrow_scope_default_rules_and_preserved_values(self):
+        owner = self
+        class SyntheticRun(Run):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False):
+                owner.assertFalse(second)
+                if path != "/safe" or method == "DELETE":
+                    reason = "RULE_BLOCK" if method == "DELETE" or path.startswith("/safe?") else "SCOPE_NOT_ALLOWED"
+                    return 451, {}, json.dumps(dict(owner.payload, reason=reason)).encode()
+                self.state.events.append({"method": method})
+                response = b"" if method == "HEAD" else json.dumps({"authorization": SYNTHETIC_AUTH,
+                    "cookie": SYNTHETIC_COOKIE, "body": BODY.decode()}).encode()
+                return 200, {"X-Fixture": "owned-loopback"}, response
+        run = SyntheticRun(None, State())
+        run.exact()
+        self.assertEqual(6, len(run.results))
+        self.assertEqual(3, len(run.state.snapshot()))
+
+    def test_exact_phase_rejects_a_broader_policy(self):
+        class BroadRun(Run):
+            def request(self, *args, **kwargs):
+                self.state.events.append({"synthetic": True})
+                return 200, {"X-Fixture": "owned-loopback"}, b""
+        with self.assertRaises(AssertionError):
+            BroadRun(None, State()).exact()
 
     def test_optimized_python_is_refused_before_any_fixture_or_client_starts(self):
         result = subprocess.run([sys.executable, "-O", str(Path(__file__).with_name("native_burp_smoke.py")),

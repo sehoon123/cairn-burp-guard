@@ -15,32 +15,23 @@ import dev.cairnguard.model.Json;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.policy.PolicyEngine;
 import dev.cairnguard.runtime.ApprovalQueue.Pending;
+import dev.cairnguard.ui.editor.EditorForm;
+import dev.cairnguard.ui.editor.RuleEditor;
+import dev.cairnguard.ui.editor.ScopeEditor;
+import dev.cairnguard.ui.editor.SettingsEditor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import javax.swing.JButton;
-import javax.swing.JCheckBox;
-import javax.swing.JComboBox;
-import javax.swing.JLabel;
-import javax.swing.JPanel;
-import javax.swing.JSplitPane;
-import javax.swing.JSpinner;
-import javax.swing.JTabbedPane;
-import javax.swing.JTable;
-import javax.swing.JTextArea;
-import javax.swing.JTextField;
-import javax.swing.SortOrder;
-import javax.swing.SwingUtilities;
-import javax.swing.Timer;
-import javax.swing.RowSorter.SortKey;
+import javax.swing.*;
 import javax.swing.plaf.basic.BasicHTML;
 import javax.swing.text.AbstractDocument;
 import java.awt.Component;
 import java.awt.Container;
-import java.awt.GridLayout;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -48,9 +39,11 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/** Synthetic human workflows, not an agent control API or native Burp claim. */
 class GuardPanelTest {
     private static final String SECRET = "synthetic-secret-never-display";
     private final FakeAccess access = new FakeAccess();
@@ -63,818 +56,662 @@ class GuardPanelTest {
         if (panel != null) edt(() -> { panel.close(); return null; });
     }
 
-    @Test void sixNamedTabsReadOnlyDetailsAndEdtLifecycle() throws Exception {
+    @Test void firstRunExplainsBlockAndHasDirectRegistrationWithoutJson() throws Exception {
         assertThrows(IllegalStateException.class, () -> new GuardPanel(access));
         open();
         edt(() -> {
             JTabbedPane tabs = get("tabs", JTabbedPane.class);
-            assertEquals(List.of("Dashboard", "Rules", "Scope", "Traffic", "Approval", "Settings"),
+            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
-            for (String name : List.of("dashboard.status", "traffic.request", "traffic.response", "traffic.metadata", "approval.detail"))
+            assertTrue(get("dashboard.state", JLabel.class).getText().contains("모든 요청 차단"));
+            assertTrue(get("dashboard.guidance", JTextArea.class).getText().contains("허용 대상 등록"));
+            assertTrue(button("dashboard.addTarget").isEnabled());
+            for (String old : List.of("rules.json", "scope.allow", "scope.block", "settings.hostRps", "draft.apply", "dashboard.status"))
+                assertNull(find(panel, old), old);
+            for (String name : List.of("settings.summary"))
                 assertFalse(get(name, JTextArea.class).isEditable());
-            assertTrue(get("dashboard.status", JTextArea.class).getText().contains("\"gate\""));
-            assertTrue(get("dashboard.status", JTextArea.class).getText().contains("\"stalled\""));
-            assertTrue(button("draft.apply").isEnabled());
             assertFalse(get("rules.table", JTable.class).isCellEditable(0, 0));
             return null;
         });
-        assertThrows(IllegalStateException.class, panel::close);
-        edt(() -> { panel.close(); panel.close(); return null; });
-        assertFalse(edt(() -> button("draft.apply").isEnabled()));
-        int refreshes = access.refreshes;
-        edt(() -> { panel.refreshNow(); return null; });
-        assertEquals(refreshes, access.refreshes);
     }
 
-    @Test void trafficFiltersStayCompactAndSplitPanesReserveBothViews() throws Exception {
+    @Test void targetUrlRegistrationIsExplicitExactAndAppliesOnlyScope() throws Exception {
         open();
-        edt(() -> {
-            JPanel filters = (JPanel) get("traffic.search", JTextField.class).getParent();
-            assertEquals(4, ((GridLayout) filters.getLayout()).getColumns());
-            assertEquals(12, filters.getComponentCount());
-            JSplitPane split = (JSplitPane) SwingUtilities.getAncestorOfClass(JSplitPane.class, get("traffic.table", JTable.class));
-            assertEquals(70, split.getTopComponent().getMinimumSize().height);
-            assertEquals(70, split.getBottomComponent().getMinimumSize().height);
-            assertEquals(.5, split.getResizeWeight());
-            return null;
-        });
-    }
-
-    @Test void publishedNativeSmokePolicyUsesStrictCanonicalJsonAndAppliesAtomically() throws Exception {
-        GuardConfig fixture = Json.read(Files.readString(Path.of("templates", "examples", "guard.loopback-smoke.json")), GuardConfig.class);
-        new PolicyEngine().validate(fixture);
-        open();
-        edt(() -> {
-            get("rules.json", JTextArea.class).setText(Json.write(fixture.rules()));
-            get("scope.allow", JTextArea.class).setText(Json.write(fixture.allowScope()));
-            get("scope.block", JTextArea.class).setText(Json.write(fixture.blockScope()));
-            click("draft.apply");
-            assertEquals(1, access.updates);
-            assertEquals(fixture, access.policy);
-            return null;
-        });
-        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
-    }
-
-    @Test void closeStopsOneSecondRefreshTimer() throws Exception {
-        edt(() -> { panel = new GuardPanel(access, dialogs, true); return null; });
-        java.lang.reflect.Field timerField = GuardPanel.class.getDeclaredField("timer");
-        timerField.setAccessible(true);
-        Timer timer = (Timer) timerField.get(panel);
-        assertTrue(edt(timer::isRunning));
-        edt(() -> { panel.close(); return null; });
-        assertFalse(edt(timer::isRunning));
-        assertEquals(1_000, timer.getDelay());
-    }
-
-    @Test void ruleAddToggleModeDeleteAreLocalAndPreserveNestedConditions() throws Exception {
-        open();
-        edt(() -> {
-            Rule nested = new Rule("nested", "Nested AND / OR", true, Mode.ASK,
-                    new Condition(Logic.AND, null, null, null, null, false, List.of(
-                            Condition.leaf(Field.METHOD, Match.EXACT, "POST"),
-                            new Condition(Logic.OR, null, null, null, null, false, List.of(
-                                    Condition.leaf(Field.PATH, Match.EXACT, "/one"),
-                                    Condition.leaf(Field.PATH, Match.EXACT, "/two"))))));
-            get("rules.json", JTextArea.class).setText(Json.write(List.of(nested)));
-            click("rules.preview");
-            JTable table = get("rules.table", JTable.class);
-            table.setRowSelectionInterval(0, 0);
-            click("rules.toggle");
-            get("rules.mode", JComboBox.class).setSelectedItem(Mode.MONITOR);
-            click("rules.setMode");
-            Rule[] draft = Json.read(get("rules.json", JTextArea.class).getText(), Rule[].class);
-            assertFalse(draft[0].enabled());
-            assertEquals(Mode.MONITOR, draft[0].mode());
-            assertEquals(nested.condition(), draft[0].condition());
-            click("rules.add");
-            draft = Json.read(get("rules.json", JTextArea.class).getText(), Rule[].class);
-            assertEquals(2, draft.length);
-            assertFalse(draft[1].enabled());
-            click("rules.delete");
-            assertEquals(1, Json.read(get("rules.json", JTextArea.class).getText(), Rule[].class).length);
+        dialogs.editScript = (form, save) -> {
+            assertInstanceOf(ScopeEditor.class, form);
+            get("scope.url", JTextField.class).setText("https://example.test/api");
+            click("scope.fillUrl");
             assertEquals(0, access.updates);
-            click("draft.apply");
-            assertEquals(1, access.updates);
-            assertEquals("project-one", access.submittedProject);
-            assertEquals(1, access.submittedRevision);
-            assertEquals(nested.condition(), access.policy.rules().getFirst().condition());
-            return null;
-        });
+            save.run();
+        };
+        edt(() -> { click("dashboard.addTarget"); return null; });
+        assertEquals(1, access.updates);
+        assertEquals("project-one", access.submittedProject);
+        assertEquals(7, access.submittedRevision);
+        assertEquals(GuardConfig.defaults().rules(), access.policy.rules());
+        ScopeEntry added = access.policy.allowScope().getFirst();
+        assertTrue(added.enabled()); assertEquals("example.test", added.host()); assertEquals(443, added.port());
+        assertEquals("https", added.scheme());
+        assertEquals(Mode.ALLOW, new PolicyEngine().evaluate(access.policy, request("/api")).mode());
+        assertEquals(Mode.BLOCK, new PolicyEngine().evaluate(access.policy, request("/api/child")).mode());
+        assertEquals(Mode.BLOCK, new PolicyEngine().evaluate(access.policy, request("/apix")).mode());
         assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
+        assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("보호 중")));
     }
 
-    @Test void staleRulePreviewDoesNotMutateAnotherRule() throws Exception {
+    @Test void cancelTargetFormChangesNothingAndQueryIsNotSilentlyDiscarded() throws Exception {
         open();
-        edt(() -> {
-            get("rules.table", JTable.class).setRowSelectionInterval(0, 0);
-            get("rules.json", JTextArea.class).setText("[]");
-            click("rules.toggle");
-            assertEquals("[]", get("rules.json", JTextArea.class).getText());
-            assertEquals(0, access.updates);
-            return null;
-        });
-        assertEquals(List.of("RULE_SELECTION_STALE_PARSE_AGAIN"), dialogs.errors);
+        dialogs.editScript = (form, save) -> {
+            get("scope.url", JTextField.class).setText("https://example.test/api?token=" + SECRET);
+            click("scope.fillUrl");
+            assertTrue(get("scope.message", JTextArea.class).getText().contains("쿼리"));
+            assertFalse(get("scope.message", JTextArea.class).getText().contains(SECRET));
+        };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(0, access.updates); assertEquals(GuardConfig.defaults(), access.policy);
     }
 
-    @Test void scopePresetsAreDisabledExactAndAtomicSaveIncludesAllSections() throws Exception {
+    @Test void scopeEditPreservesArbitraryRegexAndCancelToggleDeleteRequireConsent() throws Exception {
+        access.policy = policyWithAllow(); open();
+        edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 0); return null; });
+        dialogs.editScript = (form, save) -> { assertEquals(access.policy.allowScope().getFirst(), form.value()); save.run(); };
+        edt(() -> { click("scope.allow.edit"); return null; });
+        assertEquals(0, access.updates, "unchanged form must not cancel approvals or bump revision");
+        dialogs.confirmed = false;
+        edt(() -> { click("scope.allow.toggle"); return null; });
+        assertEquals(0, access.updates);
+        assertTrue(dialogs.confirmations.getLast().contains("모든 새 Proxy 요청"));
+        dialogs.confirmed = true;
+        edt(() -> { click("scope.allow.toggle"); return null; });
+        assertFalse(access.policy.allowScope().getFirst().enabled()); assertEquals(1, access.updates);
+        edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 0); click("scope.allow.delete"); return null; });
+        assertTrue(access.policy.allowScope().isEmpty()); assertEquals(2, access.updates);
+    }
+
+    @Test void blockTargetsAreSeparateAndCannotBeMistakenForAllowTargets() throws Exception {
+        access.policy = policyWithAllow(); open();
+        dialogs.editScript = (form, save) -> {
+            get("scope.url", JTextField.class).setText("https://example.test/admin"); click("scope.fillUrl"); save.run();
+        };
+        edt(() -> { click("scope.block.add"); return null; });
+        assertEquals(1, access.policy.allowScope().size()); assertEquals(1, access.policy.blockScope().size());
+        assertEquals("SCOPE_BLOCKED", new PolicyEngine().evaluate(access.policy, request("/admin")).reason());
+        assertEquals(Mode.ALLOW, new PolicyEngine().evaluate(access.policy, request("/safe")).mode());
+    }
+
+    @Test void newRuleIsVisualAndToggleDeleteSaveOnlyTheIntendedRule() throws Exception {
         open();
-        edt(() -> {
-            click("scope.addAllow");
-            click("scope.addBlock");
-            ScopeEntry entry = Json.read(get("scope.allow", JTextArea.class).getText(), ScopeEntry[].class)[0];
-            assertEquals(new ScopeEntry(false, "example.test", "https", 443, "/"), entry);
-            assertEquals(entry, Json.read(get("scope.block", JTextArea.class).getText(), ScopeEntry[].class)[0]);
-            get("scope.allow", JTextArea.class).setText(Json.write(List.of(new ScopeEntry(true, "example.test", "https", 443, "/safe.*"))));
+        dialogs.editScript = (form, save) -> {
+            assertInstanceOf(RuleEditor.class, form);
+            get("rule.name", JTextField.class).setText("위험 메서드 검토");
+            get("rule.mode", JComboBox.class).setSelectedItem(Mode.ASK);
+            save.run();
+        };
+        edt(() -> { click("rules.add"); return null; });
+        assertEquals(3, access.policy.rules().size());
+        Rule added = access.policy.rules().getLast(); assertTrue(added.enabled()); assertEquals(Mode.ASK, added.mode());
+        assertEquals(GuardConfig.defaults().allowScope(), access.policy.allowScope());
+        edt(() -> { selectRule(added.id()); click("rules.toggle"); return null; });
+        assertFalse(access.policy.rules().getLast().enabled());
+        assertEquals(added.condition(), access.policy.rules().getLast().condition());
+        edt(() -> { selectRule(added.id()); click("rules.delete"); return null; });
+        assertEquals(GuardConfig.defaults().rules(), access.policy.rules());
+        assertEquals(3, access.updates);
+    }
+
+    @Test void nestedRuleEditPreservesIdSelectorsNullsAndCaseWithoutJson() throws Exception {
+        Rule nested = new Rule("nested", "조건 묶음", true, Mode.ASK, new Condition(Logic.AND, null, null, null, null, true, List.of(
+                Condition.leaf(Field.METHOD, Match.EXACT, "POST"),
+                new Condition(Logic.OR, null, "", null, "", false, List.of(
+                        new Condition(Logic.LEAF, Field.HEADER, "X-Action", Match.CONTAINS, "Erase", true, List.of()),
+                        new Condition(Logic.LEAF, Field.JSON, "/action", Match.EXACT, "erase", false, List.of()))))));
+        access.policy = new GuardConfig(1, List.of(), List.of(), List.of(nested), Mode.ALLOW, GuardConfig.defaults().limits()); open();
+        dialogs.editScript = (form, save) -> { get("rule.name", JTextField.class).setText("새 이름"); save.run(); };
+        edt(() -> { selectRule("nested"); click("rules.edit"); return null; });
+        Rule changed = access.policy.rules().getFirst();
+        assertEquals(nested.id(), changed.id()); assertEquals(nested.condition(), changed.condition());
+        assertEquals("새 이름", changed.name()); assertEquals(1, access.updates);
+    }
+
+    @Test void cancelRuleAndSettingsFormsLeaveEverySectionUnchanged() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            if (form instanceof RuleEditor) get("rule.name", JTextField.class).setText("취소할 초안");
+            else get("settings.globalRps", JSpinner.class).setValue(1);
+        };
+        edt(() -> { click("rules.add"); click("settings.edit"); return null; });
+        assertEquals(GuardConfig.defaults(), access.policy); assertEquals(0, access.updates);
+    }
+
+    @Test void settingsFormUsesSecondsAndSavesOnlySettings() throws Exception {
+        access.policy = policyWithAllow(); open(); GuardConfig original = access.policy;
+        dialogs.editScript = (form, save) -> {
+            assertInstanceOf(SettingsEditor.class, form);
             get("settings.globalRps", JSpinner.class).setValue(2);
-            get("settings.perHostRps", JSpinner.class).setValue(1);
-            get("settings.maxConcurrent", JSpinner.class).setValue(3);
-            get("settings.maxQueued", JSpinner.class).setValue(0);
-            get("settings.queueTimeoutMillis", JSpinner.class).setValue(2_000);
-            get("settings.approvalTimeoutMillis", JSpinner.class).setValue(3_000);
-            get("settings.requestTimeoutMillis", JSpinner.class).setValue(4_000);
-            get("settings.hostRps", JTextArea.class).setText("{\"hostRps\":{\"example.test\":2}}");
+            get("settings.requestTimeoutSeconds", JSpinner.class).setValue(new java.math.BigDecimal("1.001"));
             get("settings.defaultMode", JComboBox.class).setSelectedItem(Mode.ASK);
-            click("draft.apply");
-            assertEquals(1, access.updates);
-            assertEquals(GuardConfig.defaults().rules(), access.policy.rules());
-            assertEquals(1, access.policy.allowScope().size());
-            assertEquals(1, access.policy.blockScope().size());
-            assertEquals(Mode.ASK, access.policy.defaultMode());
-            assertEquals(new GuardConfig.Limits(2, 1, Map.of("example.test", 2), 3, 0, 2_000, 3_000, 4_000), access.policy.limits());
-            assertTrue(get("message", JLabel.class).getText().startsWith("POLICY_APPLIED"));
-            return null;
-        });
-        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
+            save.run();
+        };
+        edt(() -> { click("settings.edit"); return null; });
+        assertEquals(2, access.policy.limits().globalRps()); assertEquals(1001, access.policy.limits().requestTimeoutMillis());
+        assertEquals(Mode.ASK, access.policy.defaultMode()); assertEquals(original.allowScope(), access.policy.allowScope());
+        assertEquals(original.rules(), access.policy.rules()); assertEquals(1, access.updates);
+        assertTrue(edt(() -> get("settings.summary", JTextArea.class).getText().contains("1.001초")));
     }
 
-    @Test void badJsonDuplicateUnknownAndTrailingInputAreAtomicCategoricalErrors() throws Exception {
+    @Test void staleModalCannotSaveAcrossProjectSwitchEvenAfterLiveUiRefresh() throws Exception {
         open();
-        for (String invalid : List.of("[{", "null", "[null]", "[] true", "[{\"unknown\":true}]")) {
-            edt(() -> { get("rules.json", JTextArea.class).setText(invalid); click("draft.apply"); return null; });
-            assertEquals(0, access.updates);
-            assertEquals(GuardConfig.defaults(), access.policy);
-        }
-        edt(() -> {
-            get("rules.json", JTextArea.class).setText("[]");
-            get("settings.hostRps", JTextArea.class).setText("{\"hostRps\":{},\"hostRps\":{}}");
-            click("draft.apply");
-            get("settings.hostRps", JTextArea.class).setText("{\"hostRps\":{\"example.test\":0}}");
-            click("draft.apply");
-            return null;
-        });
-        assertTrue(dialogs.errors.contains("INVALID_POLICY"));
-        assertTrue(dialogs.errors.stream().allMatch(s -> s.matches("[A-Z_]+")));
+        dialogs.editScript = (form, save) -> {
+            get("scope.url", JTextField.class).setText("https://example.test/api"); click("scope.fillUrl");
+            access.project = "project-two"; access.revision++; access.policy = policyWithAllow();
+            panel.refreshNow(); save.run();
+        };
+        edt(() -> { click("dashboard.addTarget"); return null; });
+        assertEquals(0, access.updateAttempts); assertEquals(policyWithAllow(), access.policy);
+        assertEquals(List.of(UiText.error("STALE_POLICY")), dialogs.errors);
+    }
+
+    @Test void revisionOrPauseChangeDuringFormRejectsOriginalSnapshot() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            get("settings.globalRps", JSpinner.class).setValue(2); access.revision++; panel.refreshNow(); save.run();
+        };
+        edt(() -> { click("settings.edit"); return null; });
+        assertEquals(0, access.updateAttempts); assertEquals(5, access.policy.limits().globalRps());
+        assertEquals(List.of(UiText.error("STALE_POLICY")), dialogs.errors);
+    }
+
+    @Test void lateControllerRaceReceivesOriginalBaselineAndNeverLeaksException() throws Exception {
+        open(); access.raceOnUpdate = true;
+        dialogs.editScript = (form, save) -> { get("settings.globalRps", JSpinner.class).setValue(2); save.run(); };
+        edt(() -> { click("settings.edit"); return null; });
+        assertEquals(1, access.updateAttempts); assertEquals(0, access.updates);
+        assertEquals("project-one", access.submittedProject); assertEquals(7, access.submittedRevision);
+        assertEquals(List.of(UiText.error("UPDATE_REJECTED")), dialogs.errors);
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+    }
+
+    @Test void staleVisibleTableIsNotRebasedBeforeOpeningAnEdit() throws Exception {
+        open(); access.project = "project-two"; access.revision++; access.policy = policyWithAllow();
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(0, dialogs.edits); assertEquals(0, access.updateAttempts);
+        assertEquals(List.of(UiText.error("STALE_POLICY")), dialogs.errors);
+    }
+
+    @Test void confirmDialogDoesNotPermitSavingIntoAChangedProject() throws Exception {
+        access.policy = policyWithAllow(); open();
+        dialogs.onConfirm = () -> { access.project = "project-two"; access.revision++; };
+        edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 0); click("scope.allow.delete"); return null; });
+        assertEquals(0, access.updateAttempts); assertEquals(1, access.policy.allowScope().size());
+    }
+
+    @Test void inconsistentConfigStatusPairDisablesControlsUntilCoherentReload() throws Exception {
+        access.switchDuringConfig = true; open();
+        assertFalse(edt(() -> button("settings.edit").isEnabled()));
+        assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("확인할 수 없습니다")));
+        edt(() -> { click("policy.refresh"); return null; });
+        assertTrue(edt(() -> button("settings.edit").isEnabled())); assertEquals(0, access.updates);
+    }
+
+    @Test void refreshFailureIsNonModalAndRecoveryDoesNotReplaceAnOpenDraft() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            get("settings.globalRps", JSpinner.class).setValue(2);
+            access.failRefresh = true; panel.refreshNow(); assertTrue(dialogs.errors.isEmpty());
+            access.failRefresh = false; panel.refreshNow(); save.run();
+        };
+        edt(() -> { click("settings.edit"); return null; });
+        assertEquals(2, access.policy.limits().globalRps()); assertEquals(1, access.updates);
+    }
+
+    @Test void allSelectionErrorsAreActionableAndDoNotMutateAnything() throws Exception {
+        open();
+        edt(() -> { click("rules.edit"); click("scope.allow.edit"); click("traffic.bookmark"); return null; });
+        assertEquals(List.of(UiText.error("SELECT_RULE_FIRST"), UiText.error("SELECT_SCOPE_FIRST"), UiText.error("SELECT_TRAFFIC_FIRST")), dialogs.errors);
         assertEquals(0, access.updates);
     }
 
-    @Test void nullMissingAndFractionalPortsCannotBecomeAnAccidentalAnyPortScope() throws Exception {
+    @Test void advancedFullPolicyImportIsOptionalStrictAndSupportsNativeFixture() throws Exception {
+        GuardConfig fixture = Json.read(Files.readString(Path.of("templates/examples/guard.loopback-smoke.json")), GuardConfig.class);
         open();
-        for (String port : List.of("null", "443.9", "missing")) {
-            edt(() -> {
-                String json = "[{\"enabled\":true,\"host\":\"example.test\",\"scheme\":\"https\","
-                        + (port.equals("missing") ? "" : "\"port\":" + port + ",") + "\"pathRegex\":\"/\"}]";
-                get("scope.allow", JTextArea.class).setText(json);
-                click("draft.apply");
-                assertEquals(0, access.updateAttempts);
-                assertTrue(access.policy.allowScope().isEmpty());
-                return null;
-            });
+        dialogs.editScript = (form, save) -> { get("advanced.policyJson", JTextArea.class).setText(Json.write(fixture)); save.run(); };
+        edt(() -> { click("settings.policyJson"); return null; });
+        assertEquals(fixture, access.policy); assertEquals(1, access.updates);
+        assertTrue(dialogs.errors.isEmpty());
+    }
+
+    @Test void advancedImportRejectsDuplicateUnknownNullFractionalAndTrailingJson() throws Exception {
+        open();
+        String valid = Json.write(policyWithAllow());
+        List<String> invalid = new ArrayList<>(List.of("[{", "null", valid + " true", valid.replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 1, \"unknown\" : true"),
+                valid.replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 1, \"schemaVersion\" : 1")));
+        for (String port : List.of("null", "443.5")) invalid.add(valid.replace("\"port\" : 443", "\"port\" : " + port));
+        invalid.add(valid.replace("\"port\" : 443,", ""));
+        for (String rate : List.of("null", "2.5")) invalid.add(valid.replace("\"globalRps\" : 5", "\"globalRps\" : " + rate));
+        for (String text : invalid) {
+            assertNotEquals(valid, text);
+            dialogs.editScript = (form, save) -> { get("advanced.policyJson", JTextArea.class).setText(text); save.run(); };
+            edt(() -> { click("settings.policyJson"); return null; });
+            assertEquals(0, access.updates, text);
         }
-        assertEquals(List.of("INVALID_BOUNDED_JSON", "INVALID_BOUNDED_JSON", "INVALID_BOUNDED_JSON"), dialogs.errors);
+        assertEquals(invalid.size(), dialogs.errors.size());
+        assertFalse(dialogs.errors.toString().contains(SECRET));
     }
 
-    @Test void malformedHostOverridesNeverCoerceFractionalOrNullRates() throws Exception {
+    @Test void advancedOversizePasteCannotSaveThePreviousOrTruncatedInput() throws Exception {
         open();
-        edt(() -> {
-            get("settings.hostRps", JTextArea.class).setText("{\"hostRps\":{\"example.test\":1.5}}");
-            click("draft.apply");
-            get("settings.hostRps", JTextArea.class).setText("{\"hostRps\":{\"example.test\":null}}");
-            click("draft.apply");
-            assertEquals(0, access.updateAttempts);
-            return null;
-        });
-        assertEquals(List.of("INVALID_BOUNDED_JSON", "INVALID_SETTINGS_JSON"), dialogs.errors);
+        dialogs.editScript = (form, save) -> {
+            JTextArea editor = get("advanced.policyJson", JTextArea.class);
+            try { ((AbstractDocument) editor.getDocument()).replace(0, editor.getDocument().getLength(), "x".repeat(GuardPanel.MAX_EDITOR_CHARS + 1), null); }
+            catch (Exception e) { throw new AssertionError(e); }
+            save.run();
+        };
+        edt(() -> { click("settings.policyJson"); return null; });
+        assertEquals(0, access.updates); assertTrue(dialogs.errors.getFirst().contains("2 MiB"));
     }
 
-    @Test void policyRowCountsAreBoundedBeforePreviewOrApply() throws Exception {
-        open();
-        edt(() -> {
-            List<Rule> rules = java.util.stream.IntStream.range(0, 257).mapToObj(i -> new Rule("r" + i, "Disabled", false,
-                    Mode.BLOCK, Condition.leaf(Field.PATH, Match.EXACT, "/"))).toList();
-            get("rules.json", JTextArea.class).setText(Json.write(rules));
-            click("rules.preview");
-            assertEquals(2, get("rules.table", JTable.class).getRowCount());
-            click("draft.apply");
-            assertEquals(0, access.updateAttempts);
-            return null;
-        });
-        assertEquals(List.of("POLICY_ROW_LIMIT", "POLICY_ROW_LIMIT"), dialogs.errors);
+    @Test void rulesAndScopesEnforceRowBoundsBeforeOpeningAnotherForm() throws Exception {
+        GuardConfig old = GuardConfig.defaults();
+        List<ScopeEntry> scopes = java.util.stream.IntStream.range(0, 256).mapToObj(i -> new ScopeEntry(false, "h" + i + ".example.test", "https", 443, "/")).toList();
+        List<Rule> rules = java.util.stream.IntStream.range(0, 256).mapToObj(i -> new Rule("r" + i, "규칙 " + i, false, Mode.BLOCK, Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"))).toList();
+        access.policy = new GuardConfig(1, scopes, scopes, rules, Mode.ALLOW, old.limits()); open();
+        edt(() -> { click("scope.allow.add"); click("scope.block.add"); click("rules.add"); return null; });
+        assertEquals(0, dialogs.edits); assertEquals(3, dialogs.errors.size()); assertEquals(0, access.updates);
     }
 
-    @Test void projectSwitchNeverRebasesOrAppliesOldDraftAndReloadIsExplicit() throws Exception {
+    @Test void pauseIsFailClosedResumeWarnsOnEmptyScopeAndFailedResumeRevertsUi() throws Exception {
         open();
-        edt(() -> {
-            get("rules.json", JTextArea.class).setText("[]");
-            access.project = "project-two";
-            access.revision = 6;
-            access.policy = policyWithAllow();
-            click("draft.apply");
-            assertEquals(0, access.updateAttempts);
-            assertFalse(button("draft.apply").isEnabled());
-            assertEquals("[]", get("rules.json", JTextArea.class).getText());
-            assertTrue(get("draft.baseline", JLabel.class).getText().contains("STALE"));
-            dialogs.confirmed = false;
-            click("draft.reload");
-            assertEquals("[]", get("rules.json", JTextArea.class).getText());
-            assertFalse(button("draft.apply").isEnabled());
-            dialogs.confirmed = true;
-            click("draft.reload");
-            assertTrue(button("draft.apply").isEnabled());
-            assertEquals(2, Json.read(get("rules.json", JTextArea.class).getText(), Rule[].class).length);
-            click("draft.apply");
-            assertEquals("project-two", access.submittedProject);
-            assertEquals(6, access.submittedRevision);
-            return null;
-        });
-        assertEquals(List.of("STALE_POLICY_DRAFT_RELOAD_REQUIRED"), dialogs.errors);
-    }
-
-    @Test void externalRevisionChangeLeavesEvenCleanDraftStale() throws Exception {
-        open();
-        edt(() -> {
-            access.revision++;
-            panel.refreshNow();
-            assertFalse(button("draft.apply").isEnabled());
-            assertTrue(get("draft.baseline", JLabel.class).getText().startsWith("Draft revision 1"));
-            click("draft.reload");
-            assertTrue(button("draft.apply").isEnabled());
-            click("draft.apply");
-            assertEquals(2, access.submittedRevision);
-            return null;
-        });
-    }
-
-    @Test void lastMomentRacePassesOriginalBaselineAndControllerCanReject() throws Exception {
-        open();
-        edt(() -> {
-            access.raceOnUpdate = true;
-            click("draft.apply");
-            assertEquals(1, access.updateAttempts);
-            assertEquals("project-one", access.submittedProject);
-            assertEquals(1, access.submittedRevision);
-            assertEquals(0, access.updates);
-            assertFalse(button("draft.apply").isEnabled());
-            return null;
-        });
-        assertEquals(List.of("POLICY_UPDATE_REJECTED_RELOAD_REQUIRED"), dialogs.errors);
-    }
-
-    @Test void inconsistentConfigStatusPairNeverLoadsARebasedDraft() throws Exception {
-        access.switchDuringConfig = true;
-        open();
-        edt(() -> {
-            assertFalse(button("draft.apply").isEnabled());
-            assertEquals("", get("rules.json", JTextArea.class).getText());
-            assertTrue(get("message", JLabel.class).getText().startsWith("REFRESH_UNAVAILABLE"));
-            click("draft.reload");
-            click("draft.apply");
-            assertEquals("project-two", access.submittedProject);
-            assertEquals(2, access.submittedRevision);
-            return null;
-        });
-    }
-
-    @Test void refreshRecoveryDoesNotSilentlyReplaceDraftTypedDuringInitialFailure() throws Exception {
-        access.failRefresh = true;
-        open();
-        edt(() -> {
-            get("rules.json", JTextArea.class).setText("[]");
-            access.failRefresh = false;
-            panel.refreshNow();
-            assertEquals("[]", get("rules.json", JTextArea.class).getText());
-            assertFalse(button("draft.apply").isEnabled());
-            dialogs.confirmed = false;
-            click("draft.reload");
-            assertEquals("[]", get("rules.json", JTextArea.class).getText());
-            dialogs.confirmed = true;
-            click("draft.reload");
-            assertTrue(button("draft.apply").isEnabled());
-            assertEquals(2, Json.read(get("rules.json", JTextArea.class).getText(), Rule[].class).length);
-            return null;
-        });
-    }
-
-    @Test void pauseAndEvidenceClearRequireOnlyLocalHumanActions() throws Exception {
-        access.rows = fixtures();
-        open();
-        edt(() -> {
-            get("dashboard.paused", JCheckBox.class).doClick();
-            assertTrue(access.paused);
-            assertFalse(button("draft.apply").isEnabled());
-            dialogs.confirmed = false;
-            click("dashboard.clear");
-            assertEquals(3, access.rows.size());
-            dialogs.confirmed = true;
-            click("dashboard.clear");
-            assertTrue(access.rows.isEmpty());
-            assertEquals(1, access.clears);
-            return null;
-        });
-    }
-
-    @Test void editorsRejectOverLimitReplacementWithCategoricalFeedback() throws Exception {
-        open();
-        edt(() -> {
-            for (String name : List.of("rules.json", "scope.allow", "scope.block", "settings.hostRps")) {
-                JTextArea editor = get(name, JTextArea.class);
-                AbstractDocument doc = (AbstractDocument) editor.getDocument();
-                String original = editor.getText();
-                doc.replace(0, doc.getLength(), "x".repeat(GuardPanel.MAX_EDITOR_CHARS + 1), null);
-                assertEquals(original, editor.getText());
-                assertTrue(get("message", JLabel.class).getText().startsWith("EDITOR_LENGTH_LIMIT"));
-                doc.replace(0, doc.getLength(), "x".repeat(GuardPanel.MAX_EDITOR_CHARS), null);
-                assertEquals(GuardPanel.MAX_EDITOR_CHARS, doc.getLength());
-                doc.insertString(doc.getLength(), "x", null);
-                assertEquals(GuardPanel.MAX_EDITOR_CHARS, doc.getLength());
-            }
-            return null;
-        });
-    }
-
-    @Test void trafficFiltersAreLiteralConjunctiveAndBookmarkProjectAware() throws Exception {
-        access.rows = fixtures();
-        open();
-        edt(() -> {
-            JTable table = get("traffic.table", JTable.class);
-            assertEquals(3, table.getRowCount());
-            get("traffic.search", JTextField.class).setText("[");
-            assertEquals(0, table.getRowCount()); // No regex compilation / syntax errors.
-            get("traffic.search", JTextField.class).setText("a.*");
-            assertEquals(0, table.getRowCount()); // A metacharacter is a literal, not a wildcard.
-            get("traffic.search", JTextField.class).setText("a.");
-            assertEquals(1, table.getRowCount());
-            get("traffic.method", JTextField.class).setText("get");
-            get("traffic.status", JTextField.class).setText("200");
-            get("traffic.time", JTextField.class).setText("2026-11-03T12:00:00Z");
-            assertEquals(1, table.getRowCount());
-            get("traffic.project", JComboBox.class).setSelectedItem("project-two");
-            assertEquals(0, table.getRowCount());
-            get("traffic.project", JComboBox.class).setSelectedItem("project-one");
-            assertEquals(1, table.getRowCount());
-            get("traffic.bookmarked", JCheckBox.class).doClick();
-            assertEquals(0, table.getRowCount());
-            get("traffic.bookmarked", JCheckBox.class).doClick();
-            get("traffic.search", JTextField.class).setText(SECRET);
-            assertEquals(0, table.getRowCount());
-            get("traffic.search", JTextField.class).setText("%5BREDACTED%5D");
-            assertEquals(1, table.getRowCount());
-            return null;
-        });
-    }
-
-    @Test void sortedSelectionBookmarkAndDetailsUseModelIndicesAndSurviveRefresh() throws Exception {
-        access.rows = fixtures();
-        open();
-        edt(() -> {
-            JTable table = get("traffic.table", JTable.class);
-            table.getRowSorter().setSortKeys(List.of(new SortKey(3, SortOrder.DESCENDING)));
-            table.setRowSelectionInterval(0, 0);
-            String selectedUrl = table.getValueAt(0, 3).toString();
-            assertTrue(get("traffic.request", JTextArea.class).getText().contains(selectedUrl));
-            String metadata = get("traffic.metadata", JTextArea.class).getText();
-            assertTrue(metadata.contains("Policy revision: 7"));
-            assertTrue(metadata.contains("Rule hits"));
-            assertFalse(metadata.contains(SECRET));
-            String selectedId = access.rows.stream().filter(e -> e.url().equals(selectedUrl)).findFirst().orElseThrow().id();
-            click("traffic.bookmark");
-            assertEquals(selectedId, access.lastBookmarked);
-            assertEquals(selectedUrl, table.getValueAt(table.getSelectedRow(), 3));
-            assertTrue(get("traffic.metadata", JTextArea.class).getText().contains("Bookmarked: true"));
-            panel.refreshNow();
-            assertEquals(selectedUrl, table.getValueAt(table.getSelectedRow(), 3));
-            assertFalse(get("traffic.request", JTextArea.class).getText().contains(SECRET));
-            return null;
-        });
-    }
-
-    @Test void projectFilterIsNotSilentlyBroadenedWhenItsLastEntryDisappears() throws Exception {
-        access.rows = fixtures();
-        open();
-        edt(() -> {
-            get("traffic.project", JComboBox.class).setSelectedItem("project-two");
-            access.rows = List.of(access.rows.getFirst());
-            panel.refreshNow();
-            assertEquals("project-two", get("traffic.project", JComboBox.class).getSelectedItem());
-            assertEquals(0, get("traffic.table", JTable.class).getRowCount());
-            assertEquals("", get("traffic.request", JTextArea.class).getText());
-            return null;
-        });
-    }
-
-    @Test void disappearingSortedSelectionClearsDetailsWithoutStalingThePolicy() throws Exception {
-        access.rows = fixtures();
-        open();
-        edt(() -> {
-            JTable table = get("traffic.table", JTable.class);
-            table.getRowSorter().setSortKeys(List.of(new SortKey(3, SortOrder.DESCENDING)));
-            table.setRowSelectionInterval(2, 2);
-            access.rows = List.of();
-            panel.refreshNow();
-            assertEquals(0, table.getRowCount());
-            assertEquals(-1, table.getSelectedRow());
-            assertEquals("", get("traffic.request", JTextArea.class).getText());
-            assertTrue(button("draft.apply").isEnabled());
-            assertFalse(get("message", JLabel.class).getText().startsWith("REFRESH_UNAVAILABLE"));
-            return null;
-        });
-    }
-
-    @Test void trafficRowsAreBoundedAndHtmlIsNotInterpreted() throws Exception {
-        List<TrafficEntry> data = new ArrayList<>();
-        TrafficEntry entry = fixtures().getFirst();
-        for (int i = 0; i < 2_001; i++) data.add(entry);
-        access.rows = data;
-        open();
-        edt(() -> {
-            JTable table = get("traffic.table", JTable.class);
-            assertEquals(2_000, table.getRowCount());
-            JLabel renderer = (JLabel) table.prepareRenderer(table.getCellRenderer(0, 3), 0, 3);
-            renderer.setText("<html><b>must remain literal text</b></html>");
-            assertEquals(Boolean.TRUE, renderer.getClientProperty("html.disable"));
-            assertNull(renderer.getClientProperty(BasicHTML.propertyKey));
-            Object projectRenderer = get("traffic.project", JComboBox.class).getRenderer();
-            assertEquals(Boolean.TRUE, ((JLabel) projectRenderer).getClientProperty("html.disable"));
-            return null;
-        });
-    }
-
-    @Test void approvalsResolveOnlyMaskedEvidenceAndAreOneShot() throws Exception {
-        access.rows = fixtures();
-        TrafficEntry evidence = access.rows.getFirst();
-        access.pending = new ArrayList<>(List.of(pending("approval-one", evidence.id(), evidence.projectId())));
-        open();
-        edt(() -> {
-            get("approval.table", JTable.class).setRowSelectionInterval(0, 0);
-            String detail = get("approval.detail", JTextArea.class).getText();
-            assertTrue(detail.contains("[REDACTED]"));
-            assertFalse(detail.contains(SECRET));
-            click("approval.approve");
-            assertEquals(List.of("approval-one:true"), access.decisions);
-            assertEquals(0, get("approval.table", JTable.class).getRowCount());
-            click("approval.approve");
-            assertEquals(1, access.decisions.size());
-            return null;
-        });
-        assertEquals(List.of("SELECT_PENDING_APPROVAL_FIRST"), dialogs.errors);
-    }
-
-    @Test void missingExpiredAndOtherProjectApprovalCannotBypassQueue() throws Exception {
-        access.pending = new ArrayList<>(List.of(pending("old", "not-retained", "project-one")));
-        open();
-        edt(() -> {
-            get("approval.table", JTable.class).setRowSelectionInterval(0, 0);
-            assertTrue(get("approval.detail", JTextArea.class).getText().contains("EVIDENCE_NOT_RETAINED"));
-            access.pending.clear(); // Decision race/timeout after last refresh.
-            click("approval.approve");
-            assertTrue(access.decisions.isEmpty());
-            access.pending = new ArrayList<>(List.of(pending("other", "not-retained", "project-two")));
-            panel.refreshNow();
-            get("approval.table", JTable.class).setRowSelectionInterval(0, 0);
-            click("approval.approve");
-            assertTrue(access.decisions.isEmpty());
-            access.pending = new ArrayList<>(List.of(pending("deny", "not-retained", "project-one")));
-            panel.refreshNow();
-            get("approval.table", JTable.class).setRowSelectionInterval(0, 0);
-            click("approval.deny");
-            assertEquals(List.of("deny:false"), access.decisions);
-            return null;
-        });
-        assertEquals(List.of("APPROVAL_STALE_OR_EXPIRED", "APPROVAL_STALE_OR_EXPIRED"), dialogs.errors);
-    }
-
-    @Test void filteredJsonAndSortedSelectedHarAreSerializedOffEdtToHumanPath() throws Exception {
-        access.rows = fixtures();
-        dialogs.target = temp.resolve("chosen.json");
-        open();
-        edt(() -> {
-            get("traffic.method", JTextField.class).setText("POST");
-            click("traffic.filteredJson");
-            return null;
-        });
-        awaitExport();
-        assertEquals(1, access.exported.size());
-        assertEquals("POST", access.exported.getFirst().method());
-        assertFalse(access.exportOnEdt);
-        assertEquals("JSON", Files.readString(dialogs.target));
-        dialogs.target = temp.resolve("chosen.har");
-        edt(() -> {
-            get("traffic.method", JTextField.class).setText("");
-            JTable table = get("traffic.table", JTable.class);
-            table.getRowSorter().setSortKeys(List.of(new SortKey(3, SortOrder.DESCENDING)));
-            table.setRowSelectionInterval(0, 1);
-            List<String> urls = List.of(table.getValueAt(0, 3).toString(), table.getValueAt(1, 3).toString());
-            click("traffic.selectedHar");
-            access.expectedExportUrls = urls;
-            return null;
-        });
-        awaitExport();
-        assertEquals(access.expectedExportUrls, access.exported.stream().map(TrafficEntry::url).toList());
-        assertEquals("HAR", Files.readString(dialogs.target));
-        assertEquals(List.of("json", "har"), dialogs.chosenExtensions);
-        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
-    }
-
-    @Test void realRedactedStoreExportsRoundTripThroughUiWorkerAndAtomicWriter() throws Exception {
-        EvidenceStore store = new EvidenceStore();
-        String id = store.begin("project-one", "Synthetic project", new RequestData("GET",
-                "https://example.test/safe?token=" + SECRET, "example.test", 443, true,
-                List.of(new RequestData.Header("Authorization", "Bearer " + SECRET)), new byte[0]),
-                new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 1);
-        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", 200);
-        store.response(id, 200, List.of(new RequestData.Header("Content-Type", "application/json")),
-                ("{\"token\":\"" + SECRET + "\",\"ok\":true}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        access.rows = store.snapshot();
-        access.exportStore = store;
-        dialogs.target = temp.resolve("actual.json");
-        open();
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        awaitExport();
-        String json = Files.readString(dialogs.target);
-        assertFalse(json.contains(SECRET));
-        assertTrue(json.contains("[REDACTED]"));
-        assertEquals(id, Json.MAPPER.readTree(json).path("entries").get(0).path("id").asText());
-        dialogs.target = temp.resolve("actual.har");
-        edt(() -> { click("traffic.filteredHar"); return null; });
-        awaitExport();
-        String har = Files.readString(dialogs.target);
-        assertFalse(har.contains(SECRET));
-        assertEquals("1.2", Json.MAPPER.readTree(har).path("log").path("version").asText());
-        assertEquals(1, Json.MAPPER.readTree(har).path("log").path("entries").size());
-        assertFalse(access.exportOnEdt);
-        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
-    }
-
-    @Test void exportsRequireRowsAndChooserAndExplicitOverwriteConsent() throws Exception {
-        open();
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        assertEquals(List.of("NO_DISPLAYED_EVIDENCE_TO_EXPORT"), dialogs.errors);
-        access.rows = fixtures();
-        edt(() -> { panel.refreshNow(); click("traffic.filteredJson"); return null; }); // Cancel chooser.
-        assertEquals(0, access.exportCalls);
-        dialogs.target = temp.resolve("existing.json");
-        Files.writeString(dialogs.target, "original");
+        edt(() -> { click("dashboard.pause"); return null; });
+        assertTrue(access.paused); assertEquals("보호 재개", edt(() -> button("dashboard.pause").getText()));
         dialogs.confirmed = false;
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        assertEquals(0, access.exportCalls);
-        assertEquals("original", Files.readString(dialogs.target));
-        dialogs.confirmed = true;
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        awaitExport();
+        edt(() -> { click("dashboard.pause"); return null; }); assertTrue(access.paused);
+        dialogs.confirmed = true; access.failPause = true;
+        edt(() -> { click("dashboard.pause"); return null; }); assertTrue(access.paused);
+        assertEquals("보호 재개", edt(() -> button("dashboard.pause").getText()));
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+        access.failPause = false;
+        edt(() -> { click("dashboard.pause"); return null; }); assertFalse(access.paused);
+    }
+
+    @Test void overviewReportsStalledGateWithoutOfferingAResetOrBypass() throws Exception {
+        access.policy = policyWithAllow(); access.stalled = 1; open();
+        assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("응답 확인 필요")));
+        assertTrue(edt(() -> get("dashboard.guidance", JTextArea.class).getText().contains("자리를 강제로 비우지")));
+        assertNull(edt(() -> find(panel, "dashboard.reset")));
+    }
+
+    @Test void trafficFiltersAreLiteralConjunctiveAndCountExplainsHiddenFilters() throws Exception {
+        access.rows = fixtures(); open();
+        edt(() -> {
+            get("traffic.search", JTextField.class).setText("a.pattern"); assertEquals(1, trafficTable().getRowCount());
+            get("traffic.method", JTextField.class).setText("POST"); assertEquals(0, trafficTable().getRowCount());
+            assertTrue(get("traffic.count", JLabel.class).getText().contains("필터 적용 중"));
+            click("traffic.reset"); assertEquals(3, trafficTable().getRowCount());
+            get("traffic.outcome", JComboBox.class).setSelectedIndex(1); assertEquals(1, trafficTable().getRowCount());
+            get("traffic.status", JTextField.class).setText("451"); assertEquals(1, trafficTable().getRowCount());
+            get("traffic.time", JTextField.class).setText("12:00:01"); assertEquals(1, trafficTable().getRowCount());
+            get("traffic.project", JComboBox.class).setSelectedItem("project-one"); assertEquals(0, trafficTable().getRowCount());
+            click("traffic.reset"); assertEquals(3, trafficTable().getRowCount());
+            get("traffic.bookmarked", JCheckBox.class).setSelected(true); assertEquals(0, trafficTable().getRowCount());
+            return null;
+        });
+    }
+
+    @Test void sortedSelectionBookmarkAndMaskedDetailsUseModelIndicesAcrossRefresh() throws Exception {
+        access.rows = fixtures(); open();
+        edt(() -> {
+            JTable table = trafficTable(); table.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(3, SortOrder.DESCENDING)));
+            table.setRowSelectionInterval(0, 0);
+            String expected = (String) table.getValueAt(0, 3);
+            assertTrue(expected.contains("/z?"));
+            click("traffic.detail");
+            for (String name : List.of("traffic.metadata", "traffic.request", "traffic.response")) assertFalse(get(name, JTextArea.class).isEditable());
+            assertFalse(get("traffic.request", JTextArea.class).getText().contains(SECRET));
+            assertTrue(get("traffic.request", JTextArea.class).getText().contains("[REDACTED]"));
+            click("traffic.bookmark");
+            assertEquals(access.rows.get(2).id(), access.lastBookmarked);
+            assertEquals(expected, table.getValueAt(table.getSelectedRow(), 3));
+            assertTrue(get("traffic.metadata", JTextArea.class).getText().contains("대상 도착"));
+            access.rows = List.of(); panel.refreshNow();
+            assertEquals(-1, table.getSelectedRow()); assertEquals("", get("traffic.request", JTextArea.class).getText());
+            assertTrue(button("settings.edit").isEnabled());
+            return null;
+        });
+    }
+
+    @Test void evictedProjectFilterIsNotSilentlyBroadened() throws Exception {
+        access.rows = fixtures(); open();
+        edt(() -> {
+            get("traffic.project", JComboBox.class).setSelectedItem("project-two");
+            access.rows = List.of(access.rows.getFirst()); panel.refreshNow();
+            assertEquals("project-two", get("traffic.project", JComboBox.class).getSelectedItem()); assertEquals(0, trafficTable().getRowCount());
+            return null;
+        });
+    }
+
+    @Test void trafficAndRuleRenderersNeverInterpretHtmlAndRowsAreBounded() throws Exception {
+        List<TrafficEntry> sample = fixtures(); access.rows = java.util.Collections.nCopies(2_010, sample.getFirst());
+        GuardConfig old = GuardConfig.defaults();
+        access.policy = new GuardConfig(1, List.of(), List.of(), List.of(new Rule("html", "<html><b>literal</b>", true, Mode.BLOCK, old.rules().getFirst().condition())), Mode.ALLOW, old.limits()); open();
+        edt(() -> {
+            assertEquals(2_000, trafficTable().getRowCount());
+            JTable rules = get("rules.table", JTable.class);
+            Component renderer = rules.prepareRenderer(rules.getCellRenderer(0, 1), 0, 1);
+            assertNull(((JComponent) renderer).getClientProperty(BasicHTML.propertyKey));
+            assertEquals("<html><b>literal</b>", ((JLabel) renderer).getText());
+            return null;
+        });
+    }
+
+    @Test void blockExplanationRoutesToRelevantSettingWithoutHarvestingTrafficIntoPolicy() throws Exception {
+        access.rows = fixtures(); open();
+        edt(() -> {
+            get("traffic.outcome", JComboBox.class).setSelectedIndex(1); trafficTable().setRowSelectionInterval(0, 0);
+            click("traffic.detail");
+            assertTrue(get("traffic.metadata", JTextArea.class).getText().contains("거절"));
+            assertFalse(button("traffic.resolve").isEnabled());
+            return null;
+        });
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("project-one", "Synthetic", request("/outside"), new Decision(Mode.BLOCK, "SCOPE_NOT_ALLOWED", List.of()), 7);
+        store.outcome(id, "BLOCKED", "SCOPE_NOT_ALLOWED", 451); access.rows = store.snapshot();
+        edt(() -> {
+            click("traffic.reset"); panel.refreshNow(); trafficTable().setRowSelectionInterval(0, 0);
+            click("traffic.detail");
+            assertTrue(get("traffic.metadata", JTextArea.class).getText().contains("호스트·연결 방식·포트·경로"));
+            click("traffic.resolve"); assertEquals(1, get("tabs", JTabbedPane.class).getSelectedIndex());
+            return null;
+        });
+        assertTrue(access.policy.allowScope().isEmpty()); assertEquals(0, access.updates);
+    }
+
+    @Test void approvalsShowMethodMaskedUrlReasonAndTimeAndAreOneShot() throws Exception {
+        access.rows = fixtures(); access.pending.add(pending("ask-one", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> {
+            JTable table = get("approval.table", JTable.class);
+            assertEquals("GET", table.getValueAt(0, 0)); assertTrue(((String) table.getValueAt(0, 1)).contains("REDACTED"));
+            assertTrue(((String) table.getValueAt(0, 3)).endsWith("초"));
+            assertTrue(get("tabs", JTabbedPane.class).getTitleAt(4).contains("1"));
+            table.setRowSelectionInterval(0, 0); assertTrue(button("approval.approve").isEnabled());
+            click("approval.review"); assertFalse(get("approval.detail", JTextArea.class).isEditable());
+            assertFalse(get("approval.detail", JTextArea.class).getText().contains(SECRET));
+            click("approval.approve"); assertEquals(List.of("ask-one:true"), access.decisions);
+            assertFalse(button("approval.approve").isEnabled()); return null;
+        });
+    }
+
+    @Test void missingApprovalEvidenceDisablesAllowButAllowsHumanDenial() throws Exception {
+        access.pending.add(pending("ask-missing", "gone", "project-one")); open();
+        edt(() -> {
+            get("approval.table", JTable.class).setRowSelectionInterval(0, 0);
+            assertFalse(button("approval.approve").isEnabled()); assertTrue(button("approval.deny").isEnabled());
+            click("approval.review");
+            assertTrue(get("approval.detail", JTextArea.class).getText().contains("증거가 남아 있지"));
+            click("approval.deny"); return null;
+        });
+        assertEquals(List.of("ask-missing:false"), access.decisions);
+    }
+
+    @Test void expiredOtherProjectPausedAndChangedPolicyApprovalsAreNotActionable() throws Exception {
+        access.rows = fixtures();
+        access.pending.add(new Pending("expired", access.rows.getFirst().id(), "project-one", Instant.now().minusSeconds(60).toString(), Instant.now().minusSeconds(1).toString()));
+        access.pending.add(pending("other", access.rows.getFirst().id(), "project-two")); open();
+        edt(() -> {
+            JTable table = get("approval.table", JTable.class);
+            for (int i = 0; i < 2; i++) { table.setRowSelectionInterval(i, i); assertFalse(button("approval.approve").isEnabled()); assertFalse(button("approval.deny").isEnabled()); }
+            access.pending.clear(); access.pending.add(pending("live", access.rows.getFirst().id(), "project-one")); panel.refreshNow();
+            table.setRowSelectionInterval(0, 0); access.paused = true; panel.refreshNow(); assertFalse(button("approval.approve").isEnabled());
+            access.paused = false; access.revision++; panel.refreshNow(); assertFalse(button("approval.approve").isEnabled());
+            return null;
+        });
+        assertTrue(access.decisions.isEmpty());
+    }
+
+    @Test void approvalRechecksRetainedEvidenceAtClickNotJustTheLastTimerSnapshot() throws Exception {
+        access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> {
+            get("approval.table", JTable.class).setRowSelectionInterval(0, 0); assertTrue(button("approval.approve").isEnabled());
+            access.rows = List.of(); click("approval.approve"); return null;
+        });
+        assertTrue(access.decisions.isEmpty()); assertEquals(List.of(UiText.error("APPROVAL_EVIDENCE_MISSING")), dialogs.errors);
+    }
+
+    @Test void exportsUseOneFlowWithExplicitRangeFormatAndRunOffEdt() throws Exception {
+        access.rows = fixtures(); open(); dialogs.target = temp.resolve("masked.json");
+        edt(() -> { get("traffic.search", JTextField.class).setText("middle"); click("traffic.export"); return null; });
+        awaitExport(); assertFalse(access.exportOnEdt); assertEquals(List.of(access.rows.get(1)), access.exported);
         assertEquals("JSON", Files.readString(dialogs.target));
-        assertEquals(2, dialogs.confirmations.size());
-    }
-
-    @Test void symlinkTargetIsRejectedBeforeSerializationOrWrite() throws Exception {
-        access.rows = fixtures();
-        Path protectedFile = temp.resolve("protected");
-        Files.writeString(protectedFile, "original");
-        dialogs.target = temp.resolve("link.json");
-        Files.createSymbolicLink(dialogs.target, protectedFile);
-        open();
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        assertEquals(List.of("EXPORT_TARGET_UNSAFE_OR_UNAVAILABLE"), dialogs.errors);
-        assertEquals(0, access.exportCalls);
-        assertEquals("original", Files.readString(protectedFile));
-        assertTrue(Files.isSymbolicLink(dialogs.target));
-    }
-
-    @Test void workerFailureAndAccessErrorsExposeOnlyCategories() throws Exception {
-        access.rows = fixtures();
-        dialogs.target = temp.resolve("failure.json");
-        access.failExport = true;
-        open();
-        edt(() -> { click("traffic.filteredJson"); return null; });
-        awaitExport();
-        assertEquals(List.of("EXPORT_FAILED"), dialogs.errors);
-        assertFalse(Files.exists(dialogs.target));
+        dialogs.target = temp.resolve("selected.har");
         edt(() -> {
-            access.failPause = true;
-            get("dashboard.paused", JCheckBox.class).doClick();
-            access.failRefresh = true;
-            panel.refreshNow();
-            assertFalse(get("message", JLabel.class).getText().contains(SECRET));
-            assertFalse(button("draft.apply").isEnabled());
-            return null;
+            click("traffic.reset"); trafficTable().getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(3, SortOrder.DESCENDING)));
+            trafficTable().setRowSelectionInterval(0, 0); get("traffic.exportRange", JComboBox.class).setSelectedIndex(1);
+            get("traffic.exportFormat", JComboBox.class).setSelectedIndex(1); click("traffic.export"); return null;
         });
-        assertEquals(List.of("EXPORT_FAILED", "ACTION_FAILED"), dialogs.errors);
+        awaitExport(); assertEquals(List.of(access.rows.getLast()), access.exported);
+        assertEquals("HAR", Files.readString(dialogs.target)); assertEquals(List.of("json", "har"), dialogs.chosenExtensions);
     }
 
-    @Test void exportUsesFrozenDisplayedSnapshotAndRejectsSecondConcurrentExport() throws Exception {
-        access.rows = fixtures();
-        access.blockExport = true;
-        dialogs.target = temp.resolve("snapshot.json");
-        open();
-        edt(() -> {
-            get("traffic.method", JTextField.class).setText("POST");
-            click("traffic.filteredJson");
-            return null;
-        });
-        assertTrue(access.serializeStarted.await(5, TimeUnit.SECONDS));
-        edt(() -> {
-            access.rows = List.of();
-            panel.refreshNow();
-            click("traffic.filteredJson");
-            return null;
-        });
-        access.serializeRelease.countDown();
-        awaitExport();
-        assertEquals(1, access.exported.size());
-        assertEquals("POST", access.exported.getFirst().method());
-        assertEquals(List.of("EXPORT_IN_PROGRESS"), dialogs.errors);
-    }
-
-    private void open() throws Exception {
-        edt(() -> { panel = new GuardPanel(access, dialogs, false); return null; });
-    }
-
-    private void awaitExport() throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (System.nanoTime() < deadline) {
-            boolean done = edt(() -> !get("message", JLabel.class).getText().startsWith("EXPORT_IN_PROGRESS"));
-            // A rejected second click changes the banner; also wait for SwingWorker's done callback.
-            java.lang.reflect.Field worker = GuardPanel.class.getDeclaredField("exportWorker");
-            worker.setAccessible(true);
-            if (done && edt(() -> worker.get(panel) == null)) return;
-            Thread.sleep(10);
+    @Test void realMaskedStoreExportsRemainRedactedThroughWorkerAndAtomicWriter() throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("project-one", "Synthetic", new RequestData("POST", "https://example.test/?token=" + SECRET, "example.test", 443, true,
+                List.of(new RequestData.Header("Authorization", "Bearer " + SECRET), new RequestData.Header("Content-Type", "application/json")),
+                ("{\"password\":\"" + SECRET + "\",\"safe\":\"yes\"}").getBytes(StandardCharsets.UTF_8)), new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 7);
+        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", 200); access.rows = store.snapshot(); access.exportStore = store; open();
+        for (boolean har : List.of(false, true)) {
+            dialogs.target = temp.resolve(har ? "real.har" : "real.json");
+            edt(() -> { get("traffic.exportFormat", JComboBox.class).setSelectedIndex(har ? 1 : 0); click("traffic.export"); return null; });
+            awaitExport(); String text = Files.readString(dialogs.target);
+            assertFalse(text.contains(SECRET)); assertTrue(text.contains("[REDACTED]")); assertNotNull(Json.MAPPER.readTree(text));
         }
-        fail("Export SwingWorker did not finish");
     }
 
+    @Test void exportRequiresRowsChooserAndExplicitOverwriteConsent() throws Exception {
+        open(); edt(() -> { click("traffic.export"); return null; });
+        assertEquals(0, access.exportCalls); assertTrue(dialogs.chosenExtensions.isEmpty());
+        access.rows = fixtures(); edt(() -> { panel.refreshNow(); click("traffic.export"); return null; });
+        assertEquals(0, access.exportCalls);
+        dialogs.target = temp.resolve("existing.json"); Files.writeString(dialogs.target, "keep"); dialogs.confirmed = false;
+        edt(() -> { click("traffic.export"); return null; }); assertEquals("keep", Files.readString(dialogs.target)); assertEquals(0, access.exportCalls);
+        edt(() -> { get("traffic.exportRange", JComboBox.class).setSelectedIndex(1); click("traffic.export"); return null; });
+        assertEquals(0, access.exportCalls);
+    }
+
+    @Test void symlinkTargetIsRejectedBeforeAnySerializationOrWrite() throws Exception {
+        access.rows = fixtures(); open(); Path original = temp.resolve("original"); Files.writeString(original, "keep");
+        Path link = temp.resolve("link.json"); Files.createSymbolicLink(link, original); dialogs.target = link;
+        edt(() -> { click("traffic.export"); return null; });
+        assertEquals(0, access.exportCalls); assertEquals("keep", Files.readString(original));
+        assertEquals(List.of(UiText.error("EXPORT_TARGET_UNSAFE_OR_UNAVAILABLE")), dialogs.errors);
+    }
+
+    @Test void exportUsesFrozenSnapshotRejectsConcurrentStartAndHidesWorkerErrors() throws Exception {
+        access.rows = fixtures(); access.blockExport = true; open(); dialogs.target = temp.resolve("frozen.json");
+        edt(() -> { click("traffic.export"); return null; }); assertTrue(access.serializeStarted.await(5, TimeUnit.SECONDS));
+        List<TrafficEntry> frozen = access.rows;
+        edt(() -> { access.rows = List.of(); panel.refreshNow(); click("traffic.export"); return null; });
+        assertEquals(UiText.error("EXPORT_IN_PROGRESS"), dialogs.errors.getLast());
+        access.serializeRelease.countDown(); awaitExport(); assertEquals(frozen, access.exported);
+        access.failExport = true; access.blockExport = false; access.rows = fixtures(); dialogs.target = temp.resolve("fail.json");
+        edt(() -> { panel.refreshNow(); click("traffic.export"); return null; }); awaitExport();
+        assertFalse(Files.exists(dialogs.target)); assertEquals(UiText.error("EXPORT_FAILED"), dialogs.errors.getLast());
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+    }
+
+    @Test void clearEvidenceIsConfirmedAndDiagnosticsNeverWritePolicy() throws Exception {
+        access.rows = fixtures(); open(); dialogs.confirmed = false;
+        edt(() -> { click("settings.clear"); return null; }); assertEquals(0, access.clears);
+        dialogs.confirmed = true;
+        edt(() -> { click("settings.clear"); return null; }); assertEquals(1, access.clears);
+        dialogs.editScript = (form, save) -> {
+            assertFalse(get("diagnostics.status", JTextArea.class).isEditable()); save.run();
+        };
+        edt(() -> { click("settings.diagnostics"); return null; }); assertEquals(0, access.updates);
+    }
+
+    @Test void timerAndUnrelatedArrivalsDoNotResetDetailSelectionOrScrollIntent() throws Exception {
+        access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> {
+            trafficTable().setRowSelectionInterval(0, 0); click("traffic.detail");
+            JTextArea request = get("traffic.request", JTextArea.class);
+            request.select(5, 12); String selectedRequest = request.getSelectedText();
+            JTable approvals = get("approval.table", JTable.class); approvals.setRowSelectionInterval(0, 0); click("approval.review");
+            JTextArea approval = get("approval.detail", JTextArea.class);
+            approval.select(5, 12); String selectedApproval = approval.getSelectedText();
+            JTextArea settings = get("settings.summary", JTextArea.class);
+            settings.select(5, 12); String selectedSettings = settings.getSelectedText();
+            panel.refreshNow();
+            assertEquals(selectedRequest, request.getSelectedText());
+            assertEquals(selectedApproval, approval.getSelectedText());
+            assertEquals(selectedSettings, settings.getSelectedText());
+            access.rows = List.of(access.rows.get(2), access.rows.getFirst(), access.rows.get(1));
+            panel.refreshNow();
+            assertEquals(selectedRequest, request.getSelectedText(), "re-sorted rows must not temporarily clear details");
+            assertEquals(selectedApproval, approval.getSelectedText());
+            assertInstanceOf(NonScrollingCaret.class, get("dashboard.guidance", JTextArea.class).getCaret());
+            return null;
+        });
+    }
+
+    @Test void informationalFormTextDoesNotStealInitialFocusOrAutoScrollTheForm() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            JTextArea guidance = get("scope.message", JTextArea.class);
+            assertInstanceOf(NonScrollingCaret.class, guidance.getCaret()); assertFalse(guidance.isFocusable());
+            assertTrue(get("scope.url", JTextField.class).isFocusable());
+            assertTrue(get("scope.preview", JTextArea.class).isFocusable(), "actual scope stays selectable/copyable");
+        };
+        edt(() -> { click("dashboard.addTarget"); return null; });
+        assertEquals(0, access.updates);
+    }
+
+    @Test void listAndDetailDoNotCompeteForSmallTabHeightAndLargeFontRowsGrow() throws Exception {
+        open();
+        edt(() -> {
+            assertNull(SwingUtilities.getAncestorOfClass(JSplitPane.class, trafficTable()), "details open separately instead of collapsing either pane");
+            assertNotNull(SwingUtilities.getAncestorOfClass(JScrollPane.class, trafficTable()));
+            trafficTable().setFont(trafficTable().getFont().deriveFont(28f));
+            assertTrue(trafficTable().getRowHeight() > 28); return null;
+        });
+    }
+
+    @Test void closeStopsTimerDisablesWritesClosesEditorsAndRejectsHeldModalSave() throws Exception {
+        edt(() -> { panel = new GuardPanel(access, dialogs, true); return null; });
+        java.lang.reflect.Field field = GuardPanel.class.getDeclaredField("timer"); field.setAccessible(true); Timer timer = (Timer) field.get(panel);
+        assertTrue(edt(timer::isRunning)); assertEquals(1000, timer.getDelay());
+        assertThrows(IllegalStateException.class, panel::close);
+        dialogs.editScript = (form, save) -> { get("settings.globalRps", JSpinner.class).setValue(2); panel.close(); save.run(); };
+        edt(() -> { click("settings.edit"); panel.close(); return null; });
+        assertFalse(edt(timer::isRunning)); assertEquals(1, dialogs.closedEditors); assertEquals(0, access.updateAttempts);
+        assertFalse(edt(() -> button("settings.edit").isEnabled()));
+        int refreshes = access.refreshes; edt(() -> { panel.refreshNow(); return null; }); assertEquals(refreshes, access.refreshes);
+    }
+
+    private void open() throws Exception { edt(() -> { panel = new GuardPanel(access, dialogs, false); return null; }); }
     private JButton button(String name) { return get(name, JButton.class); }
+    private JTable trafficTable() { return get("traffic.table", JTable.class); }
     private void click(String name) { button(name).doClick(0); }
+    private void selectRule(String id) {
+        JTable table = get("rules.table", JTable.class);
+        int model = java.util.stream.IntStream.range(0, access.policy.rules().size()).filter(i -> access.policy.rules().get(i).id().equals(id)).findFirst().orElseThrow();
+        int view = table.convertRowIndexToView(model); table.setRowSelectionInterval(view, view);
+    }
     private <T> T get(String name, Class<T> type) {
-        Component result = find(panel, name);
-        assertNotNull(result, name);
-        return type.cast(result);
+        Component found = panel == null ? null : find(panel, name);
+        if (found == null && dialogs.form != null) found = find(dialogs.form.component(), name);
+        return type.cast(java.util.Objects.requireNonNull(found, name));
     }
     private static Component find(Component root, String name) {
         if (name.equals(root.getName())) return root;
-        if (root instanceof Container container) for (Component child : container.getComponents()) {
-            Component found = find(child, name);
-            if (found != null) return found;
-        }
+        if (root instanceof Container c) for (Component child : c.getComponents()) { Component found = find(child, name); if (found != null) return found; }
         return null;
+    }
+    private void awaitExport() throws Exception {
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+        while (System.nanoTime() < until) {
+            boolean done = edt(() -> {
+                java.lang.reflect.Field field = GuardPanel.class.getDeclaredField("exportWorker"); field.setAccessible(true); return field.get(panel) == null;
+            });
+            if (done) return;
+            Thread.sleep(15);
+        }
+        fail("redacted export did not finish");
     }
     private static <T> T edt(Callable<T> body) throws Exception {
         if (SwingUtilities.isEventDispatchThread()) return body.call();
-        AtomicReference<T> result = new AtomicReference<>();
-        AtomicReference<Throwable> error = new AtomicReference<>();
-        SwingUtilities.invokeAndWait(() -> {
-            try { result.set(body.call()); }
-            catch (Throwable t) { error.set(t); }
-        });
+        AtomicReference<T> result = new AtomicReference<>(); AtomicReference<Throwable> error = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> { try { result.set(body.call()); } catch (Throwable t) { error.set(t); } });
         if (error.get() instanceof Exception e) throw e;
         if (error.get() instanceof Error e) throw e;
         return result.get();
     }
-
+    private static RequestData request(String path) { return new RequestData("GET", "https://example.test" + path, "example.test", 443, true, List.of(), new byte[0]); }
     private static GuardConfig policyWithAllow() {
-        GuardConfig defaults = GuardConfig.defaults();
-        return new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")),
-                List.of(), defaults.rules(), Mode.ALLOW, defaults.limits());
+        GuardConfig d = GuardConfig.defaults(); return new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(), d.rules(), Mode.ALLOW, d.limits());
     }
-
     private static List<TrafficEntry> fixtures() {
-        EvidenceStore store = new EvidenceStore();
-        List<TrafficEntry> entries = new ArrayList<>();
+        EvidenceStore store = new EvidenceStore(); List<TrafficEntry> rows = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
-            String url = "https://example.test/" + (i == 0 ? "a.pattern" : i == 1 ? "middle" : "z") + "?token=" + SECRET;
-            RequestData request = new RequestData(i == 1 ? "POST" : "GET", url, "example.test", 443, true,
-                    List.of(new RequestData.Header("Authorization", "Bearer " + SECRET),
-                            new RequestData.Header("Content-Type", "application/json")),
-                    ("{\"password\":\"" + SECRET + "\",\"item\":\"safe\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            String id = store.begin(i == 1 ? "project-two" : "project-one", "Test project", request,
-                    new Decision(Mode.ASK, "RULE_MATCH", List.of(new Decision.RuleHit("ask-rule", "Human review", Mode.ASK))), 7);
+            RequestData r = new RequestData(i == 1 ? "POST" : "GET", "https://example.test/" + (i == 0 ? "a.pattern" : i == 1 ? "middle" : "z") + "?token=" + SECRET,
+                    "example.test", 443, true, List.of(new RequestData.Header("Authorization", "Bearer " + SECRET), new RequestData.Header("Content-Type", "application/json")),
+                    ("{\"password\":\"" + SECRET + "\",\"item\":\"safe\"}").getBytes(StandardCharsets.UTF_8));
+            String id = store.begin(i == 1 ? "project-two" : "project-one", "Synthetic", r, new Decision(Mode.ASK, "RULE_MATCH", List.of(new Decision.RuleHit("ask-rule", "사람 검토", Mode.ASK))), 7);
             store.outcome(id, i == 1 ? "BLOCKED" : "FORWARDED", i == 1 ? "DENIED" : "NATIVE_RELEASED", i == 1 ? 451 : 200);
-            TrafficEntry entry = store.snapshot().stream().filter(e -> e.id().equals(id)).findFirst().orElseThrow();
-            // Fixed synthetic timestamps keep filtering independent of the machine's date.
-            entries.add(new TrafficEntry(entry.id(), entry.projectId(), entry.projectName(), "2026-11-03T12:00:0" + i + "Z",
-                    entry.method(), entry.url(), entry.mode(), entry.disposition(), entry.reason(), entry.statusCode(), entry.hits(),
-                    entry.revision(), entry.bookmarked(), entry.requestCapture(), entry.responseCapture(), entry.truncated(), entry.provenanceSeal()));
+            TrafficEntry e = store.snapshot().stream().filter(entry -> entry.id().equals(id)).findFirst().orElseThrow();
+            rows.add(new TrafficEntry(e.id(), e.projectId(), e.projectName(), "2026-11-03T12:00:0" + i + "Z", e.method(), e.url(), e.mode(), e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), e.provenanceSeal()));
         }
-        return List.copyOf(entries);
+        return List.copyOf(rows);
     }
-
-    private static Pending pending(String id, String evidence, String project) {
-        return new Pending(id, evidence, project, "2026-11-03T12:00:00Z", "2026-11-03T12:00:30Z");
-    }
+    private static Pending pending(String id, String evidence, String project) { return new Pending(id, evidence, project, Instant.now().toString(), Instant.now().plusSeconds(120).toString()); }
 
     private static final class HumanDialogs implements GuardPanel.Dialogs {
-        boolean confirmed = true;
-        Path target;
-        final List<String> errors = new ArrayList<>();
-        final List<String> confirmations = new ArrayList<>();
-        final List<String> chosenExtensions = new ArrayList<>();
-        @Override public boolean confirm(Component parent, String message) {
-            assertTrue(SwingUtilities.isEventDispatchThread());
-            confirmations.add(message);
-            return confirmed;
-        }
-        @Override public Path chooseExport(Component parent, String extension) {
-            assertTrue(SwingUtilities.isEventDispatchThread());
-            chosenExtensions.add(extension);
-            return target;
-        }
-        @Override public void error(Component parent, String category) {
-            assertTrue(SwingUtilities.isEventDispatchThread());
-            errors.add(category);
-        }
+        boolean confirmed = true; Path target; EditorForm<?> form; int edits; int closedEditors;
+        Runnable onConfirm = () -> {};
+        BiConsumer<EditorForm<?>, Runnable> editScript = (form, save) -> {};
+        final List<String> errors = new ArrayList<>(); final List<String> confirmations = new ArrayList<>(); final List<String> chosenExtensions = new ArrayList<>();
+        @Override public boolean confirm(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); confirmations.add(text); onConfirm.run(); return confirmed; }
+        @Override public Path chooseExport(Component parent, String extension) { assertTrue(SwingUtilities.isEventDispatchThread()); chosenExtensions.add(extension); return target; }
+        @Override public void error(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); errors.add(text); }
+        @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save) { assertTrue(SwingUtilities.isEventDispatchThread()); this.form = form; edits++; editScript.accept(form, save); }
+        @Override public void closeEditors() { closedEditors++; }
     }
-
     private static final class FakeAccess implements GuardUiAccess {
-        GuardConfig policy = GuardConfig.defaults();
-        String project = "project-one";
-        long revision = 1;
-        String submittedProject;
-        long submittedRevision;
-        int updates;
-        int updateAttempts;
-        int refreshes;
-        int clears;
-        boolean paused;
-        boolean raceOnUpdate;
-        boolean switchDuringConfig;
-        boolean failPause;
-        boolean failRefresh;
-        boolean failExport;
-        boolean blockExport;
-        boolean exportOnEdt;
-        EvidenceStore exportStore;
-        int exportCalls;
-        String lastBookmarked;
-        List<TrafficEntry> rows = List.of();
-        List<Pending> pending = new ArrayList<>();
-        List<String> decisions = new ArrayList<>();
-        volatile List<TrafficEntry> exported = List.of();
-        List<String> expectedExportUrls;
-        final CountDownLatch serializeStarted = new CountDownLatch(1);
-        final CountDownLatch serializeRelease = new CountDownLatch(1);
+        GuardConfig policy = GuardConfig.defaults(); String project = "project-one"; long revision = 7;
+        String submittedProject; long submittedRevision; int updates; int updateAttempts; int refreshes; int clears; int stalled;
+        boolean paused; boolean raceOnUpdate; boolean switchDuringConfig; boolean failPause; boolean failRefresh; boolean failExport; boolean blockExport; boolean exportOnEdt;
+        EvidenceStore exportStore; int exportCalls; String lastBookmarked; List<TrafficEntry> rows = List.of(); List<Pending> pending = new ArrayList<>(); List<String> decisions = new ArrayList<>();
+        volatile List<TrafficEntry> exported = List.of(); final CountDownLatch serializeStarted = new CountDownLatch(1); final CountDownLatch serializeRelease = new CountDownLatch(1);
         private static void onEdt() { assertTrue(SwingUtilities.isEventDispatchThread()); }
         @Override public GuardConfig config() {
-            onEdt();
-            GuardConfig result = policy;
+            onEdt(); GuardConfig result = policy;
             if (switchDuringConfig) { switchDuringConfig = false; project = "project-two"; revision++; policy = policyWithAllow(); }
             return result;
         }
-        @Override public void updateConfig(GuardConfig config, String expectedProjectId, long expectedRevision) {
-            onEdt();
-            updateAttempts++;
-            submittedProject = expectedProjectId;
-            submittedRevision = expectedRevision;
+        @Override public void updateConfig(GuardConfig config, String expectedProject, long expectedRevision) {
+            onEdt(); updateAttempts++; submittedProject = expectedProject; submittedRevision = expectedRevision;
             if (raceOnUpdate) { project = "project-two"; revision++; }
-            if (!project.equals(expectedProjectId) || revision != expectedRevision) throw new IllegalStateException(SECRET);
-            new PolicyEngine().validate(config);
-            policy = config;
-            revision++;
-            updates++;
+            if (!project.equals(expectedProject) || revision != expectedRevision) throw new IllegalStateException(SECRET);
+            new PolicyEngine().validate(config); policy = config; revision++; updates++; pending.clear();
         }
         @Override public Map<String, Object> status() {
-            onEdt();
-            return Map.of("projectId", project, "projectName", "Current Burp project", "revision", revision,
-                    "paused", paused, "closed", false, "note", "SYNTHETIC", "evidence", Map.of("retained", rows.size()),
-                    "gate", Map.of("stalled", 1, "active", 1, "queued", 0), "approvalCount", pending.size());
+            onEdt(); return Map.of("projectId", project, "projectName", "Current Burp project", "revision", revision, "paused", paused, "closed", false,
+                    "note", "SYNTHETIC", "evidence", Map.of("retainedEntries", rows.size()), "gate", Map.of("stalled", stalled, "active", stalled, "queued", 0), "approvalCount", pending.size());
         }
         @Override public List<TrafficEntry> traffic() { onEdt(); return List.copyOf(rows); }
         @Override public List<Pending> approvals() { onEdt(); return List.copyOf(pending); }
-        @Override public boolean decideApproval(String id, boolean allow) {
-            onEdt();
-            boolean removed = pending.removeIf(p -> p.id().equals(id));
-            if (removed) decisions.add(id + ":" + allow);
-            return removed;
-        }
+        @Override public boolean decideApproval(String id, boolean allow) { onEdt(); boolean removed = pending.removeIf(p -> p.id().equals(id)); if (removed) decisions.add(id + ":" + allow); return removed; }
         @Override public void bookmark(String id, boolean value) {
-            onEdt();
-            lastBookmarked = id;
-            rows = rows.stream().map(e -> e.id().equals(id) ? new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(),
-                    e.method(), e.url(), e.mode(), e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), value,
-                    e.requestCapture(), e.responseCapture(), e.truncated(), e.provenanceSeal()) : e).toList();
+            onEdt(); lastBookmarked = id; rows = rows.stream().map(e -> e.id().equals(id) ? new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(), e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), value, e.requestCapture(), e.responseCapture(), e.truncated(), e.provenanceSeal()) : e).toList();
         }
         @Override public String exportJson(List<TrafficEntry> entries) { return export(entries, "JSON"); }
         @Override public String exportHar(List<TrafficEntry> entries) { return export(entries, "HAR"); }
         private String export(List<TrafficEntry> entries, String format) {
-            exportOnEdt = SwingUtilities.isEventDispatchThread();
-            exportCalls++;
-            serializeStarted.countDown();
-            if (blockExport) try { assertTrue(serializeRelease.await(5, TimeUnit.SECONDS)); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(SECRET); }
-            if (failExport) throw new IllegalArgumentException(SECRET);
-            exported = List.copyOf(entries);
-            if (exportStore != null) return format.equals("JSON") ? exportStore.exportJson(entries) : exportStore.exportHar(entries);
-            return format;
+            exportOnEdt = SwingUtilities.isEventDispatchThread(); exportCalls++; serializeStarted.countDown();
+            if (blockExport) try { assertTrue(serializeRelease.await(5, TimeUnit.SECONDS)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(SECRET); }
+            if (failExport) throw new IllegalArgumentException(SECRET); exported = List.copyOf(entries);
+            return exportStore == null ? format : format.equals("JSON") ? exportStore.exportJson(entries) : exportStore.exportHar(entries);
         }
         @Override public void clearEvidence() { onEdt(); rows = List.of(); clears++; }
-        @Override public void pause(boolean value) { onEdt(); if (failPause) throw new IllegalStateException(SECRET); paused = value; revision++; }
+        @Override public void pause(boolean value) { onEdt(); if (failPause) throw new IllegalStateException(SECRET); paused = value; revision++; pending.clear(); }
         @Override public void refreshProject() { onEdt(); refreshes++; if (failRefresh) throw new IllegalStateException(SECRET); }
     }
 }

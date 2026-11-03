@@ -151,6 +151,33 @@ class Run:
         self.case("empty allowlist: local 451 and zero fixture hits",
                   lambda: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED"))
 
+    def exact(self):
+        """Human URL form has allowed ONLY /safe, with the two default rules retained."""
+        def allowed_get_head():
+            before = len(self.state.snapshot())
+            for method in ("GET", "HEAD"):
+                status, headers, body = self.request("/safe", method)
+                assert status == 200 and headers["X-Fixture"] == "owned-loopback"
+                if method == "HEAD":
+                    assert body == b""
+            assert len(self.state.snapshot()) == before + 2
+        self.case("URL form exact target: GET and HEAD arrive", allowed_get_head)
+        for name, kwargs in [
+            ("descendant path stays outside scope", {"path": "/safe/child"}),
+            ("similar path stays outside scope", {"path": "/safex"}),
+        ]:
+            self.case(name, lambda k=kwargs: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED", **k))
+        self.case("exact target retains DELETE rule", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
+        self.case("exact target retains decoded-query rule", lambda: self.assert_block(expected_reason="RULE_BLOCK", path="/safe?operation=%2564elete"))
+        def preserved():
+            status, headers, body = self.request("/safe", "POST", BODY,
+                {"Content-Type": "application/json", "Authorization": SYNTHETIC_AUTH, "Cookie": SYNTHETIC_COOKIE})
+            assert status == 200 and headers["X-Fixture"] == "owned-loopback"
+            data = json.loads(body)
+            assert data["authorization"] == SYNTHETIC_AUTH and data["cookie"] == SYNTHETIC_COOKIE
+            assert data["body"].encode() == BODY
+        self.case("exact target preserves allowed synthetic request values", preserved)
+
     def default(self):
         self.basic()
         self.rate()
@@ -312,7 +339,7 @@ class Run:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=["empty", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
+    parser.add_argument("--phase", required=True, choices=["empty", "exact", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
     parser.add_argument("--proxy-host", default="127.0.0.1", type=loopback)
     parser.add_argument("--proxy-port", default=8080, type=int)
     parser.add_argument("--port", default=18080, type=int)

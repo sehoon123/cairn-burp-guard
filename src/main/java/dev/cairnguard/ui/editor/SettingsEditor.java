@@ -311,6 +311,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
                 seconds ? new BigDecimal("0.001") : BigDecimal.ONE)), name, label);
         JSpinner.DefaultEditor editor = named(new JSpinner.DefaultEditor(spinner), name + ".editor", label);
         JFormattedTextField text = named(editor.getTextField(), name + ".text", label);
+        text.setEditable(true); // DefaultEditor disables typing; humans must not be limited to arrow clicks.
         text.setFormatterFactory(new DefaultFormatterFactory(new ExactFormatter()));
         text.setValue(initial);
         text.setColumns(seconds ? 9 : 7);
@@ -363,6 +364,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
     private static JTextArea wrapped(String name, String text) {
         JTextArea area = named(new JTextArea(text), name, text.isBlank() ? "설정 입력 안내" : text);
         area.setEditable(false);
+        area.setCaret(new dev.cairnguard.ui.NonScrollingCaret());
         area.setFocusable(false);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);

@@ -107,6 +107,11 @@ class SettingsEditorTest {
         edt(() -> {
             GuardConfig initial = GuardConfig.defaults();
             SettingsEditor editor = new SettingsEditor(initial);
+            for (String field : List.of("globalRps", "perHostRps", "maxConcurrent", "maxQueued",
+                    "queueTimeoutSeconds", "approvalTimeoutSeconds", "requestTimeoutSeconds")) {
+                assertTrue(text(editor, field).isEditable(), field + " must accept human typing/paste");
+                assertTrue(text(editor, field).isEnabled(), field + " must be enabled");
+            }
             text(editor, "globalRps").setText("7");
             text(editor, "perHostRps").setText("4");
             text(editor, "maxConcurrent").setText("3");

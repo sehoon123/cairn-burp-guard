@@ -4,9 +4,9 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 
 > 개발용 프리뷰입니다. 합성·로컬 테스트와 실제 Burp 검증을 구분합니다. 확장 자체가 Burp에 자동 설치되거나 사용자 프로젝트/전역 설정을 변경하지 않습니다. 허용 목록의 초기값은 비어 있어 모든 검사 대상 Proxy 요청이 차단됩니다.
 
-**[개발용 JAR 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-03)** · [검증 현황](docs/VERIFICATION.md) · [실제 Burp 결과](docs/NATIVE_BURP_RESULTS.md)
+**[개발용 JAR 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-04-ux)** · [처음 사용하는 방법](docs/UI.md) · [검증 현황](docs/VERIFICATION.md) · [실제 Burp 결과](docs/NATIVE_BURP_RESULTS.md)
 
-2026-11-03: Java **584개** + Python **28개** 자동 검사, 격리된 Burp Community2026.10.1에서 **54개 실제 HTTP/HTTPS 시나리오**를 통과했습니다. 라이브 CAIRN/Pi 보고서 E2E, HTTP/2, Professional 디스크 프로젝트와 강제 egress는 아직 검증하지 않았습니다. 운영 안전성을 인증한 릴리스가 아닙니다.
+2026-11-04: **일반 작업에 JSON이 필요 없는 안내형 UI**로 바꿨습니다. Java **771개** + Python **30개** 자동 검사를 통과했고, 최종 JAR을 격리된 Burp Community2026.10.1에 로드하여 **12개 실제 HTTP 시나리오**와 폼·승인·마스킹 내보내기를 확인했습니다. 이전 빌드의54개 HTTP/HTTPS 결과와는 별개입니다. 라이브 CAIRN/Pi 보고서 E2E, HTTP/2, Professional 디스크 프로젝트와 강제 egress는 아직 검증하지 않았습니다. 운영 안전성을 인증한 릴리스가 아닙니다.
 
 ## 역할과 제외 범위
 
@@ -26,12 +26,12 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 
 | 탭 | 기능 |
 |---|---|
-| Dashboard | 현재 프로젝트/정책 revision, 누적·보관 통계, 대기/실행/격리 상태, 새 요청 일시 차단 |
-| Rules | 문자열/RE2 정규식, URL/Path/Query/Header/Body/JSON/Form/Method, 이름/JSON pointer selector, AND/OR, case 옵션, rule별 toggle, Allow/Block/Monitor/Ask |
-| Scope | 정확한 호스트 또는 명시적 서브도메인 wildcard, scheme/port/path full-match RE2, allowlist + blocklist |
-| Traffic | 마스킹 요청·응답, 정책 hit/reason/revision, 전달/로컬 차단 구분, URL/method/time/status/project 검색, 북마크, JSON/HAR export |
-| Approval | exact 요청에 대한 1회 승인/거절, 기한·용량 초과 시 차단, 정책 변경/프로젝트 전환 시 오래된 승인 취소 |
-| Settings | 합산/호스트별 RPS, 호스트 override, 실제 in-flight 동시성, 대기열·승인·요청 불명 시간 제한, 실시간 적용 |
+| 개요 | 현재 보호/차단 이유와 다음 행동, 대상 등록, 대기·실행·격리/누적 통계, 새 요청 일시중지 |
+| 대상 | URL을 폼에 반영하고 실제 범위를 미리보기. 정확한 호스트·포트·경로부터 허용/차단 목록 관리. wildcard/하위 경로/고급 RE2는 명시적으로 선택 |
+| 규칙 | 이름·동작·조건 폼, 빠른 시작 예제와 AND/OR 트리. 메서드/URL/경로/query/header/body/JSON/form, selector·대소문자·문자열/RE2 옵션 유지 |
+| 요청 기록 | 마스킹 결과·이유·다음 행동, 별도 요청/응답 상세 창, 검색/필터/북마크, 하나의 JSON/HAR 내보내기 흐름 |
+| 승인 대기 | 주소·이유·남은 시간과 마스킹 증거 검토 후 해당 요청을1회 승인/거절. 만료/정책·프로젝트 변경은 취소 |
+| 설정 | 읽기 쉬운 RPS·동시성 입력. 상세 대기 시간은 초 단위, 호스트 예외는 표. 각 작업만 저장하며 전체 정책 JSON은 선택적 고급 기능 |
 
 ### 안전 기본값
 
@@ -65,9 +65,9 @@ build/libs/cairn-proxy-guard-0.1.0-SNAPSHOT.jar
 
 1. 실제 대상과 분리된 **새 검증용 Burp 프로젝트/인스턴스**에서 시작합니다. 이 MVP는 전용 listener를 식별하지 않고 **ToolType.PROXY 전체**를 통제하므로 같은 인스턴스의 사람 브라우징도 영향을 받습니다. Repeater/Scanner/Extensions 도구에는 적용하지 않습니다.
 2. `Extensions → Installed → Add → Java`에서 위 JAR을 사람이 추가합니다.
-3. `Cairn Proxy Guard` 탭에서 프로젝트를 확인합니다. 처음에는 allowlist가 비어 있습니다.
-4. **Scope**에 승인받은 host/scheme/port/path만 넣습니다. 예를 들어 로컬 연습 서버의 `127.0.0.1`, `http`, `18080`, `/.*`처럼 정확한 범위부터 사용합니다. 실제 대상 대신 이 README의 예제 주소를 무심코 허용하지 마세요.
-5. Rules/Settings 초안을 확인하고 명시적으로 적용합니다. 다른 프로젝트/revision에서 시작한 오래된 초안은 거절됩니다.
+3. `Cairn Guard → 개요`에서 상태를 확인합니다. 처음의 **허용 대상 없음 · 모든 요청 차단**은 안전한 초기 상태입니다.
+4. **허용 대상 등록…**에서 허가받은 전체 URL을 넣고 **폼에 반영**을 누릅니다. 호스트·연결 방식·포트·경로와 **실제 범위 미리보기**를 확인한 뒤 **저장하고 적용**합니다. 기본은 그 경로만 허용합니다. 하위/모든 경로가 필요하면 허가 범위를 확인한 뒤 직접 선택하세요. 예제 주소를 무심코 허용하지 마세요.
+5. **규칙**의 기본 차단 조건과 **설정**을 확인하고 필요할 때 폼으로 바꿉니다. 각 저장은 해당 작업만 적용하며, 취소는 변경하지 않습니다. 다른 프로젝트/설정 버전에서 연 오래된 창의 저장은 거절합니다. [화면별 사용법](docs/UI.md)
 6. 별도의 CAIRN 실행 환경에서 HTTP(S) 프록시와 CA 신뢰를 사람이 준비합니다. 워커에 제어 도구나 관리용 연결을 넣지 않습니다. 프록시 장애 시 직접 접속으로 fallback하지 않습니다.
 7. 실제 대상 전에 [수동 smoke checklist](docs/MANUAL_BURP_SMOKE.md)를 실행하고 결과를 기록합니다.
 
