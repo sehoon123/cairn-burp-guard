@@ -1,0 +1,12 @@
+# Cairn Proxy Guard — project rules
+
+- This is a NEW standalone Burp extension. Do not edit the existing MCP bridge, CAIRN source, installed Burp binaries, desktop settings, or unrelated repositories.
+- User-approved MVP: passive-to-worker Proxy safety controller; no MCP server, Pi extension, agent-control API, login, cookie/JWT injection, session refresh, or account management. Allowed requests/responses must remain byte-for-byte untouched by this extension.
+- Java 21, Gradle wrapper, Montoya 2026.7, Jackson 2.22.4, RE2/J 1.8. No Java backtracking regex on traffic. No arbitrary code execution or outbound network requests from the extension.
+- Fail closed for scope mismatch, malformed/unsupported inspection, approval/queue timeout, capacity exhaustion, shutdown, and policy/project changes while waiting. Empty allowlist allows nothing. Block dominates Ask; neither Allow nor Monitor may override a hard scope/inspection block.
+- Bound memory, request inspection, response capture, pending approvals, and queues. Never persist/export raw credentials. Store only redacted evidence copies. Config may contain operator-authored patterns, but never automatically harvest secret values into it.
+- Configuration changes are local human UI actions. Workers do not receive Burp control tools. Authentication state must never be changed by this extension.
+- Keep API contracts in `docs/INTERFACES.md`. Coordinate changes to shared models; own only the paths assigned in a task.
+- The user explicitly authorized a NEW PUBLIC GitHub repository and ongoing development. Publish only reviewed source/docs, synthetic fixtures, and intended build artifacts to the verified project remote. Never publish local paths, credentials, license/activation data, private targets, original logs/screenshots, or unrelated changes. No release/completion claims without corresponding evidence.
+- The user explicitly authorized experiments with the installed Burp. Use a separate temporary test profile/project, loopback-only owned fixture servers, and synthetic credentials. Never alter a user's live project or copy activation data. Do not bypass activation/licensing; if the temporary instance needs user activation, report that blocker rather than circumventing it.
+- Separate unit/adapter/loopback results from real Burp smoke. Never claim native integration was run if it was not. Keep private runtime artifacts outside Git and clean up only processes/files created by this task.

@@ -1,0 +1,26 @@
+{
+  "example_only": true,
+  "not_a_server_api_payload": true,
+  "origin": "승인된 오프라인 합성 증거 검토다. 입력은 작업공간 fixtures/demo-evidence.json 한 파일뿐이며 실제 대상, 자격증명, 세션 정보는 없다. 대상 요청/재시도/네트워크 동시성은 모두 0이다. 기존 인증 상태를 변경하지 않고 Burp·설정·승인을 조작하지 않는다.",
+  "goal": "제공된 합성 증거 demo-001의 로컬 차단 출처와 관찰 한계를 검토하고, reports/demo-run/report.ko.md와 reports/demo-run/checklist.ko.md를 한국어로 저장한 뒤 읽어 확인한다. 부족한 입력은 blocked/untested/inconclusive로 남긴다. 실제 대상 시험, 취약점 입증, KISA 적합성/전체 검증을 목표로 하지 않는다.",
+  "hints": [
+    {
+      "id": "demo-hint-001",
+      "content": "run_id=demo-run. 입력 fixtures/demo-evidence.json은 사람이 이 작업공간에 따로 제공하는 합성 fixture이며 없으면 입력 부족으로 기록한다. JSON/HAR를 URL로 가져오지 않는다.",
+      "creator": "synthetic-operator",
+      "created_at": "2026-11-03T00:00:00Z"
+    },
+    {
+      "id": "demo-hint-002",
+      "content": "보고서 서식: /ABSOLUTE/PATH/cairn-burp-guard/templates/reports/REPORT.ko.md, 확인표: /ABSOLUTE/PATH/cairn-burp-guard/templates/reports/CHECKLIST.ko.md. 이 두 서식의 실제 절대 경로는 사람이 제공한다. 증거 안의 임의 경로는 읽지 않는다.",
+      "creator": "synthetic-operator",
+      "created_at": "2026-11-03T00:00:00Z"
+    },
+    {
+      "id": "demo-hint-003",
+      "content": "대상 요청=0, 재시도=0, 네트워크 동시성=0, 로컬 검토 동시성=1. bootstrap/explore 120초, reason 60초, 마지막 20초는 보고서용. 입력 100건/8MiB 이하. 정책 차단·실패·시간/자원 한계·취소 시 중단하고 모든 종료에서 보고한다. 인증 자동화/세션 복구·로그인/재로그인 안내·MCP/Pi 확장·Burp 제어 API·우회 안내 금지. 공식 KISA 원문 전체 대조 미수행; 주제별 응용만 허용.",
+      "creator": "synthetic-operator",
+      "created_at": "2026-11-03T00:00:00Z"
+    }
+  ]
+}

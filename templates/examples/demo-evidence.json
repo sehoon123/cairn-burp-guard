@@ -1,0 +1,25 @@
+{
+  "fixtureOnly": true,
+  "notAnExportSchema": true,
+  "provenance": "Synthetic redacted review fixture; not real Burp traffic or a target response",
+  "entries": [
+    {
+      "id": "demo-001",
+      "projectId": "demo-project",
+      "projectName": "synthetic-review",
+      "timestamp": "2026-11-03T00:00:00Z",
+      "method": "DELETE",
+      "url": "https://fixture.example.test/item",
+      "mode": "BLOCK",
+      "disposition": "BLOCKED",
+      "reason": "rule_block",
+      "statusCode": null,
+      "hits": [{"id": "demo-rule", "name": "synthetic method rule", "mode": "BLOCK"}],
+      "revision": 1,
+      "bookmarked": false,
+      "request": "[Synthetic inspection copy; no credentials]",
+      "response": "",
+      "truncated": false
+    }
+  ]
+}

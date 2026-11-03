@@ -1,0 +1,221 @@
+package dev.cairnguard.burp;
+
+import burp.api.montoya.core.Annotations;
+import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.handler.HttpHandler;
+import burp.api.montoya.http.handler.HttpRequestToBeSent;
+import burp.api.montoya.http.handler.HttpResponseReceived;
+import burp.api.montoya.http.handler.RequestToBeSentAction;
+import burp.api.montoya.http.handler.ResponseReceivedAction;
+import dev.cairnguard.runtime.GuardController;
+import dev.cairnguard.runtime.GuardController.Admission;
+import dev.cairnguard.runtime.GuardController.Prepared;
+import dev.cairnguard.runtime.RateGate;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Semaphore;
+import javax.swing.SwingUtilities;
+
+/** Proxy-only native boundary. Native traffic is never sent by this extension or edited on allow. */
+public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
+    static final int MAX_CALLBACKS = 128;
+    static final int MAX_INSPECTIONS = 8;
+    static final int MAX_IN_FLIGHT = 100;
+    private static final Set<String> REASONS = Set.of(
+            "SCOPE_BLOCKED", "SCOPE_NOT_ALLOWED", "DEFAULT_BLOCK", "RULE_BLOCK", "INVALID_CONFIG",
+            "INVALID_REQUEST", "INVALID_METHOD", "INVALID_URI", "UNSUPPORTED_SCHEME", "AUTHORITY_MISMATCH",
+            "INVALID_AUTHORITY", "INVALID_HOST", "INVALID_HEADERS", "REQUEST_TOO_LARGE", "WEBSOCKET_UNSUPPORTED",
+            "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "AMBIGUOUS_PATH", "UNSUPPORTED_BODY",
+            "INVALID_TEXT_ENCODING", "INVALID_CONTENT_LENGTH", "MALFORMED_CONTENT_TYPE", "UNSUPPORTED_CHARSET",
+            "INSPECTION_LIMIT", "MALFORMED_JSON", "AMBIGUOUS_JSON_KEYS", "ENCODING_DEPTH_EXCEEDED",
+            "MALFORMED_PERCENT_ENCODING", "INSPECTION_ERROR", "QUEUE_TIMEOUT", "QUEUE_FULL", "SHUTDOWN",
+            "POLICY_CHANGED", "PROJECT_CHANGED", "PAUSED", "IN_FLIGHT_TIMEOUT", "HOST_CAPACITY", "DENIED",
+            "APPROVAL_TIMEOUT", "APPROVAL_CAPACITY", "CANCELLED", "CAPTURE_FAILED", "CAPTURE_LIMIT",
+            "UNSUPPORTED_HTTP_VERSION", "HTTP2_INCONSISTENT", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY",
+            "CALLBACK_ON_EDT", "MESSAGE_ID_COLLISION", "CORRELATION_CAPACITY", "CONTINUATION_FAILED",
+            "FINAL_CHECK_REJECTED", "ADAPTER_ERROR");
+    private record Flight(String evidenceId, RateGate.Permit permit) {}
+    private final GuardController controller;
+    private final NativeActions actions;
+    private final Semaphore callbacks;
+    private final Semaphore inspections;
+    private final Object releaseLock = new Object();
+    private final Map<Integer, Flight> inFlight = new HashMap<>();
+    private final Set<Integer> preparing = new HashSet<>(); // At most MAX_CALLBACKS; no native/raw data.
+    private volatile boolean closed;
+
+    public ProxyGuardHandler(GuardController controller) { this(controller, NativeActions.montoya()); }
+    public ProxyGuardHandler(GuardController controller, NativeActions actions) {
+        this(controller, actions, MAX_CALLBACKS, MAX_INSPECTIONS);
+    }
+    ProxyGuardHandler(GuardController controller, NativeActions actions, int callbackSlots, int inspectionSlots) {
+        this.controller = Objects.requireNonNull(controller);
+        this.actions = Objects.requireNonNull(actions);
+        if (callbackSlots < 1 || callbackSlots > MAX_CALLBACKS || inspectionSlots < 1 || inspectionSlots > MAX_INSPECTIONS)
+            throw new IllegalArgumentException("INVALID_ADAPTER_CAPACITY");
+        callbacks = new Semaphore(callbackSlots);
+        inspections = new Semaphore(inspectionSlots);
+    }
+
+    @Override public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent request) {
+        Annotations annotations = null;
+        Prepared prepared = null;
+        Admission admission = null;
+        Flight flight = null;
+        Integer messageId = null;
+        boolean slot = false;
+        boolean released = false;
+        boolean ownsId = false;
+        boolean collision = false;
+        try {
+            ToolType tool = Objects.requireNonNull(request.toolSource().toolType());
+            annotations = request.annotations();
+            if (tool != ToolType.PROXY) return Objects.requireNonNull(actions.continueRequest(request, annotations));
+            messageId = request.messageId();
+            synchronized (releaseLock) { collision = inFlight.containsKey(messageId) || preparing.contains(messageId); }
+            if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
+            if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
+            if (SwingUtilities.isEventDispatchThread())
+                return block(rejected("CALLBACK_ON_EDT"), "CALLBACK_ON_EDT", annotations, false);
+            slot = callbacks.tryAcquire();
+            if (!slot) return block(rejected("CALLBACK_CAPACITY"), "CALLBACK_CAPACITY", annotations, false);
+            synchronized (releaseLock) {
+                collision = inFlight.containsKey(messageId) || !preparing.add(messageId);
+                ownsId = !collision;
+            }
+            if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
+            // This helper's frame (including RequestData and all body copies) ends BEFORE authorize waits.
+            prepared = prepare(request);
+            admission = Objects.requireNonNull(controller.authorize(prepared));
+            if (!admission.allowed()) return block(prepared, admission.reason(), annotations, false);
+            if (admission.permit() == null) throw new IllegalStateException("ADAPTER_ERROR");
+            // Factories can fail or reenter UI. Build the original-object continuation BEFORE final commit.
+            RequestToBeSentAction continuation = Objects.requireNonNull(actions.continueRequest(request, annotations));
+            flight = new Flight(prepared.evidenceId(), admission.permit());
+            synchronized (releaseLock) {
+                if (closed) return block(prepared, "SHUTDOWN", annotations, false);
+                if (inFlight.containsKey(messageId)) {
+                    collision = true;
+                    // A local spoof with an ambiguous ID could look like the older native completion.
+                    // Drop this conclusively unsent duplicate instead; never replace the older permit.
+                    return block(prepared, "MESSAGE_ID_COLLISION", annotations, true);
+                }
+                if (inFlight.size() >= MAX_IN_FLIGHT) return block(prepared, "CORRELATION_CAPACITY", annotations, false);
+                inFlight.put(messageId, flight);
+                if (!controller.commit(prepared)) return block(prepared, "FINAL_CHECK_REJECTED", annotations, false);
+                released = true;
+                return continuation;
+            }
+        } catch (RuntimeException | LinkageError e) {
+            // No exception message/cause, raw URL/header/body or operator pattern crosses this boundary.
+            String reason = prepared == null ? "CAPTURE_FAILED" : "CONTINUATION_FAILED";
+            if (prepared == null) prepared = rejected(reason);
+            return block(prepared, reason, annotations, collision || messageId == null);
+        } finally {
+            synchronized (releaseLock) {
+                if (ownsId) preparing.remove(messageId);
+                if (!released && messageId != null && flight != null) inFlight.remove(messageId, flight);
+            }
+            if (!released && admission != null && admission.permit() != null) {
+                // No native continuation has been returned: dispatch is conclusively not begun.
+                admission.permit().close();
+            }
+            if (slot) callbacks.release();
+        }
+    }
+
+    private Prepared prepare(HttpRequestToBeSent request) {
+        if (!inspections.tryAcquire()) return controller.prepareRejected("INSPECTION_CAPACITY");
+        try {
+            return controller.prepare(NativeCapture.request(request));
+        } catch (NativeCapture.Rejected e) {
+            return controller.prepareRejected(e.category());
+        } catch (RuntimeException | LinkageError e) {
+            return controller.prepareRejected("CAPTURE_FAILED");
+        } finally { inspections.release(); }
+    }
+
+    private Prepared rejected(String category) {
+        try { return controller.prepareRejected(category); }
+        catch (RuntimeException | LinkageError e) { return null; }
+    }
+
+    private RequestToBeSentAction block(Prepared prepared, String reason, Annotations annotations, boolean dropOnly) {
+        String category = category(reason);
+        if (prepared != null) {
+            try { controller.reject(prepared, category); }
+            catch (RuntimeException | LinkageError ignored) { /* Denial must not depend on evidence availability. */ }
+        }
+        if (!dropOnly) {
+            String id = prepared == null ? "unavailable" : evidenceId(prepared.evidenceId());
+            // Both substituted fields have fixed ASCII alphabets. No shared/configurable serializer
+            // or exception-producing native traffic formatter is needed to produce a denial.
+            String json = "{\"source\":\"cairn-proxy-guard\",\"outcome\":\"blocked\",\"reason\":\"" + category
+                    + "\",\"evidenceId\":\"" + id + "\",\"retryable\":false}";
+            byte[] body = json.getBytes(StandardCharsets.UTF_8);
+            if (prepared != null) {
+                try { controller.localResponse(prepared.evidenceId(), body); }
+                catch (RuntimeException | LinkageError ignored) { /* Only fixed local bytes, never raw traffic. */ }
+            }
+            String wire = "HTTP/1.1 451 Unavailable For Legal Reasons\r\nContent-Type: application/json; charset=utf-8\r\n"
+                    + "Cache-Control: no-store\r\nX-Cairn-Guard: blocked\r\nContent-Length: " + body.length + "\r\n\r\n" + json;
+            try { return Objects.requireNonNull(actions.spoof(wire, annotations)); }
+            catch (RuntimeException | LinkageError ignored) { /* Never fall back to a native continuation. */ }
+        }
+        try { return Objects.requireNonNull(actions.drop()); }
+        catch (RuntimeException | LinkageError e) { throw new IllegalStateException("NATIVE_DENIAL_UNAVAILABLE"); }
+    }
+
+    @Override public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
+        // Permit lifetime follows an actual matching Proxy response, independent of capture/factory success.
+        try {
+            if (response.toolSource().toolType() == ToolType.PROXY) {
+                Flight flight;
+                synchronized (releaseLock) { flight = inFlight.remove(response.messageId()); }
+                if (flight != null) {
+                    flight.permit().close();
+                    captureResponse(flight.evidenceId(), response);
+                }
+            }
+        } catch (RuntimeException | LinkageError ignored) { /* Categorical omission; no native mutation or raw logging. */ }
+        try { return Objects.requireNonNull(actions.continueResponse(response, response.annotations())); }
+        catch (RuntimeException | LinkageError e) { throw new IllegalStateException("NATIVE_RESPONSE_CONTINUATION_UNAVAILABLE"); }
+    }
+
+    private void captureResponse(String evidenceId, HttpResponseReceived response) {
+        boolean inspection = inspections.tryAcquire();
+        try {
+            NativeCapture.Response copy;
+            if (!inspection) copy = NativeCapture.omitted(0);
+            else {
+                try { copy = NativeCapture.response(response); }
+                catch (RuntimeException | LinkageError e) { copy = NativeCapture.omitted(0); }
+            }
+            controller.response(evidenceId, copy.status(), copy.headers(), copy.body());
+        } finally { if (inspection) inspections.release(); }
+    }
+
+    private static String category(String value) { return value != null && REASONS.contains(value) ? value : "ADAPTER_ERROR"; }
+    private static String evidenceId(String id) {
+        if (id == null || id.length() != 36) return "unavailable";
+        for (int i = 0; i < id.length(); i++) {
+            char c = id.charAt(i);
+            if (i == 8 || i == 13 || i == 18 || i == 23) { if (c != '-') return "unavailable"; }
+            else if (!(c >= '0' && c <= '9' || c >= 'a' && c <= 'f')) return "unavailable";
+        }
+        return id;
+    }
+    int inFlightCount() { synchronized (releaseLock) { return inFlight.size(); } }
+
+    /** Shutdown wakes all waits. It NEVER guesses completion or recycles outstanding native permits. */
+    @Override public void close() {
+        synchronized (releaseLock) {
+            closed = true;
+            controller.close();
+        }
+    }
+}

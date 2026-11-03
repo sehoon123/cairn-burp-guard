@@ -1,0 +1,13 @@
+{
+  "example_only": true,
+  "not_a_server_api_payload": true,
+  "origin": "허가된 웹 비파괴 테스트의 계획·한정 발견·검증·한국어 보고를 요청하는 문구 예시다. 이 합성 예시는 실제 허가가 아니며 app.example.test에 요청하지 않는다. 사람이 정확한 scheme/host/port/경로/GET·HEAD/query/read-only 여부/유효시간/예산을 승인한 계획을 작업공간 plans/approved-web-plan.json으로 제공해야 한다. 기존 HTTP proxy 환경만 상속하며 Burp·인증 상태·환경·설정을 변경하지 않는다.",
+  "goal": "실제 유효한 허가가 제공된 경우 계획의 고정 슬롯 p01 공개 경로 한정 링크 발견, p02 상태·보안 헤더 메타데이터, p03 허용된 q의 비실행 텍스트 표식 비교를 수행한다. 실제 관찰·미수행·정책차단·auth_unavailable·불확실성과 출처를 한국어 reports/demo-web/report.ko.md 및 checklist.ko.md에 저장·읽기 확인한다. 보고서 작성만으로 미수행 테스트 Goal을 완료 처리하지 않는다. 파괴/DoS/자격증명 공격·로그인/세션 작업·전체 취약점/KISA 적합성 보장은 목표가 아니다.",
+  "hints": [
+    {"id": "web-hint-001", "content": "run_id=demo-web; mode=active-web. 사람이 검토한 plans/approved-web-plan.json의 operator_authorized, read_only_routes_confirmed, authorization_reference 및 UTC starts_at/ends_at를 실제 값으로 채운 경우에만 실행한다. 현재 engagement-plan.example.json은 false/빈 시간창으로 실행 불가다. 권한/계획/프록시가 없으면 blocked 보고·승인 필요 계획만 작성하며 offline-only로 조용히 대체하지 않는다.", "creator": "synthetic-operator", "created_at": "2026-11-03T00:00:00Z"},
+    {"id": "web-hint-002", "content": "기본/최대 intent20요청/120초(2분), 동시성1, 마지막20초 보고용, 최소1초간격; 전체 <=5 고정 슬롯·<=100요청. 현재3슬롯 각20=60만 배정했다. ledger reports/demo-web/plan-ledger.ko.md에 예약/요청 전 시도수 보존. 재시도0·자동redirect0, 실패/차단/불명 시도도 소비, 미할당 예산은 허가 아님. 전체가 순차1worker이며 같은 슬롯 재실행/예산 초기화 금지.", "creator": "synthetic-operator", "created_at": "2026-11-03T00:00:00Z"},
+    {"id": "web-hint-003", "content": "내장 bash의 curl/Python만 사용. 기존 scheme별 http_proxy/HTTP_PROXY 또는 https_proxy/HTTPS_PROXY 부재/충돌/실패시 stop proxy_unavailable; 새 proxy 설정/환경변경/직접 fallback 없음. curl -q FIRST, 상속값 명시 --proxy, --noproxy ''로 NO_PROXY 우회 금지. TLS 검증 생략·쿠키/Authorization/로그인/세션 작업·MCP/Pi 확장/Burp 조작/정책 변경 금지. 401/403/로그인 redirect는 auth_unavailable로 중단, 451/local block/TLS/timeout도 중단한다.", "creator": "synthetic-operator", "created_at": "2026-11-03T00:00:00Z"},
+    {"id": "web-hint-004", "content": "서식은 사람이 확인한 /ABSOLUTE/PATH/cairn-burp-guard/templates/reports/REPORT.ko.md 및 CHECKLIST.ko.md. 모든 반환에 checkpoint/종료 보고/읽기 확인, complete 전 통합 최종2파일 저장·읽기 확인. 실제 대상은 별칭·가림 증거만 기록, raw HTTP/비밀/개인정보 저장 안 함. KISA는 공식 원문 전체 대조 미수행인 주제별 응용이다.", "creator": "synthetic-operator", "created_at": "2026-11-03T00:00:00Z"}
+  ],
+  "human_project_setup": "기존 CAIRN 프로젝트 생성 UI의 Run bootstrap attempt를 끈다(bootstrap_enabled=false). 이 값/이 파일은 실행용 API payload가 아니다. reason/explore가 유한한 승인 계획을 수행한다. bootstrap execute 성공은 전체 project 완료이므로 계획 전달용으로 사용하지 않는다."
+}

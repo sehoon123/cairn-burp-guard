@@ -1,0 +1,5 @@
+* text=auto
+*.bat text eol=crlf
+*.jar binary
+# Preserve upstream license text, including intentional final blank lines.
+legal/** whitespace=-blank-at-eof

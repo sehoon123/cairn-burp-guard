@@ -1,0 +1,31 @@
+name: Build and tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit, adapter, headless UI and owned-loopback tests
+        run: ./gradlew --no-daemon clean test jar
+      - name: Template contract checks (not a live worker run)
+        run: python3 scripts/verify_templates.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: development-jar-and-test-reports
+          path: |
+            build/libs/*.jar
+            build/test-results/test/*.xml
+          if-no-files-found: error
+          retention-days: 14

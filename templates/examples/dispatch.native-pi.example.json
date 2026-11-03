@@ -1,0 +1,33 @@
+{
+  "server": "http://127.0.0.1:8000",
+  "runtime": {
+    "execution": "local",
+    "worker_healthcheck": "disabled",
+    "max_workers": 1,
+    "max_running_projects": 1,
+    "max_project_workers": 1,
+    "interval": 3,
+    "healthcheck_timeout": 15,
+    "prompt_group": "/ABSOLUTE/PATH/cairn-burp-guard/templates/native-pi-ko"
+  },
+  "tasks": {
+    "bootstrap": {"timeout": 120, "conclude_timeout": 30},
+    "reason": {"timeout": 60, "max_intents": 5},
+    "explore": {"timeout": 120, "conclude_timeout": 30}
+  },
+  "local": {
+    "workspace_root": "/ABSOLUTE/PATH/cairn-runs",
+    "completed_action": "keep"
+  },
+  "common_env": {},
+  "workers": [
+    {
+      "name": "native-pi-ko-web",
+      "type": "pi",
+      "task_types": ["bootstrap", "reason", "explore"],
+      "max_running": 1,
+      "priority": 0,
+      "env": {}
+    }
+  ]
+}

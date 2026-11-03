@@ -1,0 +1,49 @@
+{
+  "example_only": true,
+  "not_a_server_api_payload": true,
+  "profile": "active-web",
+  "run_id": "demo-web",
+  "operator_authorized": false,
+  "authorization_reference": "EXAMPLE-NOT-AUTHORIZATION",
+  "authorization_window": {"starts_at": null, "ends_at": null},
+  "read_only_routes_confirmed": false,
+  "scope": [
+    {"scheme": "https", "host": "app.example.test", "port": 443, "paths": ["/public/", "/public/info", "/public/search"]}
+  ],
+  "limits": {
+    "engagement_requests": 100,
+    "max_intents": 5,
+    "per_intent_requests": 20,
+    "per_intent_seconds": 120,
+    "per_worker_concurrency": 1,
+    "workers": 1,
+    "min_interval_millis": 1000,
+    "connect_timeout_seconds": 5,
+    "request_timeout_seconds": 10,
+    "report_reserve_seconds": 20,
+    "response_body_bytes": 262144,
+    "input_entries": 100,
+    "input_bytes": 8388608,
+    "retries": 0,
+    "automatic_redirects": 0
+  },
+  "proxy": {
+    "source": "inherited_scheme_proxy_environment_only",
+    "missing_or_unreachable": "stop",
+    "direct_fallback": false,
+    "tls_verification": true,
+    "credentials": false
+  },
+  "intents": [
+    {"slot": "p01", "origin_index": 0, "paths": ["/public/"], "methods": ["GET"], "query_keys": [], "checks": ["bounded_public_link_discovery"], "max_requests": 20, "wall_seconds": 120, "concurrency": 1},
+    {"slot": "p02", "origin_index": 0, "paths": ["/public/info"], "methods": ["HEAD"], "query_keys": [], "checks": ["status_header_content_type_metadata"], "max_requests": 20, "wall_seconds": 120, "concurrency": 1},
+    {"slot": "p03", "origin_index": 0, "paths": ["/public/search"], "methods": ["GET"], "query_keys": ["q"], "checks": ["benign_non_executing_text_marker_comparison"], "max_requests": 20, "wall_seconds": 120, "concurrency": 1}
+  ],
+  "instructions": [
+    "이 파일은 로컬 계획 서식이며 CAIRN API/Guard 설정 스키마가 아니다. 합성 호스트를 요청하지 않는다. 실제 허가·정확한 경로·UTC 허가시간·read-only 확인·예산을 사람이 검토하기 전 실행 금지.",
+    "계획된 3슬롯의 합계는 60요청이다. 전체 100 상한의 미할당 40은 사용/추가/재시도 허가가 아니다. 슬롯 최대 5, 각20요청/120초·동시성1, 초기값보다 낮은 배분만 허용.",
+    "기존 scheme별 proxy 환경만 사용한다. curl -q를 첫 옵션으로, 상속값의 명시 --proxy, --noproxy '' 사용; 설정/환경/CA 변경·직접 fallback·insecure TLS·쿠키/인증/로그인/세션 작업 없음.",
+    "요청 전 reports/demo-web/plan-ledger.ko.md에 슬롯과 시도수를 체크포인트한다. 실패/차단/불명 시도도 소비하며 재시도·redirect 자동추적·슬롯 재사용 없음. 출처/blocked/auth_unavailable/커버리지/불확실성을 한국어 보고한다.",
+    "허가되지 않은 발견 링크는 후보로만 기록한다. 공격 payload/상태 변경/DoS/자격증명 공격/광범위 fuzzing/Burp/MCP/Pi 확장/우회 금지. 실제 테스트/공식 KISA 전체 대조는 이 예시에서 미수행."
+  ]
+}

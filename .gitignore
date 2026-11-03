@@ -1,0 +1,17 @@
+.gradle/
+build/
+.pi/
+*.hprof
+exports/
+*.har
+*.evidence.json
+__pycache__/
+.venv/
+.smoke/
+*.burp
+*.burp.*
+*.log
+*.pem
+*.key
+*.p12
+*.jks
