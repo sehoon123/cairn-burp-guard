@@ -147,7 +147,7 @@ public final class ScopeEditor implements EditorForm<ScopeEntry> {
         urlActions.add(clearUrl);
         urlRow.add(urlActions, BorderLayout.LINE_END);
         addRow(1, label("scope.url.label", "URL (선택)", url), urlRow);
-        addWide(2, note("scope.urlGuidance", "예: https://example.test/api — 사용자 정보, ?쿼리, #조각이 있으면 자동 변환하지 않습니다. URL의 경로와 포트를 그대로 제한합니다."));
+        addWide(2, note("scope.urlGuidance", "예: https://api.example.test/api/items — Enter로도 폼에 반영할 수 있습니다 (정책 저장 아님). 사용자 정보·?쿼리·#조각은 직접 제거해야 합니다."));
         addWide(3, message);
         addWide(4, enabled);
         addRow(5, label("scope.host.label", "호스트", host), host);
@@ -169,6 +169,7 @@ public final class ScopeEditor implements EditorForm<ScopeEntry> {
         form.add(new JPanel(), filler(14));
 
         fillUrl.addActionListener(event -> fillFromUrl());
+        url.addActionListener(event -> fillFromUrl()); // Consume Enter as explicit fill, never the dialog's Save.
         clearUrl.addActionListener(event -> {
             rejectedInputs.remove("scope.url");
             appliedUrl = "";
@@ -325,10 +326,10 @@ public final class ScopeEditor implements EditorForm<ScopeEntry> {
         pathLabel.setLabelFor(mode == PathMode.REGEX ? regex : path);
         pathLabel.setText(mode == PathMode.REGEX ? "RE2 식" : "경로");
         pathGuidance.setText(switch (mode) {
-            case EXACT -> "경로 전체가 정확히 같아야 합니다. URL 반영은 항상 이 방식이며, /와 %인코딩도 그대로 유지합니다.";
-            case PREFIX -> "입력 경로 자체와 /로 구분된 하위 경로만 포함합니다. /api는 /apix를 포함하지 않습니다. /api/는 /api를 포함하지 않습니다.";
-            case ALL -> "경로에 관계없이 호스트·연결 방식·포트가 맞으면 포함합니다. 선택에 의해 범위가 넓어집니다.";
-            case REGEX -> "RE2 식을 경로 전체에 적용합니다 (부분 검색 아님). 기존 식은 그대로 보존합니다. 일반 경로는 다른 방식을 선택하세요.";
+            case EXACT -> "예: /api/items → 같은 경로만 범위 일치. /api/items/1, /api/items-old는 제외합니다. URL 반영의 기본값이며 /와 %인코딩은 그대로 유지합니다.";
+            case PREFIX -> "예: /api → /api와 /api/items는 범위 일치, /apix는 제외합니다. /api/는 /api를 포함하지 않습니다. 입력 경로와 /로 구분된 하위 경로만 포함합니다.";
+            case ALL -> "예: /items와 /admin 모두 경로 범위에 포함됩니다. 호스트·연결 방식·포트 제한과 다른 차단 규칙은 유지됩니다. 필요한 경로만 허용하려면 다른 방식을 선택하세요.";
+            case REGEX -> "예: ^/admin(?:/.*)?$ → /admin과 /admin/users는 일치, /administrator는 제외합니다. RE2 전체 경로 일치이며 기존 식은 그대로 보존합니다.";
         });
         pathCards.revalidate();
     }

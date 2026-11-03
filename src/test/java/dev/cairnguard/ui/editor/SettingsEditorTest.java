@@ -103,6 +103,47 @@ class SettingsEditorTest {
         });
     }
 
+    @Test void exampleButtonsChangeOnlyThreeBasicDraftValuesAndPreserveDetailedSettingsExactly() throws Exception {
+        edt(() -> {
+            Limits original = new Limits(9, 7, Map.of("Example.TEST.", 2), 3, 12, 1, 23_001, 599_999);
+            GuardConfig initial = config(original);
+            SettingsEditor editor = new SettingsEditor(initial);
+            for (int value : List.of(1, 5)) {
+                get(editor, value == 1 ? "settings.preset.slow" : "settings.preset.standard", JButton.class).doClick();
+                assertFalse(get(editor, "settings.advanced", JPanel.class).isVisible());
+                assertTrue(get(editor, "settings.validation", JTextArea.class).getText().contains("아직"));
+                assertEquals(new SettingsEditor.Value(initial.defaultMode(), new Limits(value, value, original.hostRps(), value,
+                        original.maxQueued(), original.queueTimeoutMillis(), original.approvalTimeoutMillis(), original.requestTimeoutMillis())), editor.value());
+                assertEquals(original, initial.limits());
+            }
+            return null;
+        });
+    }
+
+    @Test void repeatedExampleReplacementRepairsOnlyBasicFieldsAndNeverCommitsOrHidesInvalidHostAndTimeEdits() throws Exception {
+        edt(() -> {
+            SettingsEditor editor = new SettingsEditor(config(withHosts(Map.of("one.example.test", 2))));
+            JButton slow = get(editor, "settings.preset.slow", JButton.class);
+            slow.doClick();
+            text(editor, "globalRps").setText("not-a-number");
+            slow.doClick();
+            assertEquals("1", text(editor, "globalRps").getText());
+            JTable hosts = table(editor);
+            assertTrue(hosts.editCellAt(0, 0));
+            ((JTextField) hosts.getEditorComponent()).setText("changed.example.test");
+            text(editor, "approvalTimeoutSeconds").setText("0.0001");
+            slow.doClick();
+            assertTrue(hosts.isEditing());
+            assertEquals("changed.example.test", ((JTextField) hosts.getEditorComponent()).getText());
+            assertEquals("0.0001", text(editor, "approvalTimeoutSeconds").getText());
+            assertThrows(FormValidationException.class, editor::value);
+            text(editor, "approvalTimeoutSeconds").setText("30.001");
+            assertEquals(Map.of("changed.example.test", 2), editor.value().limits().hostRps());
+            assertEquals(30_001, editor.value().limits().approvalTimeoutMillis());
+            return null;
+        });
+    }
+
     @Test void typedSpinnerAndActiveHostCellEditsAreCommittedOnlyIntoTheReturnedDraft() throws Exception {
         edt(() -> {
             GuardConfig initial = GuardConfig.defaults();

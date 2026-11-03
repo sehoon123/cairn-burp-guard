@@ -1,6 +1,49 @@
 # 실제 Burp 검증 결과
 
-## 2026-11-04 — 안내형 UI 빌드의 제한된 회귀 검증
+## 2026-11-04 — 현재 사용 예시·빠른 조작 빌드 (c071)
+
+2026-11-04 KST / 2026-11-03 UTC에 검증했습니다. **현재 산출물의 결과만 이 절에 적습니다.** 아래 이전 두 hash의12개·54개 시나리오와 합산하지 않습니다.
+
+| 항목 | 직접 확인한 값 |
+|---|---|
+| 제품 | 정상 선택 화면의 **Burp Community Edition v2026.10.1**, 제품 포함 OpenJDK26.0.2+10-55 |
+| 확장 | Java21 / Montoya API2026.7, `cairn-proxy-guard-0.1.0-SNAPSHOT.jar` |
+| 현재 JAR SHA256 | `c07116e051f6f49f7e582ffd8490e2ae234a91b22b6a8958bb82e55e646cf508` |
+| 격리 | 별도 임시 home/config/data/cache/preferences/tmp, 인증된 중첩 X display1440×1000, 임시 메모리 프로젝트 |
+| 대상·클라이언트 | 소유한 numeric-loopback HTTP echo fixture와 외부 Python 클라이언트. **CAIRN/Pi 워커 아님** |
+| 조작 | clean build의 위 JAR을 Extensions UI에서 로드. 대상·규칙·설정·승인은 모두 사람용 UI에서 조작 |
+
+기존 사용자 인스턴스·프로젝트·설정·인증/활성화 자료를 건드리거나 복사하지 않았습니다. 이미 사용 중인 기본 listener를 종료하지 않고 테스트 인스턴스만 다른 소유 loopback 포트로 설정했습니다. CAIRN·설치된 Burp 바이너리·데스크톱·전역 프록시/CA 신뢰는 변경하지 않았습니다.
+
+### 실제 HTTP 결과:4 phase / 13 논리 시나리오
+
+| Phase | 논리 시나리오 | 직접 관찰한 결과 |
+|---|---:|---|
+| `empty` | 1 | 빈 허용 목록: `SCOPE_NOT_ALLOWED` 로컬451, fixture0건 |
+| `exact` | 6 | URL 입력 후 **Enter로 폼만 채우고** 정확한 `/safe`를 저장. GET/HEAD와 합성 POST 허용, 하위/유사 경로 제외, 기본 DELETE·디코딩 query 차단 유지 |
+| `examples` | 5 | 별도 정확한 `/api/items`와 세 빠른 시작 규칙을 저장. GET은 승인 불필요, POST 하위 경로는 scope 차단, `operation=purge`는 rule 차단. POST 경로와 JSON `action=review`는 각각 미해결 때 fixture 증가 없음 → 검토 후 별도 1회 승인 → 각1건 도착 |
+| `paused` | 1 | 새 요청 일시중지에서 `PAUSED`, fixture0건. 이후 UI에서 보호 재개 |
+
+GET/HEAD를 함께 확인하는 시나리오가 있어 **총14요청 = fixture200 6건 + 로컬451 8건**입니다. 차단 표식·정확한 reason·UUID evidence ID·`retryable:false`와 fixture 미도착을 함께 확인했습니다. 허용된 합성 Authorization/Cookie/JSON body 및 선택 응답 값도 비교했습니다. transport 정규화까지 포함한 전체 wire 동일성은 주장하지 않습니다.
+
+### 새 UI의 실제 표시·조작
+
+- **사용 예시…**의 세 탭을 확인했습니다. 안내를 열고 닫아도 설정 버전이 바뀌지 않았습니다. URL Enter도 저장하지 않고 편집 창을 유지했습니다.
+- 대상 표의 두 번 클릭/Enter, 규칙 표의 두 번 클릭으로 같은 편집 창을 열고 취소했습니다. 새 규칙 예제를 선택하면 일치·불일치 안내만 바뀌고, **예제로 폼 채우기** 뒤에만 이름·동작·조건이 바뀌는 것을 확인했습니다. POST AND, JSON `/action=review`, named-query `operation=purge`를 각각 폼으로 저장했습니다.
+- 숫자 버튼1/1/1·5/5/5가 세 기본 필드만 채우고 창을 유지하는 것을 확인했습니다. 잘못 입력한 기본 숫자도 명시적 채우기로 교체했습니다. 저장 후1/1/1과 기존 상세 기본값을 확인했습니다. 이 조작은 속도/동시성 측정이 아닙니다.
+- 승인 표의 Enter와 두 번 클릭은 마스킹 검토만 열었습니다. 검토를 닫은 뒤 별도의 **한 번만 승인**으로 결정했고, 외부 fixture/client가 두 요청의 대기/1회 도착을 확인했습니다. 요청 기록의 Enter/두 번 클릭도 별도 읽기 전용 상세를 열었습니다.
+- 실제 마스킹 요청/응답에서 Authorization·Cookie·JSON password·Set-Cookie의 가림을 확인했습니다. **전체 JSON14건 / 선택 HAR1건**은 각각 `0600`이며 합성 비밀 원문4종이 없었습니다. 최종 증거는 FORWARDED6/BLOCKED8이며 대기 항목은 없었습니다.
+- 확장 로드 성공을 확인했고 테스트 로그의 exception/error 검색 결과는 없었습니다. 테스트 Burp는 UI로 종료되어 PID가 사라진 것을 확인했습니다. 이 작업의 display/window manager·임시 프로필·내보내기·로그·스크린샷만 정리했으며 원본 실행 자료는 게시하지 않습니다.
+
+### 현재 hash의 미검증 범위
+
+이번 native 실행은 HTTP/1.1의 위13개와 한 Linux/디스플레이 환경에 한정됩니다. **거절·만료·정책 변경 취소, HTTPS/HTTP2, pacing/동시성/호스트 예외/큐 포화/격리의 전체 native matrix를 이 hash에서 재실행하지 않았습니다.** 관련783 Java 회귀 통과와 이전 hash의 관찰은 그 native 빈칸을 대체하지 않습니다.
+
+Professional/디스크 프로젝트, native cross-project race, 재시작 복원, 전체 HiDPI/다른 OS/접근성, CAIRN/Pi/model 보고서 E2E와 강제 egress도 확인하지 않았습니다.1100×760은 여전히 native 미확인 목표입니다. 인증/세션 기능은 추가하지 않았으며 개발용 검증이지 운영 안전성 인증이 아닙니다. 재현은 [수동 checklist](MANUAL_BURP_SMOKE.md)를 보세요.
+
+## 2026-11-04 — 이전 안내형 UI 빌드 (a924)의 제한된 회귀 검증
+
+> 이 절의12개 결과는 **이전 SHA256 `a924…b2cc`에만 해당**합니다. 현재 사용 예시·빠른 조작 빌드의 결과가 아닙니다.
 
 검증 시각은 2026-11-04 KST / 2026-11-03 UTC입니다. **이전 UI의54개 시나리오를 새 UI 빌드에서 전부 재실행한 결과가 아닙니다.** 아래 두 산출물의 결과를 합산하지 않습니다.
 

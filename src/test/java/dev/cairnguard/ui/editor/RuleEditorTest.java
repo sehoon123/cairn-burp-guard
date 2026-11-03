@@ -118,7 +118,7 @@ class RuleEditorTest {
                 Rule value = editor.value();
                 assertEquals("keep-this-id", value.id());
                 assertFalse(value.enabled());
-                assertEquals(index <= 2 ? Mode.BLOCK : Mode.ASK, value.mode());
+                assertEquals(index <= 2 || index == 6 ? Mode.BLOCK : Mode.ASK, value.mode());
                 switch (index) {
                     case 1 -> assertEquals(Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"), value.condition());
                     case 2 -> {
@@ -133,7 +133,17 @@ class RuleEditorTest {
                     case 4 -> {
                         assertEquals(Field.JSON, value.condition().field());
                         assertEquals("/action", value.condition().name());
-                        assertEquals("delete", value.condition().value());
+                        assertEquals("review", value.condition().value());
+                    }
+                    case 5 -> {
+                        assertEquals(Logic.AND, value.condition().logic());
+                        assertEquals(List.of(Field.METHOD, Field.PATH), value.condition().children().stream().map(Condition::field).toList());
+                        assertEquals(List.of("POST", "/api/items"), value.condition().children().stream().map(Condition::value).toList());
+                    }
+                    case 6 -> {
+                        assertEquals(Field.QUERY, value.condition().field());
+                        assertEquals("operation", value.condition().name());
+                        assertEquals("purge", value.condition().value());
                     }
                     default -> fail("unexpected preset");
                 }
@@ -148,7 +158,7 @@ class RuleEditorTest {
         edt(() -> {
             RuleEditor editor = new RuleEditor(null);
             JComboBox<?> presets = get(editor, "rule.preset", JComboBox.class);
-            for (int index = 1; index <= 4; index++) {
+            for (int index = 1; index < presets.getItemCount(); index++) {
                 presets.setSelectedIndex(index);
                 get(editor, "rule.applyPreset", JButton.class).doClick();
                 Rule rule = editor.value();
@@ -166,12 +176,63 @@ class RuleEditorTest {
                         assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/administrator", "", ""));
                     }
                     case 4 -> {
-                        assertEquals(Mode.ASK, evaluate(rule, "POST", "/items", "application/json", "{\"action\":\"delete\"}"));
-                        assertEquals(Mode.ALLOW, evaluate(rule, "POST", "/items", "application/json", "{\"other\":\"delete\"}"));
+                        assertEquals(Mode.ASK, evaluate(rule, "POST", "/items", "application/json", "{\"action\":\"review\"}"));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "POST", "/items", "application/json", "{\"other\":\"review\"}"));
+                    }
+                    case 5 -> {
+                        assertEquals(Mode.ASK, evaluate(rule, "POST", "/api/items", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/api/items", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "POST", "/api/items/1", "", ""));
+                    }
+                    case 6 -> {
+                        assertEquals(Mode.BLOCK, evaluate(rule, "GET", "/items?operation=purge", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/items?other=purge", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/items?operation=purge-extra", "", ""));
                     }
                     default -> fail("unexpected preset");
                 }
             }
+            return null;
+        });
+    }
+
+    @Test void previewsExplainPositiveAndNegativeExamplesWithoutChangingTheDraft() throws Exception {
+        edt(() -> {
+            RuleEditor editor = new RuleEditor(null);
+            Rule initial = editor.value();
+            JComboBox<?> presets = get(editor, "rule.preset", JComboBox.class);
+            for (int i = 1; i < presets.getItemCount(); i++) {
+                presets.setSelectedIndex(i);
+                String hint = get(editor, "rule.presetHint", JTextArea.class).getText();
+                assertTrue(hint.contains("일치")); assertTrue(hint.contains("불일치"));
+                assertTrue(hint.contains("정책 저장은 별도"));
+                assertFalse(get(editor, "rule.presetHint", JTextArea.class).isEditable());
+                assertEquals(initial, editor.value());
+            }
+            return null;
+        });
+    }
+
+    @Test void jsonReviewExampleWorksWithDefaultGuardsAndNeverRewritesAnExistingDeleteRule() throws Exception {
+        edt(() -> {
+            Rule original = new Rule("legacy", "기존 삭제 검토", true, Mode.ASK,
+                    new Condition(Logic.LEAF, Field.JSON, "/action", Match.EXACT, "delete", false, List.of()));
+            RuleEditor editor = new RuleEditor(original);
+            assertEquals(original, editor.value());
+            get(editor, "rule.preset", JComboBox.class).setSelectedIndex(4);
+            assertEquals(original, editor.value());
+            get(editor, "rule.applyPreset", JButton.class).doClick();
+            List<Rule> rules = new java.util.ArrayList<>(GuardConfig.defaults().rules());
+            rules.add(editor.value());
+            GuardConfig config = new GuardConfig(1, List.of(new ScopeEntry(true, "api.example.test", "https", 443, "")),
+                    List.of(), rules, Mode.ALLOW, GuardConfig.defaults().limits());
+            for (String action : List.of("review", "delete")) {
+                RequestData request = new RequestData("POST", "https://api.example.test/items", "api.example.test", 443, true,
+                        List.of(new RequestData.Header("Content-Type", "application/json")),
+                        ("{\"action\":\"" + action + "\"}").getBytes(StandardCharsets.UTF_8));
+                assertEquals(action.equals("review") ? Mode.ASK : Mode.BLOCK, new PolicyEngine().evaluate(config, request).mode());
+            }
+            assertEquals("delete", original.condition().value());
             return null;
         });
     }

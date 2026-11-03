@@ -2,6 +2,8 @@
 
 Read AGENTS.md and INTERFACES.md first. This document records the second implementation wave's technical contract. That initial local/synthetic wave began after202 tests and did not include publication or native traffic. Current public-development/isolated-Burp authorization is in AGENTS.md; current results are in [VERIFICATION.md](VERIFICATION.md) and [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md). Historical task restrictions do not supersede the user's subsequent explicit authorization. The JSON-oriented UI task section below is historical: current guided forms, Korean tab order and independent dialog saves are specified in [UX_REDESIGN.md](UX_REDESIGN.md) and [UI.md](UI.md). Shared `GuardUiAccess.java` remains the unchanged UI/controller boundary.
 
+Current examples/shortcuts add only local UI navigation and draft filling: `UsageGuide` has no policy/traffic/storage access; table Enter/double-click uses the same guarded edit/read-only review paths; URL Enter fills only the target draft; rule selection previews before explicit filling; numeric recipes replace only three basic draft fields. None saves policy, resolves approvals or sends traffic implicitly. The original project/revision compare-and-set, hard gates and shared API remain unchanged. Current artifact-specific results must not inherit an older hash's native acceptance.
+
 ## Runtime task files (only RateGate.java, ApprovalQueue.java and corresponding tests/docs)
 
 Package `dev.cairnguard.runtime`.

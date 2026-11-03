@@ -178,6 +178,34 @@ class Run:
             assert data["body"].encode() == BODY
         self.case("exact target preserves allowed synthetic request values", preserved)
 
+    def examples(self):
+        """Human forms registered exact /safe + /api/items and the three documented rule examples."""
+        def get_is_not_asked():
+            before = len(self.state.snapshot())
+            response = self.request("/api/items")
+            assert response[0] == 200 and len(self.state.snapshot()) == before + 1
+        self.case("POST-path example does not ask for GET", get_is_not_asked)
+        self.case("example target does not include descendants", lambda: self.assert_block(
+            expected_reason="SCOPE_NOT_ALLOWED", path="/api/items/1", method="POST"))
+        self.case("query example blocks operation=purge", lambda: self.assert_block(
+            expected_reason="RULE_BLOCK", path="/api/items?operation=purge"))
+        self._example_approval("/api/items", b'{"name":"sample"}', "POST-path example: human approval")
+        self._example_approval("/safe", b'{"action":"review"}', "JSON review example: human approval")
+
+    def _example_approval(self, path, body, label):
+        def reviewed():
+            before = len(self.state.snapshot())
+            print("WAITING: " + label + "; inspect the human UI; do not approve before the one-second unresolved check", flush=True)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(self.request, path, "POST", body, {"Content-Type": "application/json"})
+                time.sleep(1)
+                assert len(self.state.snapshot()) == before, "Unresolved example approval reached fixture"
+                response = pending.result(timeout=38)
+            assert response[0] == 200 and response[1]["X-Fixture"] == "owned-loopback"
+            assert len(self.state.snapshot()) == before + 1
+            assert json.loads(response[2])["body"].encode() == body
+        self.case(label, reviewed)
+
     def default(self):
         self.basic()
         self.rate()
@@ -339,7 +367,7 @@ class Run:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=["empty", "exact", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
+    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
     parser.add_argument("--proxy-host", default="127.0.0.1", type=loopback)
     parser.add_argument("--proxy-port", default=8080, type=int)
     parser.add_argument("--port", default=18080, type=int)

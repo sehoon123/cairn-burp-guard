@@ -29,7 +29,8 @@ public final class RuleEditor implements EditorForm<Rule> {
     private final JCheckBox enabled = new JCheckBox("이 규칙 사용");
     private final JComboBox<Mode> mode = new JComboBox<>(Mode.values());
     private final JComboBox<Preset> preset = new JComboBox<>(Preset.values());
-    private final JButton applyPreset = new JButton("예제 적용");
+    private final JButton applyPreset = new JButton("예제로 폼 채우기");
+    private final JTextArea presetHelp = ConditionEditor.information("rule.presetHint", "예제의 동작과 일치·불일치 예시");
     private final JPanel conditionHost = new JPanel(new BorderLayout());
     private final JTextArea status = ConditionEditor.information("rule.status", "규칙 편집 상태");
     private final String id;
@@ -58,8 +59,12 @@ public final class RuleEditor implements EditorForm<Rule> {
         preset.setRenderer(new ConditionEditor.ChoiceRenderer(value -> value instanceof Preset item ? item.label : "예제를 선택하세요"));
         ConditionEditor.name(applyPreset, "rule.applyPreset", "선택한 규칙 예제 적용");
         applyPreset.setEnabled(false);
-        preset.addActionListener(event -> applyPreset.setEnabled(preset.getSelectedItem() != Preset.NONE));
+        preset.addActionListener(event -> {
+            applyPreset.setEnabled(preset.getSelectedItem() instanceof Preset selected && selected != Preset.NONE);
+            updatePresetHelp();
+        });
         applyPreset.addActionListener(event -> applyPreset());
+        updatePresetHelp();
         ((AbstractDocument) name.getDocument()).setDocumentFilter(new ConditionEditor.LengthFilter(256,
                 () -> status.setText("규칙 이름은 256자 이내로 입력하세요. 기존 이름을 자르지 않았습니다.")));
 
@@ -74,8 +79,7 @@ public final class RuleEditor implements EditorForm<Rule> {
         examples.add(preset, BorderLayout.CENTER);
         examples.add(applyPreset, BorderLayout.EAST);
         row(header, 3, ConditionEditor.label("빠른 시작", preset, "rule.presetLabel"), examples);
-        JTextArea presetHelp = ConditionEditor.information("rule.presetHint", "예제 적용 안내");
-        presetHelp.setText("예제 적용은 이름·동작·조건을 바꿉니다. 규칙 ID와 사용 여부는 유지됩니다. 기존 조건을 유지하려면 적용하지 마세요.");
+        presetHelp.setRows(3);
         GridBagConstraints help = constraints(0, 4);
         help.gridwidth = 2;
         header.add(presetHelp, help);
@@ -135,7 +139,11 @@ public final class RuleEditor implements EditorForm<Rule> {
                     Condition.leaf(Field.METHOD, Match.EXACT, "PATCH"),
                     Condition.leaf(Field.METHOD, Match.EXACT, "DELETE")));
             case ADMIN_PATH -> Condition.leaf(Field.PATH, Match.REGEX, "^/admin(?:/.*)?$");
-            case JSON_DELETE -> new Condition(Logic.LEAF, Field.JSON, "/action", Match.EXACT, "delete", false, List.of());
+            case JSON_REVIEW -> new Condition(Logic.LEAF, Field.JSON, "/action", Match.EXACT, "review", false, List.of());
+            case POST_PATH -> new Condition(Logic.AND, null, null, null, null, false, List.of(
+                    Condition.leaf(Field.METHOD, Match.EXACT, "POST"),
+                    Condition.leaf(Field.PATH, Match.EXACT, "/api/items")));
+            case QUERY_PURGE -> new Condition(Logic.LEAF, Field.QUERY, "operation", Match.EXACT, "purge", false, List.of());
             case NONE -> throw new IllegalStateException("NO_PRESET");
         };
         name.setText(selected.ruleName);
@@ -148,16 +156,33 @@ public final class RuleEditor implements EditorForm<Rule> {
         status.setText("예제의 이름·동작·조건을 폼에 반영했습니다. 내용을 확인한 뒤 저장하세요. 아직 적용된 정책은 바뀌지 않았습니다.");
     }
 
+    private void updatePresetHelp() {
+        Preset selected = preset.getSelectedItem() instanceof Preset item ? item : Preset.NONE;
+        presetHelp.setText(selected.help + "\n‘예제로 폼 채우기’는 이름·동작·조건만 바꿉니다. ID·사용 여부는 유지하며 정책 저장은 별도입니다.");
+    }
+
     private enum Preset {
-        NONE("예제를 선택하세요", "", Mode.BLOCK),
-        DELETE_METHOD("DELETE 요청 차단", "DELETE 요청 차단", Mode.BLOCK),
-        CHANGE_METHODS("변경 메서드 묶음 차단", "변경 메서드 요청 차단", Mode.BLOCK),
-        ADMIN_PATH("관리 경로 승인 요청", "관리 경로 승인 요청", Mode.ASK),
-        JSON_DELETE("JSON 삭제 작업 승인 요청", "JSON 삭제 작업 승인 요청", Mode.ASK);
+        NONE("예제를 선택하세요", "", Mode.BLOCK,
+                "예제를 선택하면 동작과 일치·불일치 예를 먼저 볼 수 있습니다. 선택만으로 기존 폼은 바뀌지 않습니다."),
+        DELETE_METHOD("DELETE 요청 차단", "DELETE 요청 차단", Mode.BLOCK,
+                "일치: DELETE /items → 차단. 불일치: GET /items. 이미 기본 규칙에 포함되어 있어 추가가 필요하지 않을 수 있습니다."),
+        CHANGE_METHODS("변경 메서드 묶음 차단", "변경 메서드 요청 차단", Mode.BLOCK,
+                "일치: POST·PUT·PATCH·DELETE → 차단 (OR 묶음). 불일치: GET·HEAD. 정상 수정 요청도 차단하므로 범위를 확인하세요."),
+        ADMIN_PATH("관리 경로 승인 요청", "관리 경로 승인 요청", Mode.ASK,
+                "일치: /admin, /admin/users → 승인 요청. 불일치: /administrator. 허용 범위와 다른 차단 규칙이 우선합니다."),
+        JSON_REVIEW("JSON action=review 승인 요청", "JSON 작업 확인", Mode.ASK,
+                "일치 본문: {\"action\":\"review\"} → 승인 요청. 불일치: {\"other\":\"review\"}. 기본 delete 차단은 그대로 유지됩니다."),
+        POST_PATH("POST /api/items 승인 요청", "POST API 작업 확인", Mode.ASK,
+                "일치: POST /api/items → 승인 요청 (AND 묶음). 불일치: GET /api/items, POST /api/items/1. 대상 범위도 등록해야 합니다."),
+        QUERY_PURGE("쿼리 operation=purge 차단", "특정 쿼리 작업 차단", Mode.BLOCK,
+                "일치: ?operation=purge → 차단. 불일치: ?operation=view, ?other=purge. 이름과 값을 구분해 비교합니다.");
         private final String label;
         private final String ruleName;
         private final Mode mode;
-        Preset(String label, String ruleName, Mode mode) { this.label = label; this.ruleName = ruleName; this.mode = mode; }
+        private final String help;
+        Preset(String label, String ruleName, Mode mode, String help) {
+            this.label = label; this.ruleName = ruleName; this.mode = mode; this.help = help;
+        }
     }
     private static String modeLabel(Mode mode) {
         if (mode == null) return "동작을 선택하세요";

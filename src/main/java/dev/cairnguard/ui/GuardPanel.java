@@ -34,6 +34,10 @@ import java.awt.FlowLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Rectangle;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -143,10 +147,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         resolve = button("traffic.resolve", "관련 설정 열기", this::resolveSelected);
         JPanel header = new JPanel(new BorderLayout(8, 0));
         header.add(version, BorderLayout.CENTER);
-        header.add(buttons(button("policy.refresh", "새로고침", () -> {
-            refreshNow();
-            if (available) message.setText("현재 프로젝트의 설정과 요청 기록을 다시 확인했습니다.");
-        })), BorderLayout.LINE_END);
+        header.add(buttons(button("help.examples", "사용 예시…", () -> showReadOnly("사용 예시 · 설정은 바뀌지 않음", UsageGuide.create())),
+                button("policy.refresh", "새로고침", () -> {
+                    refreshNow();
+                    if (available) message.setText("현재 프로젝트의 설정과 요청 기록을 다시 확인했습니다.");
+                })), BorderLayout.LINE_END);
         add(header, BorderLayout.NORTH);
         tabs.addTab("개요", dashboardTab());
         tabs.addTab("대상", scopeTab());
@@ -212,7 +217,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 policyButton(prefix + ".edit", "선택 항목 편집…", () -> editScope(blocked, false)),
                 policyButton(prefix + ".toggle", "사용 / 중지", () -> mutateScope(blocked, false)),
                 policyButton(prefix + ".delete", "삭제…", () -> mutateScope(blocked, true))), BorderLayout.NORTH);
-        panel.add(new JScrollPane(blocked ? blockTable : allowTable), BorderLayout.CENTER);
+        JTable list = blocked ? blockTable : allowTable;
+        installOpenAction(list, () -> editScope(blocked, false), "두 번 클릭 또는 Enter: 선택한 대상 편집 (저장 전에는 변경하지 않음)");
+        panel.add(new JScrollPane(list), BorderLayout.CENTER);
         return panel;
     }
 
@@ -225,6 +232,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 policyButton("rules.toggle", "사용 / 중지", () -> mutateRule(false)),
                 policyButton("rules.delete", "삭제…", () -> mutateRule(true))), BorderLayout.SOUTH);
         panel.add(header, BorderLayout.NORTH);
+        installOpenAction(rulesTable, () -> editRule(false), "두 번 클릭 또는 Enter: 선택한 규칙 편집 (저장 전에는 변경하지 않음)");
         panel.add(new JScrollPane(rulesTable), BorderLayout.CENTER);
         panel.add(note("rules.defaults", "기본 규칙: DELETE 메서드와 대소문자 구분 없는 ‘delete’ 문자열을 차단합니다. 보수적인 문자열 규칙은 정상 요청에도 일치할 수 있습니다. 이름을 바꾸거나 사용 여부를 조정하기 전에 조건을 확인하세요."), BorderLayout.SOUTH);
         return panel;
@@ -276,6 +284,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         outcomeFilter.addActionListener(e -> filterTraffic());
         bookmarksOnly.addItemListener(e -> filterTraffic());
         trafficTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting() && selectionUpdates == 0) showTrafficDetail(); });
+        installOpenAction(trafficTable, this::openTrafficDetail, "두 번 클릭 또는 Enter: 마스킹된 요청·응답 상세 보기");
         JTabbedPane details = named(new JTabbedPane(), "traffic.details");
         trafficDetails = details;
         JPanel explanation = new JPanel(new BorderLayout());
@@ -297,12 +306,16 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         panel.add(note("approval.help", "승인 요청 규칙에 걸린 요청만 한 번 승인할 수 있습니다. 메서드·주소·이유·마스킹된 요청을 먼저 확인하세요. 만료·설정 변경·프로젝트 변경·일시중지는 대기를 취소합니다. 필수 안전 차단은 여기에서 승인할 수 없습니다."), BorderLayout.NORTH);
         approvalTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting() && selectionUpdates == 0) showApprovalDetail(); });
+        installOpenAction(approvalTable, this::reviewApproval, "두 번 클릭 또는 Enter: 마스킹된 승인 증거 검토 (자동 승인하지 않음)");
         panel.add(new JScrollPane(approvalTable), BorderLayout.CENTER);
-        panel.add(buttons(button("approval.review", "선택 요청 검토…", () -> {
-            if (selected(approvalTable, approvalModel) == null) throw failure("SELECT_PENDING_APPROVAL_FIRST");
-            showReadOnly("승인 요청 검토 · 마스킹된 증거", new JScrollPane(approvalDetail));
-        }), approve, deny), BorderLayout.SOUTH);
+        panel.add(buttons(button("approval.review", "선택 요청 검토…", this::reviewApproval), approve, deny), BorderLayout.SOUTH);
         return panel;
+    }
+
+    private void reviewApproval() {
+        if (selected(approvalTable, approvalModel) == null) throw failure("SELECT_PENDING_APPROVAL_FIRST");
+        showApprovalDetail();
+        showReadOnly("승인 요청 검토 · 마스킹된 증거", new JScrollPane(approvalDetail));
     }
 
     private void editScope(boolean blocked, boolean add) {
@@ -914,6 +927,25 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 : new int[]{60, 180, 90, 330, 110, 70, 260};
         for (int col = 0; col < table.getColumnCount(); col++) table.getColumnModel().getColumn(col).setPreferredWidth(widths[col]);
         return table;
+    }
+    /** Local navigation only: Enter/double-click opens the same guarded editor/review as its button. */
+    private void installOpenAction(JTable table, Runnable action, String hint) {
+        table.setToolTipText(hint);
+        table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "guard.openRow");
+        table.getActionMap().put("guard.openRow", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent event) {
+                if (table.getSelectedRow() >= 0) guarded(action);
+            }
+        });
+        table.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                int row = table.rowAtPoint(event.getPoint());
+                if (!closed && SwingUtilities.isLeftMouseButton(event) && event.getClickCount() == 2 && row >= 0) {
+                    table.setRowSelectionInterval(row, row);
+                    guarded(action);
+                }
+            }
+        });
     }
     private static <T> T selected(JTable table, RowsModel<T> model) { int index = modelIndex(table, table.getSelectedRow(), model.rows.size()); return index < 0 ? null : model.rows.get(index); }
     private static int modelIndex(JTable table, int view, int size) {

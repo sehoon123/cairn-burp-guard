@@ -40,6 +40,7 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Rectangle;
 import java.math.BigDecimal;
@@ -148,7 +149,15 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         row(basic, 1, "기본 호스트당 초당 요청 수", perHostRps);
         row(basic, 2, "최대 동시 요청 수", maxConcurrent);
         content.add(basic);
-        content.add(wrapped("settings.basic.help", "RPS는 초당 전송할 요청 수입니다 (1~1,000). 숫자는 쉼표 없이 입력하세요. 전체 속도와 호스트별 속도를 함께 제한합니다. 동시 요청 수는 응답을 기다리는 요청의 최대 개수입니다 (1~100)."));
+        JPanel presets = named(new JPanel(new GridLayout(1, 2, 6, 0)), "settings.presets", "일반 숫자 예시 · 전체 RPS / 호스트 RPS / 동시 요청");
+        JButton slow = named(new JButton("천천히 · 1/1/1"), "settings.preset.slow", "전체·기본 호스트 RPS·동시 요청을 각각 1로 폼에 채우기");
+        JButton standard = named(new JButton("기본 · 5/5/5"), "settings.preset.standard", "전체·기본 호스트 RPS·동시 요청을 각각 5로 폼에 채우기");
+        slow.addActionListener(e -> fillBasic(1));
+        standard.addActionListener(e -> fillBasic(5));
+        presets.add(slow); presets.add(standard);
+        content.add(presets);
+        content.add(wrapped("settings.presets.help", "숫자 예시: 전체 RPS / 기본 호스트 RPS / 동시 요청. 버튼은 이 3개만 채웁니다. 상세 설정·호스트 예외는 유지하며 저장은 별도입니다."));
+        content.add(wrapped("settings.basic.help", "예: 전체 5·호스트 2이면 한 호스트는 기본 초당 2회, 여러 호스트 합산 초당 5회까지 전송을 허가합니다. 동시 요청 1은 응답을 기다리는 요청이 하나라는 뜻입니다 (워커 수 아님). RPS 1~1,000·동시 요청 1~100이며 쉼표 없이 입력하세요."));
         content.add(advancedToggle);
         JPanel timing = grid("settings.timing", "대기와 기본 동작");
         row(timing, 0, "전송 대기열 크기 (0~10,000)", maxQueued);
@@ -219,6 +228,19 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         } catch (RuntimeException e) { throw failure(POLICY_ERROR, true); }
         validation.setText(" ");
         return new Value(mode, limits);
+    }
+
+    /** Explicit local draft replacement only; advanced values and an active host-table edit stay untouched. */
+    private void fillBasic(int value) {
+        requireEdt();
+        for (JSpinner spinner : List.of(globalRps, perHostRps, maxConcurrent)) {
+            BigDecimal next = BigDecimal.valueOf(value);
+            spinner.setValue(next);
+            JFormattedTextField text = ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField();
+            text.setValue(next); // Replace even an invalid typed draft when the model already has this value.
+            text.putClientProperty(TOO_LONG, Boolean.FALSE);
+        }
+        validation.setText("일반 숫자 3개를 폼에 채웠습니다. 상세 설정·호스트 예외는 그대로이며 아직 정책을 저장하지 않았습니다.");
     }
 
     private int integer(JSpinner spinner, int min, int max, String message, boolean detailed) {

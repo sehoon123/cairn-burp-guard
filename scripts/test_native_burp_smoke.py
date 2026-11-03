@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from native_burp_smoke import BODY, SYNTHETIC_AUTH, SYNTHETIC_COOKIE, Run, State, loopback
 
@@ -80,6 +81,45 @@ class NativeSmokeHarnessTest(unittest.TestCase):
                 return 200, {"X-Fixture": "owned-loopback"}, b""
         with self.assertRaises(AssertionError):
             BroadRun(None, State()).exact()
+
+    def test_examples_phase_checks_named_query_post_path_and_json_recipes(self):
+        owner = self
+        class SyntheticRun(Run):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False):
+                owner.assertFalse(second)
+                if path == "/api/items/1" or "operation=purge" in path:
+                    reason = "SCOPE_NOT_ALLOWED" if path.endswith("/1") else "RULE_BLOCK"
+                    return 451, {}, json.dumps(dict(owner.payload, reason=reason)).encode()
+                self.state.events.append({"method": method, "path": path})
+                return 200, {"X-Fixture": "owned-loopback"}, json.dumps({"body": (body or b"").decode()}).encode()
+        class DeferredPool:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def submit(self, function, *args):
+                class Pending:
+                    def result(self, timeout=None): return function(*args)
+                return Pending()
+        run = SyntheticRun(None, State())
+        with patch("native_burp_smoke.ThreadPoolExecutor", DeferredPool), patch("native_burp_smoke.time.sleep"):
+            run.examples()
+        self.assertEqual(5, len(run.results))
+        self.assertEqual(["GET", "POST", "POST"], [e["method"] for e in run.state.snapshot()])
+
+    def test_example_approval_rejects_any_arrival_before_the_human_decision(self):
+        run = Run(None, State())
+        def premature(*args):
+            run.state.events.append({"synthetic": True})
+            return 200, {"X-Fixture": "owned-loopback"}, b"{}"
+        run.request = premature
+        class ImmediatePool:
+            def __init__(self, **kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def submit(self, function, *args): function(*args); return None
+        with patch("native_burp_smoke.ThreadPoolExecutor", ImmediatePool), patch("native_burp_smoke.time.sleep"):
+            with self.assertRaisesRegex(AssertionError, "Unresolved example approval"):
+                run._example_approval("/safe", b"{}", "synthetic offline case")
 
     def test_optimized_python_is_refused_before_any_fixture_or_client_starts(self):
         result = subprocess.run([sys.executable, "-O", str(Path(__file__).with_name("native_burp_smoke.py")),

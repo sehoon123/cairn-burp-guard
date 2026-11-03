@@ -84,6 +84,26 @@ class ScopeEditorTest {
         });
     }
 
+    @Test void enterExplicitlyFillsExactScopeAndStillRejectsSensitiveUrlWithoutAnImplicitOldSave() throws Exception {
+        edt(() -> {
+            ScopeEditor editor = new ScopeEditor(ORIGINAL);
+            JTextField input = get(editor, "scope.url", JTextField.class);
+            input.setText("http://127.0.0.1:18080/safe");
+            input.postActionEvent();
+            ScopeEntry result = editor.value();
+            assertEquals("127.0.0.1", result.host()); assertEquals(18080, result.port());
+            assertTrue(matches(result, "/safe")); assertFalse(matches(result, "/safe/child"));
+            assertTrue(get(editor, "scope.urlGuidance", JTextArea.class).getText().contains("Enter"));
+            assertTrue(get(editor, "scope.pathGuidance", JTextArea.class).getText().contains("/api/items/1"));
+            input.setText("https://user:" + SECRET + "@example.test/api");
+            input.postActionEvent();
+            assertEquals("127.0.0.1", get(editor, "scope.host", JTextField.class).getText());
+            assertThrows(FormValidationException.class, editor::value);
+            assertFalse(get(editor, "scope.message", JTextArea.class).getText().contains(SECRET));
+            return null;
+        });
+    }
+
     @Test void defaultPortsRootAndRawEncodedPathAreKeptWithoutDecodingOrNormalization() throws Exception {
         edt(() -> {
             for (String address : List.of("https://example.test", "http://example.test/", "https://example.test:8443/a%2Fb/")) {

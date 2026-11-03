@@ -28,6 +28,9 @@ import javax.swing.plaf.basic.BasicHTML;
 import javax.swing.text.AbstractDocument;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
+import java.awt.event.MouseEvent;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -75,12 +78,92 @@ class GuardPanelTest {
         });
     }
 
+    @Test void examplesAreCopyableReadOnlyAndCannotChangePolicyOrResolveApprovals() throws Exception {
+        open();
+        GuardConfig original = access.policy; int refreshes = access.refreshes;
+        dialogs.editScript = (form, close) -> {
+            assertEquals(3, get("help.examples.tabs", JTabbedPane.class).getTabCount());
+            for (String name : List.of("scope", "rules", "limits")) {
+                JTextArea text = get("help.examples." + name, JTextArea.class);
+                assertFalse(text.isEditable()); assertTrue(text.isFocusable());
+                assertInstanceOf(NonScrollingCaret.class, text.getCaret());
+                assertFalse(text.getText().contains(SECRET));
+            }
+            assertTrue(get("help.examples.rules", JTextArea.class).getText().contains("operation=purge"));
+            close.run();
+        };
+        edt(() -> { click("help.examples"); return null; });
+        assertEquals(original, access.policy); assertEquals(refreshes, access.refreshes);
+        assertEquals(0, access.updates); assertEquals(0, access.exportCalls); assertTrue(access.decisions.isEmpty());
+    }
+
+    @Test void enterAndDoubleClickOpenTheCorrectSortedRowEditorWithoutSaving() throws Exception {
+        GuardConfig d = policyWithAllow();
+        ScopeEntry block = new ScopeEntry(true, "example.test", "https", 443, "/admin.*");
+        access.policy = new GuardConfig(1, d.allowScope(), List.of(block), d.rules(), d.defaultMode(), d.limits());
+        open(); List<Object> opened = new ArrayList<>();
+        dialogs.editScript = (form, save) -> opened.add(form.value());
+        edt(() -> {
+            JTable allow = get("scope.allow.table", JTable.class);
+            allow.setRowSelectionInterval(0, 0); pressEnter(allow);
+            mouseClick(get("scope.block.table", JTable.class), 0, 2, MouseEvent.BUTTON1);
+            JTable rules = get("rules.table", JTable.class);
+            rules.getRowSorter().toggleSortOrder(1); rules.setRowSelectionInterval(0, 0);
+            Rule expected = access.policy.rules().get(rules.convertRowIndexToModel(0));
+            pressEnter(rules);
+            assertEquals(List.of(d.allowScope().getFirst(), block, expected), opened);
+            return null;
+        });
+        assertEquals(0, access.updateAttempts); assertTrue(dialogs.errors.isEmpty());
+    }
+
+    @Test void emptySelectionSingleClickRightClickAndEmptyAreaDoNotOpenEditors() throws Exception {
+        access.policy = policyWithAllow(); open();
+        edt(() -> {
+            JTable table = get("scope.allow.table", JTable.class);
+            table.clearSelection(); pressEnter(table);
+            mouseClick(table, 0, 1, MouseEvent.BUTTON1);
+            mouseClick(table, 0, 2, MouseEvent.BUTTON3);
+            table.dispatchEvent(new MouseEvent(table, MouseEvent.MOUSE_CLICKED, 0, 0, 4, table.getRowHeight() * 3, 2, false, MouseEvent.BUTTON1));
+            assertEquals(0, dialogs.edits);
+            return null;
+        });
+        assertEquals(0, access.updates); assertTrue(dialogs.errors.isEmpty());
+    }
+
+    @Test void trafficAndApprovalShortcutsOnlyReviewMaskedEvidenceAndNeverApproveOrSend() throws Exception {
+        access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> {
+            trafficTable().setRowSelectionInterval(0, 0); pressEnter(trafficTable());
+            assertFalse(get("traffic.request", JTextArea.class).isEditable());
+            assertFalse(get("traffic.request", JTextArea.class).getText().contains(SECRET));
+            mouseClick(get("approval.table", JTable.class), 0, 2, MouseEvent.BUTTON1);
+            assertTrue(get("approval.detail", JTextArea.class).getText().contains("마스킹"));
+            assertEquals(2, dialogs.edits);
+            panel.close(); pressEnter(trafficTable()); assertEquals(2, dialogs.edits);
+            return null;
+        });
+        assertTrue(access.decisions.isEmpty()); assertEquals(1, access.pending.size());
+        assertEquals(0, access.updates); assertNull(access.lastBookmarked); assertEquals(0, access.exportCalls);
+    }
+
+    @Test void keyboardEditingCannotBypassTheVisibleSnapshotRevisionGuard() throws Exception {
+        access.policy = policyWithAllow(); open();
+        edt(() -> {
+            JTable table = get("scope.allow.table", JTable.class); table.setRowSelectionInterval(0, 0);
+            access.revision++; pressEnter(table);
+            assertEquals(0, dialogs.edits); assertFalse(dialogs.errors.isEmpty());
+            return null;
+        });
+        assertEquals(0, access.updateAttempts);
+    }
+
     @Test void targetUrlRegistrationIsExplicitExactAndAppliesOnlyScope() throws Exception {
         open();
         dialogs.editScript = (form, save) -> {
             assertInstanceOf(ScopeEditor.class, form);
             get("scope.url", JTextField.class).setText("https://example.test/api");
-            click("scope.fillUrl");
+            get("scope.url", JTextField.class).postActionEvent();
             assertEquals(0, access.updates);
             save.run();
         };
@@ -610,6 +693,16 @@ class GuardPanelTest {
     private JButton button(String name) { return get(name, JButton.class); }
     private JTable trafficTable() { return get("traffic.table", JTable.class); }
     private void click(String name) { button(name).doClick(0); }
+    private static void pressEnter(JTable table) {
+        Object key = table.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0));
+        assertEquals("guard.openRow", key);
+        table.getActionMap().get(key).actionPerformed(new ActionEvent(table, ActionEvent.ACTION_PERFORMED, "Enter"));
+    }
+    private static void mouseClick(JTable table, int row, int count, int button) {
+        table.setSize(900, 220);
+        java.awt.Rectangle cell = table.getCellRect(row, 0, true);
+        table.dispatchEvent(new MouseEvent(table, MouseEvent.MOUSE_CLICKED, 0, 0, cell.x + 4, cell.y + 4, count, false, button));
+    }
     private void selectRule(String id) {
         JTable table = get("rules.table", JTable.class);
         int model = java.util.stream.IntStream.range(0, access.policy.rules().size()).filter(i -> access.policy.rules().get(i).id().equals(id)).findFirst().orElseThrow();

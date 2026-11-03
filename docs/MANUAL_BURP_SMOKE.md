@@ -16,9 +16,23 @@ Record installed product version/build, exact distribution JAR SHA256, fixture p
 
 CAIRN itself and forced network egress are separate acceptance tests. No Burp control API/extension is supplied to a worker by this checklist.
 
-## Guided-UI regression (12 logical cases)
+## Examples/shortcuts regression (current artifact:13 logical cases)
 
-This is the limited workflow exercised on the current guided-UI JAR. Record its exact hash; do not call the broader historical matrix below a current-build rerun. All configuration/decisions are local human UI actions, not script/worker controls.
+Use a clean disposable project and keep both built-in guards. If8080 belongs to another instance, select an unused loopback listener in the disposable product UI and append `--proxy-port <owned-listener-port>` to **every** phase command. Never stop or reconfigure a live instance. All configuration and decisions remain human UI actions.
+
+1. Open **사용 예시…**, read its three tabs, then close it. No policy revision should change. Run `python3 scripts/native_burp_smoke.py --phase empty`.
+2. Register exact `http://127.0.0.1:18080/safe` through the URL field: type → **Enter** → review preview → **저장하고 적용**. Enter must leave the draft open, not save it. Run `--phase exact` (6 logical cases). Test target-table double-click/Enter, then cancel without changing policy.
+3. Register the separate exact URL `http://127.0.0.1:18080/api/items`. In **규칙 만들기…**, create and explicitly save each recipe: **POST /api/items 승인 요청**, **JSON action=review 승인 요청**, **쿼리 operation=purge 차단**. First select and inspect the match/non-match preview: the original draft must stay unchanged until **예제로 폼 채우기**. Do not replace either built-in rule. Test rule-table opening and cancel.
+4. Open settings. Check **천천히 · 1/1/1** and **기본 · 5/5/5** fill only the three basic fields. Nothing is saved before **저장하고 적용**. For the recorded run, explicitly save1/1/1; retain default advanced settings and no host overrides. This does **not** measure pacing/concurrency.
+5. Run `--phase examples` (5 cases). GET `/api/items` arrives; POST `/api/items/1` is outside scope; `?operation=purge` gets `RULE_BLOCK`. Then two requests wait in turn: POST `/api/items` and JSON `{"action":"review"}` to `/safe`. Let each pass the script's one-second no-arrival check; use table Enter/double-click to review masked evidence, close, then separately choose **한 번만 승인**. Review-only navigation must not resolve the request. Do not change policy while waiting.
+6. In **개요**, pause new requests, run `--phase paused`, then resume. No fixture arrival is allowed while paused.
+7. Review masked traffic via Enter/double-click. Export full current-table JSON, then search POST, select its original synthetic-secret200 row and export selected HAR. Verify **14 JSON entries / 1 HAR entry**, mode0600 and absence of the four synthetic secret values.
+
+This subset is **4 phases / 13 logical cases / 14 requests = 6 upstream200 + 8 local451**. It does not rerun native denial/expiry/policy-change cancellation or the historical HTTPS/rate/concurrency/queue/quarantine matrix. Offline self-checks of `--phase examples` are not native observations. See [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md) for the exact current hash and historical separation.
+
+## Earlier guided-UI regression (a924 artifact:12 logical cases)
+
+The following limited workflow was exercised on the **previous** guided-UI JAR (`a924…b2cc`), not the current examples/shortcuts artifact. Record its exact hash; do not call the broader historical matrix below a current-build rerun. All configuration/decisions are local human UI actions, not script/worker controls.
 
 1. Load a clean disposable instance with the empty allowlist; run `python3 scripts/native_burp_smoke.py --phase empty`.
 2. In **개요 → 허용 대상 등록…**, enter `http://127.0.0.1:18080/safe`, choose **폼에 반영**, review the exact host/port/path preview and **저장하고 적용**. Retain both default rules. Run `--phase exact`: GET/HEAD and synthetic POST must arrive; `/safe/child`, `/safex`, DELETE and the encoded delete query must not.
