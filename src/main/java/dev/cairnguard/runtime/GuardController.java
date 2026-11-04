@@ -23,6 +23,11 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     /** Only masked evidence reference and categorical policy results survive into a wait. */
     public record Prepared(String evidenceId, String projectId, long revision, String rateHost, Decision decision) {}
     public record Admission(boolean allowed, String reason, RateGate.Permit permit) {}
+    /** No native/raw data; final bypass commit must still match this exact runtime generation. */
+    public record PassthroughToken(String projectId, long revision) {}
+    /** Exactly one of: protected (both null), valid OFF token, or data-free rejection. */
+    public record NativeMode(PassthroughToken token, String rejection) {}
+    private static final NativeMode PROTECTED = new NativeMode(null, null);
     private final Object mutation = new Object();
     private final ProjectAccess projects;
     private final PolicyEngine engine = new PolicyEngine();
@@ -32,8 +37,12 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     private final AtomicReference<State> state = new AtomicReference<>(new State(
             new ProjectAccess.Ref("unavailable", "Current Burp project"), GuardConfig.defaults(), 0));
     private volatile boolean paused;
-    // Guarded by mutation. A generic Resume cannot restore an uncertain cached policy.
-    private boolean reloadRequired;
+    private volatile boolean passthrough;
+    private boolean passthroughEnded;
+    // Guarded by mutation; never saved to the project and never includes request metadata.
+    private long passthroughCount;
+    // Written under mutation, also read by the native fast path. Resume cannot restore an uncertain policy.
+    private volatile boolean reloadRequired;
     private volatile boolean closed;
     private volatile String note = "INITIALIZING";
 
@@ -83,6 +92,44 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             return reject(p, "CANCELLED");
         }
     }
+    /** OFF applies only at the native boundary, never by approving a protected Prepared request. */
+    public NativeMode nativeMode() {
+        // Read the mode BEFORE its validity flags: automatic OFF exit publishes those
+        // flags/state before clearing this volatile bit, so an ON fast path sees them.
+        boolean off = passthrough;
+        if (closed) return new NativeMode(null, "SHUTDOWN");
+        if (reloadRequired) return new NativeMode(null, "PAUSED");
+        if (!off) return PROTECTED; // Normal ON callbacks do not serialize on UI save/load.
+        synchronized (mutation) {
+            if (closed) return new NativeMode(null, "SHUTDOWN");
+            if (reloadRequired) return new NativeMode(null, "PAUSED");
+            if (!passthrough) return PROTECTED;
+            State s = state.get();
+            if (!passthroughCurrent(s.project().id(), s.revision()))
+                return new NativeMode(null, "PROJECT_CHANGED"); // NEVER fall back to native capture.
+            return new NativeMode(new PassthroughToken(s.project().id(), s.revision()), null);
+        }
+    }
+    public PassthroughToken passthroughToken() { return nativeMode().token(); }
+    /** Atomic with human mode/project changes; called AFTER building the original-object action. */
+    public boolean commitPassthrough(PassthroughToken token) {
+        synchronized (mutation) {
+            if (token == null || !passthroughCurrent(token.projectId(), token.revision())) return false;
+            if (passthroughCount < Long.MAX_VALUE) passthroughCount++;
+            return true;
+        }
+    }
+    private boolean passthroughCurrent(String projectId, long revision) {
+        State s = state.get();
+        if (!passthrough || closed || paused || reloadRequired
+                || !s.project().id().equals(projectId) || s.revision() != revision) return false;
+        if (liveProject(projectId)) return true;
+        // Called only under mutation. A detected A->B->A (or temporary lookup failure)
+        // must not revive a previous human OFF choice before the UI's next refresh.
+        failClosed(); note = "PROJECT_UNVERIFIED_PASSTHROUGH_ENDED";
+        approvals.cancelAll("PROJECT_CHANGED"); gate.update(s.config().limits());
+        return false;
+    }
     /** Atomic with UI policy/project/pause updates. Native side effects have not yet begun. */
     public boolean commit(Prepared p) {
         synchronized (mutation) {
@@ -113,6 +160,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         try {
             if (!projectId.equals(projects.current().id())) return "PROJECT_CHANGED";
         } catch (RuntimeException e) { return "PROJECT_CHANGED"; }
+        if (passthrough) return "POLICY_CHANGED"; // Never drain protected callbacks through OFF.
         return null;
     }
     @Override public GuardConfig config() { return state.get().config(); }
@@ -127,15 +175,13 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             try { projects.save(document); }
             catch (RuntimeException e) {
                 note = "POLICY_SAVE_UNCERTAIN_RELOAD_BEFORE_CONTINUING";
-                paused = true;
-                reloadRequired = true;
+                failClosed();
                 approvals.cancelAll("POLICY_CHANGED");
                 gate.update(old.config().limits());
                 throw new IllegalStateException("POLICY_SAVE_UNCERTAIN");
             }
             if (!liveProject(old.project().id())) {
-                paused = true;
-                reloadRequired = true;
+                failClosed();
                 note = "PROJECT_CHANGED_DURING_SAVE";
                 approvals.cancelAll("PROJECT_CHANGED");
                 gate.update(old.config().limits());
@@ -156,8 +202,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 ref = projects.current();
                 if (ref.id() == null || ref.id().isBlank() || ref.id().length() > 512) throw new IllegalStateException();
             } catch (RuntimeException e) {
-                paused = true;
-                reloadRequired = true;
+                failClosed();
                 note = "PROJECT_UNAVAILABLE";
                 approvals.cancelAll("PROJECT_CHANGED");
                 return;
@@ -173,13 +218,25 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             } catch (RuntimeException e) {
                 config = GuardConfig.defaults(); invalid = true;
             }
+            passthroughEnded |= passthrough;
+            if (!old.project().id().equals(ref.id())) passthroughCount = 0;
             state.set(new State(ref, config, old.revision() + 1));
             approvals.cancelAll("PROJECT_CHANGED");
             gate.update(config.limits());
             paused = invalid || paused;
             reloadRequired = invalid;
             note = invalid ? "PROJECT_POLICY_INVALID_DEFAULT_DENY_PAUSED" : "PROJECT_POLICY_LOADED";
+            passthrough = false; // Publish the verified/rejecting replacement state before ON.
         }
+    }
+    /** Guarded by mutation. Operational changes invalidate old human drafts/tokens as well. */
+    private void failClosed() {
+        State s = state.get();
+        if (passthrough || !paused || !reloadRequired)
+            state.set(new State(s.project(), s.config(), s.revision() + 1));
+        passthroughEnded |= passthrough;
+        reloadRequired = true; paused = true;
+        passthrough = false; // Volatile publication: an ON fast path must see rejection first.
     }
     private boolean liveProject(String projectId) {
         try { return projectId.equals(projects.current().id()); }
@@ -198,15 +255,19 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         } catch (IOException e) { throw new IllegalArgumentException("INVALID_PROJECT_POLICY"); }
     }
     @Override public Map<String,Object> status() {
-        State s = state.get();
-        Map<String,Object> result = new LinkedHashMap<>();
-        result.put("projectId", s.project().id());
-        // Do not put an uncontrolled native project name in operational status/error strings.
-        result.put("projectName", "Current Burp project");
-        result.put("revision", s.revision()); result.put("paused", paused); result.put("closed", closed);
-        result.put("note", note); result.put("evidence", evidence.stats()); result.put("gate", gate.snapshot());
-        result.put("approvalCount", approvals.snapshot().size());
-        return Map.copyOf(result);
+        synchronized (mutation) {
+            State s = state.get();
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("projectId", s.project().id());
+            // Do not put an uncontrolled native project name in operational status/error strings.
+            result.put("projectName", "Current Burp project");
+            result.put("revision", s.revision()); result.put("paused", paused); result.put("closed", closed);
+            result.put("passthrough", passthrough); result.put("passthroughCount", passthroughCount);
+            result.put("passthroughEnded", passthroughEnded); result.put("passthroughAvailable", !closed && !reloadRequired);
+            result.put("note", note); result.put("evidence", evidence.stats()); result.put("gate", gate.snapshot());
+            result.put("approvalCount", approvals.snapshot().size());
+            return Map.copyOf(result);
+        }
     }
     @Override public List<TrafficEntry> traffic() { return evidence.snapshot(); }
     @Override public List<ApprovalQueue.Pending> approvals() { return approvals.snapshot(); }
@@ -219,6 +280,8 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         synchronized (mutation) {
             if (closed) return;
             if (!value && reloadRequired) throw new IllegalStateException("PROJECT_POLICY_RELOAD_REQUIRED");
+            passthroughEnded = false;
+            passthrough = false; // Block/Resume is a deliberate return to protected handling.
             paused = value;
             State s = state.get();
             state.set(new State(s.project(), s.config(), s.revision() + 1));
@@ -227,9 +290,25 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             note = value ? "PAUSED_NEW_PROXY_REQUESTS_BLOCKED" : "RESUMED";
         }
     }
+    @Override public void passthrough(boolean enabled, String expectedProjectId, long expectedRevision) {
+        synchronized (mutation) {
+            State s = state.get();
+            if (closed || !s.project().id().equals(expectedProjectId) || s.revision() != expectedRevision
+                    || !liveProject(s.project().id())) throw new IllegalStateException("STALE_PROTECTION_STATE");
+            if (enabled && reloadRequired) throw new IllegalStateException("PROJECT_POLICY_RELOAD_REQUIRED");
+            if (passthrough == enabled) return;
+            passthrough = enabled;
+            passthroughEnded = false;
+            paused = !enabled && reloadRequired;
+            state.set(new State(s.project(), s.config(), s.revision() + 1));
+            approvals.cancelAll("POLICY_CHANGED");
+            gate.update(s.config().limits()); // Wake/cancel waits, NEVER recycle existing native permits.
+            note = enabled ? "PASSTHROUGH_PROTECTION_OFF_NO_CAPTURE" : "PROTECTION_RESTORED";
+        }
+    }
     @Override public void close() {
         synchronized (mutation) {
-            closed = true; paused = true; note = "SHUTDOWN";
+            closed = true; paused = true; passthrough = false; note = "SHUTDOWN";
             approvals.close(); gate.close();
         }
     }

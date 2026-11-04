@@ -1,8 +1,20 @@
 # Verification status — 2026-11-04
 
-This is an independent **development preview**, not a certified safety boundary or a finished production release. Source, automated checks and installed-Burp observations are separate evidence. Results distinguish the current examples/shortcuts artifact from both earlier artifacts; do not combine their native totals.
+This is an independent **development preview**, not a certified safety boundary or a finished production release. Source, automated checks and installed-Burp observations are separate evidence. Results distinguish this development preview from the previous published examples/shortcuts artifact and two older artifacts; do not combine their native totals.
 
-## Current examples/shortcuts artifact
+## Current modal/passthrough/condition-add development preview
+
+Release tag: `dev-2026-11-04-conditions-passthrough`. The user explicitly requested publishing this limited bug-fix preview; expanded-feature design sign-off remains separate and incomplete. Automated results: **845 Java cases / 25 suites**, **20 real Swing desktop cases / 2 suites** (14/28-point fonts, explicit X11 display; also rerun with UI scale2), **35 Python checks** (18 template +17 offline harness). Real Enter/Escape/Tab/Space and mouse events were exercised only in the disposable Swing harness, **not native Burp**. Inherited Wayland/session-bus/nonreparenting environment is excluded from this harness; no global desktop settings change.
+
+Preview JAR SHA256: `4232ae63d0a158d294fbe9ee3cf40cf58b9e8bdc85a300c8f829a5135b4bd159`.
+
+Desktop condition regressions use real mouse actions for root/sibling/AND/OR additions and explicit save, assert actual focus on the new value, reopen/compare the form, and verify row bounds after one native resize without a second user edit. Field values themselves are set programmatically. The final toolkit runs used an authenticated nested1440×1000 X11 display, at UI scales1 and2. These are not Burp LAF/platform/accessibility certification.
+
+Expanded-spec review is **incomplete**: one requested-model independent review plus orchestrator draft completed; two requested-model sessions were stopped by the provider. No model substitution or full consensus claim. That independent reviewer reproduced the previous frozen `5c7839e3…3a0a69` source/JAR and839/25 tests. A subsequent requested-model scoped implementation audit accepted the whitespace/deselection/visibility/grant-issuance fixes for a development preview, but found an in-pass parent-revalidation defect in the wrapping layout. That defect was fixed by deferring revalidation until after the pass, with displayability/parent/width checks; a separate requested-model narrow follow-up reproduced the old/new headless behavior and accepted the correction. A deterministic regression fails on the old inline call; the minimal no-viewport layout checks also prime the preferred-size cache. These code reviews are not full-spec/four-way/native approval, and did not independently rebuild or byte-verify this final JAR. The final clean automated run above and hash are local evidence. See [review status and proposal](AVAILABILITY_REVIEW.md).
+
+**Native Burp has not yet been exercised on this preview JAR.** The evidence below belongs to the older examples JAR only. EXEMPT, ResponseWatcher, overlays, intent budgets, incident export, per-host RR/listener selection and schema2 are proposed expanded work, not implemented acceptance. Grant masking has focused automated header/reflection and first-issuance JSON/echo/export regressions; these are not native grant-header/broker tests.
+
+## Previous published examples/shortcuts artifact
 
 `cairn-proxy-guard-0.1.0-SNAPSHOT.jar`, Java21 / Montoya API2026.7:
 

@@ -77,6 +77,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTabbedPane tabs = named(new JTabbedPane(), "tabs");
     private final JLabel message = named(new JLabel("현재 상태를 확인하고 있습니다…"), "message");
     private final JLabel version = named(new JLabel("프로젝트 확인 중"), "policy.version");
+    private final JLabel protectionState = named(new JLabel("보호 상태 확인 중"), "protection.state");
+    private final JButton passthrough;
+    private final JLabel passthroughCounter = named(new JLabel(), "protection.passthroughCount");
     private final JLabel stateTitle = named(new JLabel("보호 상태 확인 중"), "dashboard.state");
     private final JTextArea stateHelp = note("dashboard.guidance", "");
     private final JLabel scopeCount = named(new JLabel(), "dashboard.scopeCount");
@@ -141,17 +144,20 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         this.dialogs = Objects.requireNonNull(dialogs);
         setLayout(new BorderLayout(8, 8));
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        pause = button("dashboard.pause", "일시중지", this::togglePause);
+        pause = button("dashboard.pause", "새 요청 모두 차단", this::togglePause);
+        passthrough = button("protection.passthrough", "모두 통과 (보호 끔)…", this::togglePassthrough);
+        protectionState.setFont(new javax.swing.plaf.FontUIResource(protectionState.getFont().deriveFont(java.awt.Font.BOLD)));
         approve = button("approval.approve", "한 번만 승인", () -> decide(true));
         deny = button("approval.deny", "거절", () -> decide(false));
         resolve = button("traffic.resolve", "관련 설정 열기", this::resolveSelected);
-        JPanel header = new JPanel(new BorderLayout(8, 0));
-        header.add(version, BorderLayout.CENTER);
-        header.add(buttons(button("help.examples", "사용 예시…", () -> showReadOnly("사용 예시 · 설정은 바뀌지 않음", UsageGuide.create())),
+        JPanel header = new JPanel(new BorderLayout(8, 2));
+        header.add(version, BorderLayout.NORTH);
+        header.add(buttons(protectionState, passthrough, passthroughCounter,
+                button("help.examples", "사용 예시…", () -> showReadOnly("사용 예시 · 설정은 바뀌지 않음", UsageGuide.create())),
                 button("policy.refresh", "새로고침", () -> {
                     refreshNow();
                     if (available) message.setText("현재 프로젝트의 설정과 요청 기록을 다시 확인했습니다.");
-                })), BorderLayout.LINE_END);
+                })), BorderLayout.CENTER);
         add(header, BorderLayout.NORTH);
         tabs.addTab("개요", dashboardTab());
         tabs.addTab("대상", scopeTab());
@@ -473,19 +479,48 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         catch (IllegalStateException e) { refreshNow(); throw failure("UPDATE_REJECTED"); }
         catch (IllegalArgumentException e) { throw failure("INVALID_POLICY"); }
         refreshNow();
-        message.setText("설정을 저장했습니다. 현재 프로젝트에 적용했으며 이전 승인 대기는 취소됩니다.");
+        message.setText(Boolean.TRUE.equals(latestStatus.get("passthrough"))
+                ? "설정을 저장했습니다. 현재는 전체 통과 상태이므로 보호를 다시 켜야 검사합니다."
+                : "설정을 저장했습니다. 현재 프로젝트에 적용했으며 이전 승인 대기는 취소됩니다.");
     }
 
     private void togglePause() {
+        if (!available) {
+            // Snapshot/render failures must not strand OFF without a way to block new requests.
+            // This path can ONLY block, never resume or grant passthrough on stale state.
+            try { access.pause(true); } finally { refreshNow(); }
+            message.setText("새 요청 차단을 요청했습니다. 상태 표시가 복구될 때까지 요청 발생을 멈추고 Burp를 확인하세요.");
+            return;
+        }
         Snapshot base = beginEdit();
         boolean next = !Boolean.TRUE.equals(latestStatus.get("paused"));
         if (!next && view != null && view.policy().allowScope().stream().noneMatch(ScopeEntry::enabled)
                 && !dialogs.confirm(this, "보호를 재개해도 허용 대상이 없어 모든 요청을 계속 차단합니다. 먼저 대상을 등록하는 것이 좋습니다. 그래도 재개할까요?")) return;
         access.refreshProject();
-        if (!base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
+        if (!base.matches(access.status())) { refreshNow(); throw failure("MODE_CHANGE_REJECTED"); }
         try { access.pause(next); }
         finally { refreshNow(); } // Failed resume must not leave a misleading toggled control.
         message.setText(next ? "일시중지했습니다. 모든 새 Proxy 요청을 차단합니다." : "보호를 재개했습니다. 대상 범위와 안전 검사는 계속 적용됩니다.");
+    }
+
+    private void togglePassthrough() {
+        Snapshot base = beginEdit();
+        boolean next = !Boolean.TRUE.equals(latestStatus.get("passthrough"));
+        if (next && !dialogs.confirm(this,
+                "모두 통과 (보호 끔)로 전환할까요?\n\n"
+                + "이 Burp의 모든 Proxy 요청이 허용 대상·차단 규칙·안전 검사·승인·속도 제한 없이 통과합니다. 빈 허용 목록이나 차단 대상도 적용하지 않습니다. 워커가 실행 중이면 범위 밖 요청도 나갈 수 있습니다.\n\n"
+                + "‘새 요청 차단’이나 응답 미확인 격리 상태도 전체 통과 중에는 새 요청을 막지 않습니다. 나중에 ‘보호 다시 켜기’는 이전 차단 상태가 아니라 정책 보호로 돌아갑니다 (미해결 격리는 유지).\n\n"
+                + "전환 전 승인·전송 대기 요청은 자동 승인하지 않고 취소합니다. 필요한 요청만 다시 실행하세요. 이미 전송한 요청은 취소하지 않습니다.\n\n"
+                + "전체 통과 상태에서 새로 시작한 요청·응답 내용을 이 확장에서 수집·기록하지 않고 통과 횟수만 셉니다. 이전에 보호하여 전송한 요청은 실제 응답까지 추적하고 마스킹된 응답을 남길 수 있습니다. Burp 자체 history는 별개입니다.\n\n"
+                + "현재 프로젝트의 임시 상태이며 프로젝트 전환·확장 재시작 후에는 유지하지 않습니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 기존 연결이 끝났는지 확인하세요.", "모두 통과")) return;
+        if (closed) throw failure("CLOSED");
+        access.refreshProject();
+        if (!base.matches(access.status())) { refreshNow(); throw failure("MODE_CHANGE_REJECTED"); }
+        try { access.passthrough(next, base.projectId(), base.revision()); }
+        catch (IllegalStateException e) { throw failure("MODE_CHANGE_REJECTED"); }
+        finally { refreshNow(); }
+        message.setText(next ? "전체 통과 · 보호 꺼짐. 새 요청은 검사하지 않으며 그 요청·응답 기록을 수집하지 않습니다."
+                : "새 요청에 보호를 다시 적용합니다. 전체 통과 중 이미 시작한 요청을 취소하거나 추적하지는 않습니다.");
     }
 
     /** EDT-only nonblocking refresh. An open modal retains its own original Snapshot. */
@@ -511,14 +546,17 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             showApprovalDetail();
             updateOverview(config, after);
             updateSettings(config);
-            version.setText("현재 Burp 프로젝트 · 설정 버전 " + view.revision() + " · 변경은 각 창에서 저장");
+            version.setText("현재 Burp 프로젝트 · 설정 버전 " + view.revision());
             for (JButton action : policyActions) action.setEnabled(true);
             pause.setEnabled(true);
+            passthrough.setEnabled(Boolean.TRUE.equals(after.get("passthrough")) || !Boolean.FALSE.equals(after.get("passthroughAvailable")));
             if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됐습니다. 허가받은 대상을 등록하고 보호 상태를 확인하세요.");
         } catch (RuntimeException e) {
             available = false;
             for (JButton action : policyActions) action.setEnabled(false);
-            pause.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
+            pause.setText("긴급: 새 요청 모두 차단"); pause.setEnabled(!closed);
+            passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
+            protectionState.setText(Boolean.TRUE.equals(latestStatus.get("passthrough")) ? "상태 확인 불가 · 전체 통과일 수 있음" : "보호 상태 확인 불가");
             version.setText("현재 프로젝트 확인 필요 · 설정 변경과 승인 불가");
             stateTitle.setText("보호 상태를 확인할 수 없습니다");
             stateHelp.setText(UiText.error("REFRESH_UNAVAILABLE"));
@@ -533,8 +571,23 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         Map<?, ?> gate = nested(status, "gate");
         Map<?, ?> evidence = nested(status, "evidence");
         boolean paused = Boolean.TRUE.equals(status.get("paused"));
+        boolean off = Boolean.TRUE.equals(status.get("passthrough"));
+        boolean ended = Boolean.TRUE.equals(status.get("passthroughEnded"));
+        protectionState.setText(off ? "전체 통과 · 보호 꺼짐 · 새 기록 미수집" : (ended ? "전체 통과 자동 종료 · " : "") + (paused ? "새 요청 차단 중" : "보호 켜짐"));
+        protectionState.setIcon(off ? UIManager.getIcon("OptionPane.warningIcon") : null);
+        passthroughCounter.setText("전체 통과 누적 " + count(status, "passthroughCount") + "건");
+        passthrough.setText(off ? "보호 다시 켜기" : "모두 통과 (보호 끔)…");
+        passthrough.setToolTipText(off ? "새 요청에 범위·규칙·검사·속도 제한을 다시 적용합니다."
+                : Boolean.FALSE.equals(status.get("passthroughAvailable")) ? "프로젝트 정책 재확인이 필요하여 전체 통과로 전환할 수 없습니다."
+                : "모든 Proxy 요청의 보호를 임시로 끕니다. 기존 대기 요청을 자동 승인하지 않습니다.");
+        passthrough.getAccessibleContext().setAccessibleDescription(passthrough.getToolTipText());
         String note = Objects.toString(status.get("note"), "");
-        if (note.equals("PROJECT_UNAVAILABLE") || note.equals("PROJECT_POLICY_INVALID_DEFAULT_DENY_PAUSED")
+        if (off) {
+            stateTitle.setText("전체 통과 · 보호 꺼짐 · 기록 미수집");
+            stateHelp.setText("이 Burp의 모든 새 Proxy 요청을 범위·규칙·안전 검사·승인·속도 제한 없이 통과시킵니다. 전체 통과 누적 "
+                    + count(status, "passthroughCount") + "건 (대상 도착 증명 아님). 새 전체 통과 요청·응답 내용은 수집하지 않습니다. 표에는 이전 보호 기록이 남으며 기존 전송의 마스킹된 응답이 추가될 수 있습니다. Burp 자체 history는 별개입니다.\n"
+                    + "기존 승인·전송 대기는 취소되며 이미 전송한 요청은 취소하지 않습니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 전체 통과 중 시작한 연결이 끝났는지 확인하세요. 상단 ‘보호 다시 켜기’로 새 요청에 보호를 재적용하거나 ‘새 요청 모두 차단’으로 전송을 막을 수 있습니다.");
+        } else if (note.equals("PROJECT_UNAVAILABLE") || note.equals("PROJECT_POLICY_INVALID_DEFAULT_DENY_PAUSED")
                 || note.equals("POLICY_SAVE_UNCERTAIN_RELOAD_BEFORE_CONTINUING") || note.equals("PROJECT_CHANGED_DURING_SAVE")) {
             stateTitle.setText("프로젝트 설정 확인 필요 · 새 요청 차단");
             stateHelp.setText("프로젝트 설정을 읽거나 저장한 결과를 확인할 수 없습니다. 요청 발생을 멈추고 Burp 프로젝트를 확인한 뒤 새로고침하세요. 확인 전에는 재개하지 마세요.");
@@ -543,21 +596,24 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             stateHelp.setText(UiText.next("IN_FLIGHT_TIMEOUT"));
         } else if (paused) {
             stateTitle.setText("일시중지 · 모든 새 요청 차단");
-            stateHelp.setText("보호가 일시중지 상태입니다. 요청을 통과시키는 OFF 모드가 아닙니다. 대상과 규칙을 확인한 뒤 ‘보호 재개’를 누르세요.");
+            stateHelp.setText("모든 새 Proxy 요청을 차단합니다. 요청을 통과시키는 OFF 모드가 아닙니다. 정책을 적용하려면 ‘보호 재개’, 검사 없이 보내려면 상단 ‘모두 통과 (보호 끔)…’를 사용하세요.");
         } else if (allowed == 0) {
             stateTitle.setText("허용 대상 없음 · 모든 요청 차단");
             stateHelp.setText("아직 요청을 보낼 수 없습니다. ‘허용 대상 등록’에서 허가받은 URL을 입력하고 호스트·포트·경로를 확인하세요. 등록하지 않은 대상은 계속 차단합니다.");
         } else {
             stateTitle.setText("보호 중 · 등록한 대상만 검사 후 전송");
-            stateHelp.setText("허용 대상 " + allowed + "개와 사용 중인 규칙 " + rules + "개를 적용합니다. 승인 요청은 ‘승인 대기’, 차단 이유는 ‘요청 기록’에서 확인하세요.");
+            stateHelp.setText("허용 대상 " + allowed + "개와 사용 중인 규칙 " + rules + "개를 적용합니다. 승인 요청은 ‘승인 대기’, 차단 이유는 ‘요청 기록’에서 확인하세요."
+                    + (note.equals("PROTECTION_RESTORED") ? " 전체 통과 중 이미 시작한 요청은 취소·추적하지 않으며 새 요청부터 보호합니다." : ""));
         }
-        pause.setText(paused ? "보호 재개" : "모든 새 요청 일시중지");
+        if (ended) stateHelp.setText("전체 통과가 프로젝트 변경 또는 상태 불확실성으로 자동 종료되었습니다. " + stateHelp.getText());
+        pause.setText(paused ? "보호 재개" : "새 요청 모두 차단");
         scopeCount.setText("대상 · 허용 " + allowed + "개 / 차단 " + blocked + "개");
         ruleCount.setText("규칙 · " + rules + "개 사용 중");
-        gateCount.setText("요청 · 진행 " + count(gate, "active") + " / 전송 대기 " + count(gate, "queued") + " / 승인 대기 " + approvalModel.rows.size());
+        gateCount.setText("보호 추적 · 진행 " + count(gate, "active") + " / 전송 대기 " + count(gate, "queued") + " / 승인 대기 " + approvalModel.rows.size());
         evidenceCount.setText("누적 · 차단 " + count(evidence, "blocked") + " / 전송 해제 " + count(evidence, "forwarded") + " / 보관 " + traffic.size());
         tabs.setTitleAt(4, "승인 대기" + (approvalModel.rows.isEmpty() ? "" : " (" + approvalModel.rows.size() + ")"));
-        scopeState.setText(allowed == 0 ? "사용 중인 허용 대상이 없습니다. 모든 Proxy 요청을 차단합니다. ‘허용 대상 추가’로 시작하세요."
+        scopeState.setText(off ? "전체 통과 · 보호 꺼짐: 아래 범위를 검사하지 않습니다. 상단 ‘보호 다시 켜기’ 후 새 요청에 적용합니다."
+                : allowed == 0 ? "사용 중인 허용 대상이 없습니다. 모든 Proxy 요청을 차단합니다. ‘허용 대상 추가’로 시작하세요."
                 : "허용 대상 " + allowed + "개 · 차단 대상 " + blocked + "개 사용 중. 차단 대상과 필수 안전 검사가 항상 우선합니다.");
         TrafficEntry latest = traffic.stream().filter(e -> e.projectId().equals(view.projectId()) && "BLOCKED".equals(e.disposition())).findFirst().orElse(null);
         recentBlock.setText(latest == null ? "현재 프로젝트의 보관 기록에 차단된 요청이 없습니다. 요청 결과는 ‘요청 기록’에서 확인하세요."
@@ -574,7 +630,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n응답 대기 제한: " + seconds(l.requestTimeoutMillis()) + "초"
                 + "\n일치하는 규칙이 없을 때: " + UiText.mode(config.defaultMode().name())
                 + "\n호스트별 속도 예외: " + l.hostRps().size() + "개"
-                + "\n\n기본 동작은 허용 대상 범위 안에서만 적용합니다.\n응답을 확인하지 못하면 새 요청을 막으며 진행 중 요청의 자리를 임의로 비우지 않습니다.\n\n‘요청 제어 설정 변경’에서 읽기 쉬운 폼으로 수정할 수 있습니다.";
+                + "\n\n보호 켜짐 상태에서만 범위·규칙·속도 제한을 적용합니다. 전체 통과 상태에서 설정을 저장해도 보호를 자동으로 켜지 않습니다.\n보호 중 응답을 확인하지 못하면 새 요청을 막으며 진행 중 요청의 자리를 임의로 비우지 않습니다.\n\n‘요청 제어 설정 변경’에서 읽기 쉬운 폼으로 수정할 수 있습니다.";
         setDetail(settingsSummary, summary);
     }
 
@@ -709,7 +765,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
 
     private boolean currentPending(Pending pending) {
         return available && !closed && view != null && pending != null && pending.projectId().equals(view.projectId())
-                && !Boolean.TRUE.equals(latestStatus.get("paused")) && !Boolean.TRUE.equals(latestStatus.get("closed")) && remaining(pending) > 0;
+                && !Boolean.TRUE.equals(latestStatus.get("paused")) && !Boolean.TRUE.equals(latestStatus.get("passthrough"))
+                && !Boolean.TRUE.equals(latestStatus.get("closed")) && remaining(pending) > 0;
     }
 
     private void showApprovalDetail() {
@@ -735,7 +792,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         access.refreshProject();
         Map<String, Object> status = access.status();
         if (!currentPending(pending) || !pending.projectId().equals(projectId(status))
-                || Boolean.TRUE.equals(status.get("paused")) || Boolean.TRUE.equals(status.get("closed"))
+                || Boolean.TRUE.equals(status.get("paused")) || Boolean.TRUE.equals(status.get("passthrough")) || Boolean.TRUE.equals(status.get("closed"))
                 || access.approvals().stream().noneMatch(p -> p.equals(pending))) {
             refreshNow(); throw failure("APPROVAL_STALE_OR_EXPIRED");
         }
@@ -884,7 +941,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
     private JButton policyButton(String name, String label, Runnable action) { JButton result = button(name, label, action); policyActions.add(result); return result; }
     private static JPanel buttons(Component... children) {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEADING, 6, 3));
+        JPanel panel = new JPanel(new WrappingFlowLayout(FlowLayout.LEADING, 6, 3));
         for (Component child : children) panel.add(child); return panel;
     }
     private static JPanel labeled(String label, JComponent field) {
@@ -994,7 +1051,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
     private static <T extends JComponent> T named(T component, String name) {
         component.setName(name); component.putClientProperty("html.disable", Boolean.TRUE);
-        component.getAccessibleContext().setAccessibleDescription(name); return component;
+        if (component instanceof AbstractButton button) component.getAccessibleContext().setAccessibleDescription(button.getText());
+        return component;
     }
     private static Component findNamed(Component root, String name) {
         if (name.equals(root.getName())) return root;
@@ -1009,23 +1067,35 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         requireEdt(); if (closed) return; closed = true; available = false; timer.stop();
         if (exportWorker != null) exportWorker.cancel(true);
         for (JButton action : policyActions) action.setEnabled(false);
-        pause.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
+        pause.setEnabled(false); passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
+        protectionState.setText("확장 종료 · 보호 상태 확인 불가");
         dialogs.closeEditors();
         version.setText("확장 종료 · 설정 변경과 승인 불가");
     }
 
     interface Dialogs {
         boolean confirm(Component parent, String message);
+        default boolean confirm(Component parent, String message, String confirmLabel) { return confirm(parent, message); }
         Path chooseExport(Component parent, String extension);
         void error(Component parent, String message);
         void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save);
         default void closeEditors() {}
     }
-    private static final class SwingDialogs implements Dialogs {
+    static final class SwingDialogs implements Dialogs {
         private final Set<JDialog> editors = new HashSet<>();
         @Override public void closeEditors() { for (JDialog dialog : List.copyOf(editors)) dialog.dispose(); }
-        @Override public boolean confirm(Component parent, String message) {
-            return JOptionPane.showConfirmDialog(parent, note("dialog.confirm", message), "Cairn Guard · 확인", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) == JOptionPane.YES_OPTION;
+        @Override public boolean confirm(Component parent, String message) { return confirm(parent, message, "확인"); }
+        @Override public boolean confirm(Component parent, String message, String confirmLabel) {
+            boolean[] accepted = {false};
+            JDialog dialog = messageDialog(parent, confirmLabel.equals("모두 통과") ? "경고 · 보호를 끄고 모두 통과" : "확인");
+            JButton cancel = named(new JButton("취소"), "dialog.cancel");
+            JButton confirm = named(new JButton(confirmLabel), "dialog.confirm");
+            cancel.addActionListener(e -> dialog.dispose());
+            confirm.addActionListener(e -> { accepted[0] = true; dialog.dispose(); });
+            dialog.setContentPane(new MessagePane(message, cancel, confirm));
+            dialog.getRootPane().setDefaultButton(cancel); // Enter must never accidentally disable protection.
+            showMessage(dialog, parent);
+            return accepted[0];
         }
         @Override public Path chooseExport(Component parent, String extension) {
             JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("마스킹된 요청 기록 내보내기");
@@ -1033,7 +1103,43 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             return chooser.showSaveDialog(parent) == JFileChooser.APPROVE_OPTION ? chooser.getSelectedFile().toPath() : null;
         }
         @Override public void error(Component parent, String message) {
-            JOptionPane.showMessageDialog(parent, note("dialog.error", message), "Cairn Guard · 확인 필요", JOptionPane.ERROR_MESSAGE);
+            JDialog dialog = messageDialog(parent, "확인 필요");
+            JButton close = named(new JButton("닫기"), "dialog.close");
+            close.addActionListener(e -> dialog.dispose());
+            dialog.setContentPane(new MessagePane(message, close));
+            dialog.getRootPane().setDefaultButton(close);
+            showMessage(dialog, parent);
+        }
+        private static JDialog messageDialog(Component parent, String title) {
+            JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(parent), "Cairn Guard · " + title, Dialog.ModalityType.APPLICATION_MODAL);
+            dialog.setName("message.dialog"); dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+            dialog.setResizable(true);
+            dialog.getRootPane().registerKeyboardAction(e -> dialog.dispose(), KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+            return dialog;
+        }
+        private void showMessage(JDialog dialog, Component parent) {
+            dialog.pack();
+            fitDialog(dialog, parent, Math.min(760, dialog.getWidth()), 520);
+            dialog.validate();
+            MessagePane pane = (MessagePane) dialog.getContentPane();
+            int height = pane.heightForWidth(pane.getWidth()) + dialog.getInsets().top + dialog.getInsets().bottom;
+            fitDialog(dialog, parent, dialog.getWidth(), Math.min(520, height));
+            editors.add(dialog);
+            try { dialog.setVisible(true); } finally { editors.remove(dialog); dialog.dispose(); }
+        }
+        private static void fitDialog(JDialog dialog, Component parent, int preferredWidth, int preferredHeight) {
+            var gc = parent.getGraphicsConfiguration();
+            if (gc == null) gc = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
+            Rectangle bounds = gc.getBounds();
+            Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc);
+            int width = Math.max(1, bounds.width - insets.left - insets.right - 32);
+            int height = Math.max(1, bounds.height - insets.top - insets.bottom - 32);
+            dialog.setMinimumSize(new Dimension(Math.min(360, width), Math.min(220, height)));
+            dialog.setSize(Math.min(Math.max(360, preferredWidth), width), Math.min(Math.max(220, preferredHeight), height));
+            dialog.setLocationRelativeTo(parent);
+            int x = Math.max(bounds.x + insets.left, Math.min(dialog.getX(), bounds.x + bounds.width - insets.right - dialog.getWidth()));
+            int y = Math.max(bounds.y + insets.top, Math.min(dialog.getY(), bounds.y + bounds.height - insets.bottom - dialog.getHeight()));
+            dialog.setLocation(x, y);
         }
         @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save) {
             JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(parent), "Cairn Guard · " + title, Dialog.ModalityType.APPLICATION_MODAL);
@@ -1043,7 +1149,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             content.add(editor, BorderLayout.CENTER);
             JTextArea feedback = note("editor.feedback", saveLabel.equals("닫기") ? "이 창을 닫는 것만으로 설정을 저장하거나 요청을 승인하지 않습니다." : SAVE_NOTICE);
             JButton submit = named(new JButton(saveLabel), "editor.save");
-            JButton cancel = named(new JButton(saveLabel.equals("닫기") ? "취소" : "취소 · 변경 안 함"), "editor.cancel");
+            JButton cancel = named(new JButton("취소"), "editor.cancel");
+            cancel.setToolTipText("변경하지 않고 닫기");
             submit.addActionListener(e -> {
                 try { save.run(); dialog.dispose(); }
                 catch (FormValidationException failure) { feedback.setText(failure.getMessage()); }
@@ -1056,12 +1163,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             content.add(footer, BorderLayout.SOUTH); dialog.setContentPane(content);
             dialog.getRootPane().setDefaultButton(submit);
             dialog.getRootPane().registerKeyboardAction(e -> dialog.dispose(), KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
-            Rectangle bounds = parent.getGraphicsConfiguration().getBounds();
-            Insets insets = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(parent.getGraphicsConfiguration());
-            int width = Math.max(320, bounds.width - insets.left - insets.right - 48);
-            int height = Math.max(300, bounds.height - insets.top - insets.bottom - 48);
-            dialog.setMinimumSize(new Dimension(360, 300));
-            dialog.setSize(Math.min(980, width), Math.min(800, height)); dialog.setLocationRelativeTo(parent);
+            fitDialog(dialog, parent, 980, 800);
             editors.add(dialog);
             try { dialog.setVisible(true); } finally { editors.remove(dialog); dialog.dispose(); }
         }

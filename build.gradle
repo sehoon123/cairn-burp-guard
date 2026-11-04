@@ -17,7 +17,28 @@ dependencies {
 }
 
 tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8'; options.compilerArgs += ['-Xlint:all', '-parameters'] }
-test { useJUnitPlatform(); systemProperty 'java.awt.headless', 'true' }
+test {
+    useJUnitPlatform { excludeTags 'desktop' }
+    systemProperty 'java.awt.headless', 'true'
+}
+// Requires an isolated display (e.g. xvfb-run). Real Swing lifecycle, NOT native Burp.
+tasks.register('desktopTest', Test) {
+    description = 'Real Swing modal lifecycle and resize checks on an isolated display (not Burp)'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform { includeTags 'desktop' }
+    systemProperty 'java.awt.headless', 'false'
+    systemProperty 'sun.java2d.uiScale', providers.gradleProperty('desktopUiScale').getOrElse('1')
+    // Robot must target DISPLAY, not an inherited Wayland/desktop portal or the user's session bus.
+    ['WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'DBUS_SESSION_BUS_ADDRESS', 'AT_SPI_BUS_ADDRESS', 'SESSION_MANAGER',
+     '_JAVA_AWT_WM_NONREPARENTING', 'AWT_TOOLKIT'].each { environment.remove(it) }
+    environment 'XDG_SESSION_TYPE', 'x11'
+    environment 'GDK_BACKEND', 'x11'
+    environment 'GDK_SCALE', '1'
+    environment 'GDK_DPI_SCALE', '1'
+    shouldRunAfter test
+}
 jar {
     archiveBaseName = 'cairn-proxy-guard'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE

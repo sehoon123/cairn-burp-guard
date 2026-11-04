@@ -5,6 +5,10 @@ Implemented in `src/main/java/dev/cairnguard/runtime/RateGate.java` and
 `RUNTIME_UI_CONTRACT.md`. These classes contain no Swing, Montoya, network I/O,
 authentication mutation, traffic storage, or background/timer threads.
 
+## Explicit human protection-OFF boundary (2026-11-04)
+
+The following RateGate/ApprovalQueue guarantees apply to **protected** requests. Human-confirmed all-passthrough is a separate native-boundary path, not an approval, a gate reset or a new Allow rule. New OFF requests bypass both classes and have no permit/retained evidence. Mode transitions cancel existing waits, including approved-but-queued requests, and never recycle a protected in-flight permit. Old protected responses still complete normally. Restoring protection only governs new requests; stop traffic and independently confirm OFF connections have completed before relying on protected concurrency. OFF status is persistently visible and runtime/project bound. See [PASSTHROUGH.md](PASSTHROUGH.md).
+
 ## What is and is not paced
 
 One controller must share **one RateGate** across all participating workers and

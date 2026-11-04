@@ -82,6 +82,7 @@ final class UiText {
     static String error(String category) {
         return switch (category) {
             case "STALE_POLICY", "UPDATE_REJECTED" -> "설정이 바뀌었거나 저장 완료를 확인하지 못했습니다. 창을 닫고 ‘새로고침’ 후 실제 저장된 내용을 확인한 뒤 현재 설정에서 다시 편집하세요.";
+            case "MODE_CHANGE_REJECTED" -> "보호 상태 전환을 완료하지 못했습니다. 프로젝트·설정 버전과 현재 보호 상태를 새로고침한 뒤 다시 확인하세요. 프로젝트를 확인할 수 없거나 정책 재확인이 필요하면 전체 통과로 전환하지 않습니다.";
             case "PROJECT_UNAVAILABLE", "REFRESH_UNAVAILABLE" -> "현재 프로젝트의 상태를 확인할 수 없습니다. Burp 프로젝트를 확인하고 ‘새로고침’을 누르세요. 확인 전에는 설정 변경과 승인을 막습니다.";
             case "INVALID_POLICY", "INVALID_BOUNDED_JSON" -> "정책을 저장할 수 없습니다. 필수 항목·숫자 범위·중복 ID·RE2 정규식과 설정 형식을 확인하세요. 기존 정책은 이 작업으로 바뀌지 않았습니다.";
             case "POLICY_ROW_LIMIT" -> "대상과 규칙은 각각 최대 256개입니다. 사용하지 않는 항목을 삭제한 뒤 추가하세요.";

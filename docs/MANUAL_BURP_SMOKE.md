@@ -16,7 +16,18 @@ Record installed product version/build, exact distribution JAR SHA256, fixture p
 
 CAIRN itself and forced network egress are separate acceptance tests. No Burp control API/extension is supplied to a worker by this checklist.
 
-## Examples/shortcuts regression (current artifact:13 logical cases)
+## Modal / all-passthrough regression (2026-11-04)
+
+All changes below are in the disposable product UI, never via an API/worker. Record the final exact JAR hash. Earlier examples results do not cover this feature.
+
+1. Load into an empty-policy project. Run `--phase empty`. Open **모두 통과 (보호 끔)…**, read/scroll to the last warning, resize the modal, then cancel with Escape and verify the next `--phase empty` still blocks. Enter without selecting the affirmative button must also cancel. Separately resize actual Swing dialogs with14/28pt fonts using `desktopTest` on an isolated display; do not call those a Burp run.
+2. Keep the empty allowlist and both built-in guards. Set only basic limits to **1/1/1** and save. Explicitly confirm **모두 통과**. All tabs must retain the unprotected status/restore button. Run `--phase passthrough` (HTTP only): **8 cases / 13 requests**, all fixture200, covering unregistered path/second host, DELETE/encoded delete, malformed JSON, opaque body, unchanged synthetic auth/cookie/body and six concurrent held clients. Confirm only the OFF counter changes, not evidence/approval/permit count.
+3. Restore protection and run `--phase empty`; empty scope blocks again. Toggle OFF, use **새 요청 모두 차단**, run `--phase paused`. Resume and recheck scope. Reload the extension while OFF and confirm OFF is not restored, then verify protected empty scope again. Do not reset permits to simulate completion.
+4. Register exact `/ask`, create an ASK rule, keep protection ON. Run `--phase passthrough-cancel`: after its one-second no-arrival check, enable OFF through the human confirmation (do NOT approve). Expect `POLICY_CHANGED` and zero fixture arrivals. The old approval must disappear. Newly issued OFF requests can pass; restoring protection must require new approval for a new `/ask` request.
+5. If a protected native response is held, entering OFF must not decrement its permit. Its actual response still updates the original masked evidence. OFF-originated responses must not be recaptured after restore. Project change/save/factory races and shutdown have separate synthetic regressions; label any native case not actually exercised.
+6. Review/export only masked protected evidence and verify the OFF request/response contents are absent. Burp's own history remains outside extension control. Stop only the disposable instance/display/owned fixture processes and remove only their private artifacts.
+
+## Examples/shortcuts regression (earlier c071 artifact:13 logical cases)
 
 Use a clean disposable project and keep both built-in guards. If8080 belongs to another instance, select an unused loopback listener in the disposable product UI and append `--proxy-port <owned-listener-port>` to **every** phase command. Never stop or reconfigure a live instance. All configuration and decisions remain human UI actions.
 

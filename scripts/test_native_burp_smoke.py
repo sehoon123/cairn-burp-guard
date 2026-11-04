@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -120,6 +121,36 @@ class NativeSmokeHarnessTest(unittest.TestCase):
         with patch("native_burp_smoke.ThreadPoolExecutor", ImmediatePool), patch("native_burp_smoke.time.sleep"):
             with self.assertRaisesRegex(AssertionError, "Unresolved example approval"):
                 run._example_approval("/safe", b"{}", "synthetic offline case")
+
+    def test_passthrough_phase_checks_scope_rules_inspection_preservation_and_burst(self):
+        class SyntheticRun(Run):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False):
+                with self.state.lock:
+                    self.state.events.append({"synthetic": True})
+                    if path.startswith("/hold"):
+                        self.state.peak = 6
+                headers = headers or {}
+                response = {"method": method, "path": path, "body": (body or b"").decode(),
+                            "authorization": headers.get("Authorization"), "cookie": headers.get("Cookie")}
+                return 200, {"X-Fixture": "owned-loopback"}, json.dumps(response).encode()
+        run = SyntheticRun(SimpleNamespace(https=False), State())
+        run.passthrough()
+        self.assertEqual(8, len(run.results))
+        self.assertEqual(13, len(run.state.snapshot()))
+
+    def test_passthrough_phase_rejects_a_still_enabled_guard(self):
+        class StillProtected(Run):
+            def request(self, *args, **kwargs):
+                return 451, {}, b"{}"
+        with self.assertRaises(AssertionError):
+            StillProtected(SimpleNamespace(https=False), State()).passthrough()
+
+    def test_passthrough_tls_cannot_be_mislabeled_as_two_host_http(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("native_burp_smoke.py")),
+                                 "--phase", "passthrough", "--https", "--fixture-cert", "unused", "--fixture-key", "unused",
+                                 "--burp-ca", "unused"], capture_output=True, text=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("two-host pacing is an HTTP experiment", result.stderr)
 
     def test_optimized_python_is_refused_before_any_fixture_or_client_starts(self):
         result = subprocess.run([sys.executable, "-O", str(Path(__file__).with_name("native_burp_smoke.py")),

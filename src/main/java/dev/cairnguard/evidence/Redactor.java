@@ -464,7 +464,7 @@ public final class Redactor {
         }
         String k = key.toString();
         for (String word : List.of("auth", "cookie", "token", "jwt", "nonce", "password", "passwd", "secret", "apikey",
-                "accesskey", "credential", "session", "csrf", "xsrf", "privatekey", "signature", "otp")) {
+                "accesskey", "credential", "session", "csrf", "xsrf", "privatekey", "signature", "otp", "grant")) {
             if (k.contains(word)) return true;
         }
         return k.equals("pwd") || k.equals("key") || k.equals("pin") || k.equals("code") || k.equals("sig")

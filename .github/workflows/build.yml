@@ -19,6 +19,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit, adapter, headless UI and owned-loopback tests
         run: ./gradlew --no-daemon clean test jar
+      - name: Real Swing dialog lifecycle on isolated Xvfb (not Burp)
+        run: xvfb-run -a ./gradlew --no-daemon desktopTest
       - name: Template contract checks (not a live worker run)
         run: python3 scripts/verify_templates.py
       - name: Offline native-smoke harness self-checks (not a Burp run)
@@ -29,5 +31,6 @@ jobs:
           path: |
             build/libs/*.jar
             build/test-results/test/*.xml
+            build/test-results/desktopTest/*.xml
           if-no-files-found: error
           retention-days: 14

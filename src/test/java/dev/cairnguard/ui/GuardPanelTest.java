@@ -416,7 +416,108 @@ class GuardPanelTest {
         edt(() -> { click("dashboard.pause"); return null; }); assertFalse(access.paused);
     }
 
-    @Test void overviewReportsStalledGateWithoutOfferingAResetOrBypass() throws Exception {
+    @Test void passthroughIsSeparatelyConfirmedAndVisibleOnEveryTabWithoutSavingPolicy() throws Exception {
+        open();
+        dialogs.confirmed = false;
+        edt(() -> { click("protection.passthrough"); return null; });
+        assertFalse(access.passthrough); assertEquals(0, access.modeChanges); assertEquals(0, access.updates);
+        String warning = dialogs.confirmations.getFirst();
+        for (String text : List.of("빈 허용 목록", "자동 승인하지 않고 취소", "수집·기록하지 않고", "프로젝트 전환", "워커")) assertTrue(warning.contains(text), text);
+        dialogs.confirmed = true;
+        edt(() -> { click("protection.passthrough"); return null; });
+        assertTrue(access.passthrough); assertFalse(access.paused); assertEquals(0, access.updates);
+        assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("보호 꺼짐")));
+        assertTrue(edt(() -> get("scope.state", JTextArea.class).getText().contains("검사하지 않습니다")));
+        edt(() -> {
+            JTabbedPane tabs = get("tabs", JTabbedPane.class);
+            for (int index = 0; index < tabs.getTabCount(); index++) {
+                tabs.setSelectedIndex(index);
+                assertTrue(get("protection.state", JLabel.class).getText().contains("전체 통과"));
+                assertTrue(button("protection.passthrough").isEnabled());
+            }
+            click("protection.passthrough"); return null;
+        });
+        assertFalse(access.passthrough); assertEquals(2, access.modeChanges);
+        assertEquals(2, dialogs.confirmations.size(), "restoring protection needs no additional permission to bypass anything");
+        assertTrue(edt(() -> get("protection.state", JLabel.class).getText().contains("보호 켜짐")));
+    }
+
+    @Test void modeConfirmationCannotApplyToChangedProjectOrPolicyOrRaceAtTheControllerBoundary() throws Exception {
+        open();
+        dialogs.onConfirm = () -> { access.project = "project-two"; access.revision++; };
+        edt(() -> { click("protection.passthrough"); return null; });
+        assertFalse(access.passthrough); assertEquals(0, access.modeChanges);
+        dialogs.onConfirm = () -> {}; access.raceOnPassthrough = true;
+        edt(() -> { click("protection.passthrough"); return null; });
+        assertFalse(access.passthrough); assertEquals(0, access.modeChanges);
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+    }
+
+    @Test void failedModeChangeNeverPretendsProtectionIsOffAndUnavailabilityDisablesControl() throws Exception {
+        access.failPassthrough = true; open();
+        edt(() -> { click("protection.passthrough"); return null; });
+        assertFalse(access.passthrough);
+        assertTrue(edt(() -> button("protection.passthrough").getText().contains("보호 끔")));
+        assertTrue(edt(() -> get("protection.state", JLabel.class).getText().contains("보호 켜짐")));
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+        access.failRefresh = true;
+        edt(() -> { panel.refreshNow(); assertFalse(button("protection.passthrough").isEnabled()); return null; });
+        assertTrue(edt(() -> get("protection.state", JLabel.class).getText().contains("확인 불가")));
+        edt(() -> { panel.close(); assertFalse(button("protection.passthrough").isEnabled()); return null; });
+    }
+
+    @Test void policySaveWhileOffDoesNotSilentlyEnableProtectionAndBlockButtonDoesBlock() throws Exception {
+        access.passthrough = true; open();
+        dialogs.editScript = (form, save) -> { get("scope.url", JTextField.class).setText("https://example.test/safe"); get("scope.fillUrl", JButton.class).doClick(0); save.run(); };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(1, access.updates); assertTrue(access.passthrough);
+        assertTrue(edt(() -> get("message", JLabel.class).getText().contains("보호를 다시 켜야")));
+        edt(() -> { click("dashboard.pause"); return null; });
+        assertTrue(access.paused); assertFalse(access.passthrough);
+        assertTrue(edt(() -> get("protection.state", JLabel.class).getText().contains("새 요청 차단")));
+    }
+
+    @Test void renderingFailureWhileOffKeepsAnEmergencyBlockPathAndCannotResumeFromUnknownState() throws Exception {
+        access.passthrough = true; open(); access.failTraffic = true;
+        edt(() -> {
+            panel.refreshNow();
+            assertFalse(button("protection.passthrough").isEnabled());
+            assertTrue(button("dashboard.pause").isEnabled());
+            assertTrue(get("protection.state", JLabel.class).getText().contains("전체 통과일 수 있음"));
+            click("dashboard.pause"); return null;
+        });
+        assertTrue(access.paused); assertFalse(access.passthrough); assertEquals(0, access.modeChanges);
+        edt(() -> { click("dashboard.pause"); return null; });
+        assertTrue(access.paused, "the unknown-state action can only request a block, never resume");
+    }
+
+    @Test void offCounterPersistsInHeaderAndUnavailablePolicyDoesNotInviteAnOffConfirmation() throws Exception {
+        access.passthroughCount = 7; access.modeAvailable = false; open();
+        edt(() -> { assertFalse(button("protection.passthrough").isEnabled()); click("protection.passthrough"); return null; });
+        assertTrue(dialogs.confirmations.isEmpty());
+        assertTrue(edt(() -> get("protection.passthroughCount", JLabel.class).getText().contains("7건")));
+        access.modeAvailable = true; access.passthroughEnded = true;
+        edt(() -> { panel.refreshNow(); return null; });
+        assertTrue(edt(() -> get("protection.state", JLabel.class).getText().contains("자동 종료")));
+    }
+
+    @Test void addingAConditionFromANewRuleCanSaveAndReopenWithoutManualGrouping() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            click("condition.addLeaf");
+            get("condition.field", JComboBox.class).setSelectedItem(Field.PATH);
+            get("condition.value", JTextArea.class).setText("/items"); save.run();
+        };
+        edt(() -> { click("rules.add"); return null; });
+        assertEquals(1, access.updates);
+        Rule saved = access.policy.rules().getLast();
+        assertEquals(Logic.AND, saved.condition().logic());
+        assertEquals(2, saved.condition().children().size());
+        assertEquals("/items", saved.condition().children().get(1).value());
+        edt(() -> { assertEquals(saved, new RuleEditor(saved).value()); return null; });
+    }
+
+    @Test void overviewReportsStalledGateWithoutRecyclingPermits() throws Exception {
         access.policy = policyWithAllow(); access.stalled = 1; open();
         assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("응답 확인 필요")));
         assertTrue(edt(() -> get("dashboard.guidance", JTextArea.class).getText().contains("자리를 강제로 비우지")));
@@ -770,7 +871,9 @@ class GuardPanelTest {
     private static final class FakeAccess implements GuardUiAccess {
         GuardConfig policy = GuardConfig.defaults(); String project = "project-one"; long revision = 7;
         String submittedProject; long submittedRevision; int updates; int updateAttempts; int refreshes; int clears; int stalled;
-        boolean paused; boolean raceOnUpdate; boolean switchDuringConfig; boolean failPause; boolean failRefresh; boolean failExport; boolean blockExport; boolean exportOnEdt;
+        boolean paused; boolean passthrough; boolean failPassthrough; boolean raceOnPassthrough; int modeChanges;
+        boolean failTraffic; boolean modeAvailable = true; boolean passthroughEnded; long passthroughCount;
+        boolean raceOnUpdate; boolean switchDuringConfig; boolean failPause; boolean failRefresh; boolean failExport; boolean blockExport; boolean exportOnEdt;
         EvidenceStore exportStore; int exportCalls; String lastBookmarked; List<TrafficEntry> rows = List.of(); List<Pending> pending = new ArrayList<>(); List<String> decisions = new ArrayList<>();
         volatile List<TrafficEntry> exported = List.of(); final CountDownLatch serializeStarted = new CountDownLatch(1); final CountDownLatch serializeRelease = new CountDownLatch(1);
         private static void onEdt() { assertTrue(SwingUtilities.isEventDispatchThread()); }
@@ -786,10 +889,13 @@ class GuardPanelTest {
             new PolicyEngine().validate(config); policy = config; revision++; updates++; pending.clear();
         }
         @Override public Map<String, Object> status() {
-            onEdt(); return Map.of("projectId", project, "projectName", "Current Burp project", "revision", revision, "paused", paused, "closed", false,
-                    "note", "SYNTHETIC", "evidence", Map.of("retainedEntries", rows.size()), "gate", Map.of("stalled", stalled, "active", stalled, "queued", 0), "approvalCount", pending.size());
+            onEdt(); Map<String, Object> result = new java.util.LinkedHashMap<>(Map.of("projectId", project, "projectName", "Current Burp project", "revision", revision, "paused", paused, "closed", false,
+                    "note", "SYNTHETIC", "passthrough", passthrough, "evidence", Map.of("retainedEntries", rows.size()),
+                    "gate", Map.of("stalled", stalled, "active", stalled, "queued", 0), "approvalCount", pending.size()));
+            result.put("passthroughAvailable", modeAvailable); result.put("passthroughEnded", passthroughEnded); result.put("passthroughCount", passthroughCount);
+            return Map.copyOf(result);
         }
-        @Override public List<TrafficEntry> traffic() { onEdt(); return List.copyOf(rows); }
+        @Override public List<TrafficEntry> traffic() { onEdt(); if (failTraffic) throw new IllegalStateException(SECRET); return List.copyOf(rows); }
         @Override public List<Pending> approvals() { onEdt(); return List.copyOf(pending); }
         @Override public boolean decideApproval(String id, boolean allow) { onEdt(); boolean removed = pending.removeIf(p -> p.id().equals(id)); if (removed) decisions.add(id + ":" + allow); return removed; }
         @Override public void bookmark(String id, boolean value) {
@@ -804,7 +910,13 @@ class GuardPanelTest {
             return exportStore == null ? format : format.equals("JSON") ? exportStore.exportJson(entries) : exportStore.exportHar(entries);
         }
         @Override public void clearEvidence() { onEdt(); rows = List.of(); clears++; }
-        @Override public void pause(boolean value) { onEdt(); if (failPause) throw new IllegalStateException(SECRET); paused = value; revision++; pending.clear(); }
+        @Override public void pause(boolean value) { onEdt(); if (failPause) throw new IllegalStateException(SECRET); passthrough = false; paused = value; revision++; pending.clear(); }
+        @Override public void passthrough(boolean enabled, String expectedProjectId, long expectedRevision) {
+            onEdt();
+            if (raceOnPassthrough) revision++;
+            if (failPassthrough || !project.equals(expectedProjectId) || revision != expectedRevision) throw new IllegalStateException(SECRET);
+            passthrough = enabled; paused = false; revision++; pending.clear(); modeChanges++;
+        }
         @Override public void refreshProject() { onEdt(); refreshes++; if (failRefresh) throw new IllegalStateException(SECRET); }
     }
 }

@@ -206,6 +206,45 @@ class Run:
             assert json.loads(response[2])["body"].encode() == body
         self.case(label, reviewed)
 
+    def passthrough(self):
+        """Human explicitly enabled ALL passthrough; keep the original empty/narrow scope/rules."""
+        for label, path, method, body, headers, second in [
+            ("scope bypass: unregistered path", "/outside", "GET", None, {}, False),
+            ("rule bypass: DELETE", "/safe", "DELETE", None, {}, False),
+            ("rule bypass: decoded delete", "/safe?operation=%2564elete", "GET", None, {}, False),
+            ("inspection bypass: malformed JSON", "/safe", "POST", b'{"broken":', {"Content-Type": "application/json"}, False),
+            ("inspection bypass: opaque binary", "/safe", "POST", b"\x00synthetic-binary", {"Content-Type": "application/octet-stream"}, False),
+            ("preserves synthetic auth/cookie/body", "/safe", "POST", BODY,
+             {"Content-Type": "application/json", "Authorization": SYNTHETIC_AUTH, "Cookie": SYNTHETIC_COOKIE}, False),
+            ("scope bypass: second owned loopback host", "/outside", "GET", None, {}, True),
+        ]:
+            if second and self.args.https:
+                continue  # This is deliberately a two-host HTTP experiment, not TLS coverage.
+            def check(p=path, m=method, b=body, h=headers, s=second):
+                before = len(self.state.snapshot())
+                status, response_headers, response = self.request(p, m, b, h, second=s)
+                assert status == 200 and response_headers["X-Fixture"] == "owned-loopback"
+                assert len(self.state.snapshot()) == before + 1
+                data = json.loads(response)
+                assert data["method"] == m and data["path"] == p
+                assert data["body"].encode() == (b or b"")
+                assert data["authorization"] == h.get("Authorization") and data["cookie"] == h.get("Cookie")
+            self.case("explicit OFF: " + label, check)
+        def burst():
+            before = len(self.state.snapshot())
+            with self.state.lock:
+                self.state.peak = 0
+            barrier = threading.Barrier(6)
+            def worker(index):
+                barrier.wait(timeout=5)
+                return self.request(f"/hold?seconds=1.5&worker={index}")
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                responses = list(pool.map(worker, range(6)))
+            assert all(r[0] == 200 for r in responses)
+            assert len(self.state.snapshot()) == before + 6
+            assert self.state.peak > 1, "OFF should not enforce the documented protected 1/1/1 precondition"
+        self.case("explicit OFF: six clients bypass protected 1/1/1", burst)
+
     def default(self):
         self.basic()
         self.rate()
@@ -316,7 +355,8 @@ class Run:
 
     def approval(self):
         # Operator acts through Burp's human UI while this request waits.
-        print("WAITING: use the human Approval tab; no request should reach the fixture yet", flush=True)
+        action = "enable all-passthrough using the human top-bar confirmation" if self.args.phase == "passthrough-cancel" else "use the human Approval tab"
+        print("WAITING: " + action + "; no request should reach the fixture yet", flush=True)
         with ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self.request, "/ask")
             time.sleep(1)
@@ -326,7 +366,7 @@ class Run:
             assert response[0] == 200 and len(self.state.snapshot()) == 1
         else:
             reason = self.blocked(response)
-            expected = {"deny": "DENIED", "expire": "APPROVAL_TIMEOUT", "stale": "POLICY_CHANGED"}[self.args.phase]
+            expected = {"deny": "DENIED", "expire": "APPROVAL_TIMEOUT", "stale": "POLICY_CHANGED", "passthrough-cancel": "POLICY_CHANGED"}[self.args.phase]
             assert reason == expected, f"Expected {expected}, got {reason}"
             assert not self.state.snapshot()
             print("Blocked category: " + reason, flush=True)
@@ -367,7 +407,7 @@ class Run:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
+    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "passthrough", "passthrough-cancel", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
     parser.add_argument("--proxy-host", default="127.0.0.1", type=loopback)
     parser.add_argument("--proxy-port", default=8080, type=int)
     parser.add_argument("--port", default=18080, type=int)
@@ -383,7 +423,7 @@ def main():
     if args.https and not all((args.fixture_cert, args.fixture_key, args.burp_ca)):
         parser.error("HTTPS requires fixture certificate/key and explicitly exported disposable Burp public CA")
     if args.https:
-        if args.phase in ("default", "host"):
+        if args.phase in ("default", "host", "passthrough"):
             parser.error("Use --phase basic for strict localhost TLS; two-host pacing is an HTTP experiment")
         addresses = {item[4][0] for item in socket.getaddrinfo("localhost", None, type=socket.SOCK_STREAM)}
         if not addresses or not all(ipaddress.ip_address(a).is_loopback for a in addresses):
@@ -405,7 +445,7 @@ def main():
             threading.Thread(target=server.serve_forever, daemon=True).start()
             stack.callback(server.shutdown)
         run = Run(args, state)
-        if args.phase in ("approve", "deny", "expire", "stale"):
+        if args.phase in ("approve", "deny", "expire", "stale", "passthrough-cancel"):
             run.approval()
         elif args.phase == "host":
             run.rate()

@@ -23,6 +23,7 @@ import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JPanel;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JTree;
@@ -159,7 +160,7 @@ class ConditionEditorTest {
     @Test void visualActionsAddNestEditAndRemoveLeavesAndBothKindsOfGroups() throws Exception {
         edt(() -> {
             ConditionEditor editor = new ConditionEditor(null);
-            assertFalse(get(editor, "condition.addLeaf", JButton.class).isEnabled());
+            assertTrue(get(editor, "condition.addLeaf", JButton.class).isEnabled());
             click(editor, "condition.wrapAnd");
             assertEquals(Logic.AND, editor.value().logic());
             click(editor, "condition.addLeaf");
@@ -196,6 +197,102 @@ class ConditionEditorTest {
             click(editor, "condition.remove");
             assertEquals(3, editor.value().children().size());
             assertFalse(get(editor, "condition.remove", JButton.class).isEnabled(), "root cannot be removed");
+            return null;
+        });
+    }
+
+    @Test void deselectingTheTreeHidesStaleEditableDetailsAndDisablesAdditionUntilReselected() throws Exception {
+        edt(() -> {
+            Condition original = leaf(Field.PATH, null, Match.EXACT, "/items", false);
+            ConditionEditor editor = new ConditionEditor(original);
+            JTree tree = get(editor, "condition.tree", JTree.class); tree.clearSelection();
+            assertFalse(get(editor, "condition.leafDetails", JPanel.class).isVisible());
+            assertTrue(get(editor, "condition.noSelection", JTextArea.class).isVisible());
+            for (String id : List.of("condition.addLeaf", "condition.addAnd", "condition.addOr", "condition.wrapAnd", "condition.wrapOr", "condition.remove"))
+                assertFalse(get(editor, id, JButton.class).isEnabled());
+            assertEquals(original, editor.value());
+            tree.setSelectionRow(0);
+            assertTrue(get(editor, "condition.leafDetails", JPanel.class).isVisible());
+            assertTrue(get(editor, "condition.addLeaf", JButton.class).isEnabled());
+            assertEquals("/items", get(editor, "condition.value", JTextArea.class).getText());
+            return null;
+        });
+    }
+
+    @Test void whitespaceAndLineBreaksAreVisibleAndWarnedAboutWithoutNormalizingLoadedPatterns() throws Exception {
+        edt(() -> {
+            for (String value : List.of(" /items ", "/items\n", "line\tvalue\r\n")) {
+                Condition original = leaf(Field.BODY, null, Match.EXACT, value, true);
+                ConditionEditor editor = new ConditionEditor(original);
+                assertEquals(original, editor.value());
+                assertTrue(get(editor, "condition.hint", JTextArea.class).getText().contains("주의:"));
+                assertTrue(get(editor, "condition.hint", JTextArea.class).getText().contains("Enter는 저장이 아니라"));
+                assertFalse(ConditionEditor.describe(original).contains("\n"));
+                assertTrue(ConditionEditor.describe(original).matches(".*[⏎⇥␍␠].*"));
+            }
+            return null;
+        });
+    }
+
+    @Test void directAddWorksOnTheInitialLeafAndKeepsAddingEditableSiblingsWithoutManualWrapping() throws Exception {
+        edt(() -> {
+            Condition original = leaf(Field.HEADER, "X-Operation", Match.EXACT, "review", true);
+            ConditionEditor editor = new ConditionEditor(original);
+            click(editor, "condition.addLeaf");
+            assertEquals(Logic.AND, editor.value().logic());
+            assertEquals(2, editor.value().children().size());
+            assertEquals(original, editor.value().children().getFirst());
+            get(editor, "condition.field", JComboBox.class).setSelectedItem(Field.PATH);
+            get(editor, "condition.value", JTextArea.class).setText("/items");
+            click(editor, "condition.addLeaf");
+            get(editor, "condition.value", JTextArea.class).setText("PATCH");
+            Condition result = editor.value();
+            assertEquals(3, result.children().size());
+            assertEquals(original, result.children().getFirst());
+            assertEquals(Field.PATH, result.children().get(1).field());
+            assertEquals("/items", result.children().get(1).value());
+            assertEquals("PATCH", result.children().get(2).value());
+            JTree tree = get(editor, "condition.tree", JTree.class);
+            assertEquals(4, tree.getRowCount());
+            assertEquals(1, tree.getSelectionPath().getPathCount() - 1);
+            assertEquals(result, new ConditionEditor(result).value());
+            assertTrue(get(editor, "condition.status", JTextArea.class).getText().contains("새 조건을 추가"));
+            return null;
+        });
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"AND", "OR"})
+    void explicitGroupAdditionAlsoWorksOnASingleLeafAndSelectsTheNewEditableCondition(String kind) throws Exception {
+        edt(() -> {
+            Condition original = leaf(Field.METHOD, null, Match.EXACT, "GET", true);
+            ConditionEditor editor = new ConditionEditor(original);
+            click(editor, kind.equals("AND") ? "condition.addAnd" : "condition.addOr");
+            get(editor, "condition.value", JTextArea.class).setText("POST");
+            assertEquals(Logic.valueOf(kind), editor.value().logic());
+            assertEquals(List.of(original, leaf(Field.METHOD, "", Match.EXACT, "POST", false)), editor.value().children());
+            assertTrue(get(editor, "condition.leafDetails", JPanel.class).isVisible());
+            return null;
+        });
+    }
+
+    @Test void addOnLeafInsideOrPreservesParentLogicAndLoadedMetadataAndBoundedChildCount() throws Exception {
+        edt(() -> {
+            Condition original = group(Logic.OR, "", "", true, List.of(
+                    leaf(Field.PATH, "", Match.EXACT, "/first", true), leaf(Field.PATH, null, Match.EXACT, "/second", false)));
+            ConditionEditor editor = new ConditionEditor(original);
+            JTree tree = get(editor, "condition.tree", JTree.class);
+            DefaultMutableTreeNode root = (DefaultMutableTreeNode) tree.getModel().getRoot();
+            select(tree, (DefaultMutableTreeNode) root.getChildAt(0)); click(editor, "condition.addLeaf");
+            Condition result = editor.value();
+            assertEquals(Logic.OR, result.logic()); assertEquals("", result.name()); assertEquals("", result.value()); assertTrue(result.caseSensitive());
+            assertEquals(3, result.children().size()); assertEquals(original.children().getFirst(), result.children().getFirst());
+            assertEquals(original.children().get(1), result.children().get(2));
+            assertEquals(result, new ConditionEditor(result).value());
+            ConditionEditor full = new ConditionEditor(group(Logic.AND, null, null, false, Collections.nCopies(64, original.children().getFirst())));
+            JTree fullTree = get(full, "condition.tree", JTree.class);
+            select(fullTree, (DefaultMutableTreeNode) ((DefaultMutableTreeNode) fullTree.getModel().getRoot()).getChildAt(0));
+            assertFalse(get(full, "condition.addLeaf", JButton.class).isEnabled());
+            assertTrue(get(full, "condition.addLeaf", JButton.class).getToolTipText().contains("64"));
             return null;
         });
     }

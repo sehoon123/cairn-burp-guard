@@ -532,7 +532,7 @@ class GuardControllerTest {
         assertFalse(controller.current(p));
         assertEquals("BLOCKED", row(p).disposition());
         assertEquals(switch (change) {
-            case POLICY -> "POLICY_CHANGED";
+            case POLICY, PASSTHROUGH -> "POLICY_CHANGED";
             case PROJECT, REFRESH_PROJECT -> "PROJECT_CHANGED";
             case PAUSE -> "PAUSED"; // Shared fixed native vocabulary is preserved in evidence.
             case CLOSE -> "SHUTDOWN";
@@ -749,7 +749,167 @@ class GuardControllerTest {
         assertEquals(1, evidence("orphanResponses"));
     }
 
-    private enum Change { POLICY, PROJECT, REFRESH_PROJECT, PAUSE, CLOSE }
+    @Test void passthroughIsExplicitRuntimeOnlyCountOnlyAndDoesNotChangeSavedPolicy() {
+        open();
+        GuardConfig before = controller.config();
+        long baseline = revision();
+        assertEquals(false, controller.status().get("passthrough"));
+        assertNull(controller.passthroughToken());
+        controller.passthrough(true, A.id(), baseline);
+        assertEquals(true, controller.status().get("passthrough"));
+        assertEquals(false, controller.status().get("paused"));
+        assertEquals(baseline + 1, revision());
+        var token = controller.passthroughToken();
+        assertNotNull(token);
+        assertTrue(controller.commitPassthrough(token));
+        assertEquals(1L, controller.status().get("passthroughCount"));
+        assertTrue(controller.traffic().isEmpty());
+        assertEquals(0, gate("active"));
+        assertEquals(before, controller.config());
+        assertEquals(0, projects.saves.get());
+        controller.passthrough(true, A.id(), revision());
+        assertEquals(baseline + 1, revision(), "same-state operation does not mutate a runtime generation");
+        controller.passthrough(false, A.id(), revision());
+        assertFalse(controller.commitPassthrough(token));
+        assertNull(controller.passthroughToken());
+        blocked(controller.prepare(request("GET", "/safe", "")), "SCOPE_NOT_ALLOWED");
+        GuardController fresh = new GuardController(projects); controllers.add(fresh);
+        assertEquals(false, fresh.status().get("passthrough"));
+        assertEquals(0L, fresh.status().get("passthroughCount"));
+        assertEquals(0, projects.saves.get());
+    }
+
+    @Test void staleModeIntentCannotCrossRevisionProjectOrUnavailableState() {
+        open(policy(Mode.ALLOW, ordinaryLimits()));
+        long baseline = revision();
+        apply(controller.config());
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), baseline));
+        assertEquals(false, controller.status().get("passthrough"));
+        projects.ref = B;
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        projects.ref = A; projects.failCurrent = true;
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        assertNull(controller.passthroughToken());
+        assertEquals(1, projects.saves.get());
+    }
+
+    @Test void passthroughTokensCannotSurviveModeCyclesOrSaveAndDoNotDrainProtectedPipeline() {
+        open(policy(Mode.ALLOW, ordinaryLimits()));
+        controller.passthrough(true, A.id(), revision());
+        var old = controller.passthroughToken();
+        controller.passthrough(false, A.id(), revision());
+        controller.passthrough(true, A.id(), revision());
+        assertFalse(controller.commitPassthrough(old));
+        var beforeSave = controller.passthroughToken();
+        apply(policy(Mode.BLOCK, ordinaryLimits()));
+        assertEquals(true, controller.status().get("passthrough"), "a policy save must not silently turn protection on");
+        assertFalse(controller.commitPassthrough(beforeSave));
+        assertTrue(controller.commitPassthrough(controller.passthroughToken()));
+        blocked(controller.prepare(request("GET", "/safe", "")), "POLICY_CHANGED");
+        controller.passthrough(false, A.id(), revision());
+        blocked(controller.prepare(request("GET", "/safe", "")), "DEFAULT_BLOCK");
+    }
+
+    @Test void blockNewRequestsAndResumeAreNotPassthroughAndCannotReviveAnOldToken() {
+        open(policy(Mode.ALLOW, ordinaryLimits()));
+        controller.pause(true);
+        controller.passthrough(true, A.id(), revision());
+        assertEquals(false, controller.status().get("paused"));
+        var token = controller.passthroughToken();
+        controller.pause(true);
+        assertEquals(false, controller.status().get("passthrough"));
+        assertFalse(controller.commitPassthrough(token));
+        blocked(controller.prepare(request("GET", "/safe", "")), "PAUSED");
+        controller.pause(false);
+        assertNull(controller.passthroughToken());
+        assertTrue(authorize(controller.prepare(request("GET", "/safe", ""))).allowed());
+    }
+
+    @Test void projectChangeResetsPassthroughAndCounterAndCannotReviveOldTokens() {
+        open();
+        controller.passthrough(true, A.id(), revision());
+        var token = controller.passthroughToken();
+        assertTrue(controller.commitPassthrough(token));
+        projects.ref = B;
+        assertNull(controller.passthroughToken(), "even before the UI refresh, do not bypass a different project");
+        assertFalse(controller.commitPassthrough(token));
+        controller.refreshProject();
+        assertEquals(false, controller.status().get("passthrough"));
+        assertEquals(0L, controller.status().get("passthroughCount"));
+        blocked(controller.prepare(request("GET", "/safe", "")), "PAUSED");
+        controller.pause(false); // A detected unverifiable project ends OFF and requires explicit resume after reload.
+        blocked(controller.prepare(request("GET", "/safe", "")), "SCOPE_NOT_ALLOWED");
+        projects.ref = A; controller.refreshProject();
+        assertNull(controller.passthroughToken());
+        assertFalse(controller.commitPassthrough(token));
+    }
+
+    @Test void projectUnavailabilityResetsPassthroughAndRequiresVerifiedReload() {
+        open();
+        controller.passthrough(true, A.id(), revision());
+        var token = controller.passthroughToken();
+        projects.failCurrent = true;
+        assertNull(controller.passthroughToken());
+        assertFalse(controller.commitPassthrough(token));
+        controller.refreshProject();
+        assertEquals(false, controller.status().get("passthrough"));
+        assertEquals(true, controller.status().get("paused"));
+        projects.failCurrent = false;
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        controller.refreshProject();
+        assertEquals(false, controller.status().get("passthrough"));
+        assertEquals(true, controller.status().get("paused"), "reload alone must not turn anything on");
+        assertFalse(controller.commitPassthrough(token));
+        controller.passthrough(true, A.id(), revision());
+        assertNotNull(controller.passthroughToken());
+    }
+
+    @Test void uncertainPolicySaveWhileOffDisablesPassthroughRatherThanKeepingAnUnsafeState() {
+        open();
+        controller.passthrough(true, A.id(), revision());
+        var token = controller.passthroughToken();
+        projects.failSave = true;
+        assertThrows(IllegalStateException.class, () -> apply(policy(Mode.ALLOW, ordinaryLimits())));
+        assertEquals(false, controller.status().get("passthrough"));
+        assertEquals(true, controller.status().get("paused"));
+        assertFalse(controller.commitPassthrough(token));
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        assertNull(controller.passthroughToken());
+    }
+
+    @Test void invalidStartupAndShutdownNeverOfferPassthroughTokens() {
+        projects.document(A, "{"); open();
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        assertNull(controller.passthroughToken());
+        apply(GuardConfig.defaults());
+        controller.passthrough(true, A.id(), revision());
+        var token = controller.passthroughToken();
+        controller.close();
+        assertNull(controller.passthroughToken());
+        assertFalse(controller.commitPassthrough(token));
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(true, A.id(), revision()));
+        assertEquals(false, controller.status().get("passthrough"));
+    }
+
+    @Test void automaticOffTerminationInvalidatesHumanModeBaselinesAndExplainsTheReset() {
+        open();
+        controller.passthrough(true, A.id(), revision());
+        long baseline = revision();
+        projects.failCurrent = true; controller.refreshProject();
+        assertTrue(revision() > baseline);
+        assertEquals(true, controller.status().get("passthroughEnded"));
+        assertEquals(false, controller.status().get("passthroughAvailable"));
+        projects.failCurrent = false;
+        assertThrows(IllegalStateException.class, () -> controller.passthrough(false, A.id(), baseline));
+        controller.refreshProject();
+        assertEquals(true, controller.status().get("passthroughAvailable"));
+        assertEquals(true, controller.status().get("paused"));
+        assertEquals(true, controller.status().get("passthroughEnded"));
+        controller.pause(false);
+        assertEquals(false, controller.status().get("passthroughEnded"));
+    }
+
+    private enum Change { POLICY, PROJECT, REFRESH_PROJECT, PAUSE, CLOSE, PASSTHROUGH }
 
     private void change(Change change) {
         switch (change) {
@@ -758,6 +918,7 @@ class GuardControllerTest {
             case REFRESH_PROJECT -> { projects.ref = B; controller.refreshProject(); }
             case PAUSE -> controller.pause(true);
             case CLOSE -> controller.close();
+            case PASSTHROUGH -> controller.passthrough(true, A.id(), revision());
         }
     }
 

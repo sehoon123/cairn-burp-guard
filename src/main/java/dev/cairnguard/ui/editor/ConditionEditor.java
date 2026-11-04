@@ -14,7 +14,6 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
-import java.awt.GridLayout;
 import java.awt.Insets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -108,7 +107,7 @@ public final class ConditionEditor implements EditorForm<Condition> {
     private void buildUi() {
         name(panel, "condition.editor", "요청 조건 편집기");
         JTextArea introduction = information("condition.instructions", "조건 트리 사용 방법");
-        introduction.setText("왼쪽에서 조건을 선택해 편집하세요. 묶음을 선택하면 조건을 추가할 수 있습니다. 단일 조건은 아래의 ‘선택을 묶기’로 중첩하세요.");
+        introduction.setText("‘조건 추가’를 누르면 바로 새 조건을 편집합니다. 처음 단일 조건에는 모두 충족(AND) 묶음을 만들고, 묶음 안에서는 같은 단계에 추가합니다. AND/OR 묶음과 중첩도 아래 버튼으로 만들 수 있습니다.");
         panel.add(introduction, BorderLayout.NORTH);
         name(tree, "condition.tree", "요청 조건 트리");
         tree.getAccessibleContext().setAccessibleDescription("모두 충족은 AND, 하나라도 충족은 OR입니다. 선택한 항목의 상세를 오른쪽에서 편집합니다.");
@@ -167,6 +166,9 @@ public final class ConditionEditor implements EditorForm<Condition> {
         details.setName("condition.details");
         details.add(leafPanel, "leaf");
         details.add(groupPanel, "group");
+        JTextArea noSelection = information("condition.noSelection", "선택된 조건 없음");
+        noSelection.setText("왼쪽 트리에서 조건 또는 묶음을 선택하면 상세를 편집할 수 있습니다.");
+        details.add(noSelection, "empty");
         details.setMinimumSize(new Dimension(270, 180));
         JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treeScroll, details);
         split.setName("condition.split");
@@ -176,8 +178,8 @@ public final class ConditionEditor implements EditorForm<Condition> {
 
         JPanel commands = new JPanel(new BorderLayout(4, 4));
         commands.setName("condition.commands");
-        // Two columns avoid FlowLayout's clipped second row at larger Burp fonts.
-        JPanel actions = new JPanel(new GridLayout(3, 2, 4, 4));
+        // Real wrapping height preserves complete button captions on narrow/large-font displays.
+        JPanel actions = new JPanel(new dev.cairnguard.ui.WrappingFlowLayout(java.awt.FlowLayout.LEADING, 4, 4));
         actions.setName("condition.actions");
         actions.add(addLeaf);
         actions.add(remove);
@@ -230,7 +232,12 @@ public final class ConditionEditor implements EditorForm<Condition> {
 
     private void loadSelection() {
         Node node = selected();
-        if (node == null) return;
+        if (node == null) {
+            ((CardLayout) details.getLayout()).show(details, "empty");
+            updateActions();
+            status.setText("왼쪽 트리에서 조건 또는 묶음을 선택하세요. 선택하지 않은 상세는 편집하지 않습니다.");
+            return;
+        }
         loading = true;
         try {
             Condition data = node.data;
@@ -280,43 +287,72 @@ public final class ConditionEditor implements EditorForm<Condition> {
         context += selectedMatch == Match.REGEX
                 ? "\nRE2 정규식은 2,048자 이내입니다. 예: ^/admin(?:/.*)?$ . 전방·후방 탐색과 역참조는 지원하지 않습니다."
                 : "\n포함·정확히 일치는 일반 문자열 비교입니다. . * 같은 문자도 그대로 비교합니다. 비교 값은 4,096자 이내입니다.";
-        if (text.getText().isEmpty()) context += "\n빈 비교 값은 매우 넓게 일치할 수 있으니 의도를 확인하세요.";
+        context += "\nEnter는 저장이 아니라 줄바꿈입니다. 입력한 공백·줄바꿈도 비교하며 자동으로 제거하지 않습니다.";
+        String value = text.getText();
+        if (!value.isEmpty() && (Character.isWhitespace(value.charAt(0)) || Character.isWhitespace(value.charAt(value.length() - 1))
+                || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\t') >= 0))
+            context += "\n주의: 비교 값에 앞뒤 공백 또는 줄바꿈·탭이 있습니다. 의도한 문자열인지 확인하세요.";
+        if (value.isEmpty()) context += "\n빈 비교 값은 매우 넓게 일치할 수 있으니 의도를 확인하세요.";
         hint.setText(context);
         hint.setCaretPosition(0);
     }
 
     private void updateActions() {
         Node node = selected();
-        boolean group = node != null && node.data.logic() != Logic.LEAF;
         int count = countNodes();
-        boolean room = group && node.getChildCount() < MAX_CHILDREN;
-        addLeaf.setEnabled(room && count < MAX_NODES && node.getLevel() < MAX_DEPTH);
-        boolean groupRoom = room && count + 2 <= MAX_NODES && node.getLevel() + 2 <= MAX_DEPTH;
-        addAnd.setEnabled(groupRoom);
-        addOr.setEnabled(groupRoom);
+        addLeaf.setEnabled(canAdd(null));
+        addAnd.setEnabled(canAdd(Logic.AND));
+        addOr.setEnabled(canAdd(Logic.OR));
+        for (JButton action : List.of(addLeaf, addAnd, addOr))
+            action.setToolTipText(action.isEnabled() ? "기존 조건을 유지하고 새 조건을 편집합니다. 아직 정책은 저장하지 않습니다." : node == null ? "왼쪽 트리에서 조건 또는 묶음을 선택하세요." : TREE_LIMIT);
         boolean canWrap = node != null && count < MAX_NODES && node.getLevel() + node.getDepth() < MAX_DEPTH;
         wrapAnd.setEnabled(canWrap);
         wrapOr.setEnabled(canWrap);
         remove.setEnabled(node != null && node.getParent() != null);
-        status.setText("조건 " + count + " / 2,048개 · 묶음당 최대 64개 · 중첩 깊이 최대 16 (처음 조건은 0). 추가는 묶음을 선택하세요.");
+        status.setText("조건·묶음 " + count + " / 2,048개 · 묶음당 최대 64개 · 깊이 최대 16. ‘조건 추가’는 단일 조건에서도 바로 사용할 수 있습니다.");
+    }
+
+    private boolean canAdd(Logic groupLogic) {
+        Node node = selected();
+        if (node == null) return false;
+        if (node.data.logic() == Logic.LEAF) {
+            Node parent = (Node) node.getParent();
+            if (groupLogic == null && parent != null)
+                return countNodes() + 1 <= MAX_NODES && parent.getChildCount() < MAX_CHILDREN && node.getLevel() <= MAX_DEPTH;
+            // Root leaf, or an explicit AND/OR grouping: retain the selected leaf + add a new one.
+            return countNodes() + 2 <= MAX_NODES && node.getLevel() + node.getDepth() + 1 <= MAX_DEPTH;
+        }
+        int added = groupLogic == null ? 1 : 2;
+        int depth = groupLogic == null ? 1 : 2;
+        return countNodes() + added <= MAX_NODES && node.getChildCount() < MAX_CHILDREN && node.getLevel() + depth <= MAX_DEPTH;
     }
 
     private void add(Logic groupLogic) {
-        Node parent = selected();
-        int added = groupLogic == null ? 1 : 2;
-        int depth = groupLogic == null ? 1 : 2;
-        if (parent == null || parent.data.logic() == Logic.LEAF) {
-            status.setText("먼저 묶음을 선택하세요. 단일 조건은 ‘선택을 모두 묶기’ 또는 ‘선택을 하나라도 묶기’로 묶으세요.");
-            return;
+        if (!canAdd(groupLogic)) { status.setText(selected() == null ? "왼쪽에서 조건이나 묶음을 먼저 선택하세요." : TREE_LIMIT); return; }
+        Node node = selected();
+        Node parent;
+        Node child;
+        int index;
+        boolean wrapped = false;
+        if (node.data.logic() == Logic.LEAF) {
+            parent = (Node) node.getParent();
+            if (groupLogic == null && parent != null) index = parent.getIndex(node) + 1;
+            else {
+                wrap(groupLogic == null ? Logic.AND : groupLogic);
+                parent = selected(); index = parent.getChildCount(); wrapped = true;
+            }
+            child = makeNode(defaultLeaf());
+        } else {
+            parent = node; index = parent.getChildCount();
+            child = makeNode(groupLogic == null ? defaultLeaf() : group(groupLogic, List.of(defaultLeaf())));
         }
-        if (countNodes() + added > MAX_NODES || parent.getChildCount() >= MAX_CHILDREN || parent.getLevel() + depth > MAX_DEPTH) {
-            status.setText(TREE_LIMIT);
-            return;
-        }
-        Node child = makeNode(groupLogic == null ? defaultLeaf() : group(groupLogic, List.of(defaultLeaf())));
-        model.insertNodeInto(child, parent, parent.getChildCount());
+        model.insertNodeInto(child, parent, index);
         tree.expandPath(new TreePath(parent.getPath()));
-        select(child);
+        tree.expandPath(new TreePath(child.getPath()));
+        select(child.data.logic() == Logic.LEAF ? child : (Node) child.getChildAt(0));
+        text.requestFocusInWindow(); text.selectAll();
+        status.setText((wrapped ? "기존 조건을 " + logicLabel(parent.data.logic()) + " 묶음으로 유지하고 " : "기존 조건을 유지하고 ")
+                + "새 조건을 추가했습니다. 오른쪽에서 비교 항목과 값을 수정하세요. 아직 정책은 저장하지 않았습니다.");
     }
 
     private void wrap(Logic groupLogic) {
@@ -449,7 +485,14 @@ public final class ConditionEditor implements EditorForm<Condition> {
         int end = Math.min(value.length(), limit);
         if (end > 0 && end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) end--;
         StringBuilder result = new StringBuilder(end + 1);
-        for (int i = 0; i < end; i++) result.append(Character.isISOControl(value.charAt(i)) ? ' ' : value.charAt(i));
+        for (int i = 0; i < end; i++) {
+            char ch = value.charAt(i);
+            result.append(switch (ch) {
+                case '\n' -> '⏎'; case '\r' -> '␍'; case '\t' -> '⇥';
+                case ' ' -> i == 0 || i == value.length() - 1 ? '␠' : ch;
+                default -> Character.isISOControl(ch) ? '�' : ch;
+            });
+        }
         if (end < value.length()) result.append('…');
         return result.toString();
     }

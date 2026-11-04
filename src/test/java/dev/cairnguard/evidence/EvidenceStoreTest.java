@@ -81,6 +81,35 @@ class EvidenceStoreTest {
         assertEquals("safe", Json.MAPPER.readTree(entry.requestCapture().body()).path("ok").asText());
     }
 
+    @Test void newlyIssuedGrantValuesAreMaskedEvenWithoutARequestHeaderFingerprint() {
+        for (String name : List.of("grant", "brokerGrant", "grant_value", "x-broker-grant")) {
+            String issued = "synthetic-issued-grant-819753";
+            EvidenceStore store = new EvidenceStore();
+            String id = store.begin("local", "Synthetic", request("https://fixture.test/issue", List.of(), ""), ALLOW, 1);
+            store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
+                    ("{\"" + name + "\":\"" + issued + "\",\"echo\":\"" + issued + "\"}").getBytes(StandardCharsets.UTF_8));
+            String captures = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot());
+            assertFalse(captures.contains(issued)); assertTrue(captures.contains("[REDACTED]"));
+        }
+    }
+
+    @Test void brokerGrantIsMaskedAndCannotLeakViaReflectionsOrEitherExport() {
+        for (String headerName : List.of("X-Broker-Grant", "x-broker-grant", "X-BROKER-GRANT")) {
+            String grant = "synthetic-broker-grant-value-753951";
+            EvidenceStore store = new EvidenceStore();
+            String id = store.begin("local", "Synthetic", request("https://fixture.test/echo/" + grant,
+                    List.of(new Header(headerName, grant), new Header("Authorization", "Bearer synthetic-auth-value"),
+                            new Header("Cookie", "sid=synthetic-cookie-value"), new Header("Content-Type", "application/json")),
+                    "{\"echo\":\"" + grant + "\"}"), ALLOW, 1);
+            store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
+                    ("{\"echo\":\"" + grant + "\"}").getBytes(StandardCharsets.UTF_8));
+            String captures = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot());
+            assertFalse(captures.contains(grant));
+            assertFalse(captures.contains("synthetic-auth-value")); assertFalse(captures.contains("synthetic-cookie-value"));
+            assertTrue(captures.contains("[REDACTED]"));
+        }
+    }
+
     static java.util.stream.Stream<String> nativeDenialReasons() {
         return DenialReasons.ALL.stream().sorted();
     }

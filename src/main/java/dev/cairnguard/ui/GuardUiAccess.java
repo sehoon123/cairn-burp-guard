@@ -19,5 +19,7 @@ public interface GuardUiAccess {
     String exportHar(List<TrafficEntry> entries);
     void clearEvidence();
     void pause(boolean paused);
+    /** Explicit human protection-OFF/ON transition, atomic against project and revision changes. */
+    void passthrough(boolean enabled, String expectedProjectId, long expectedRevision);
     void refreshProject();
 }

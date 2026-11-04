@@ -11,6 +11,7 @@ import dev.cairnguard.model.DenialReasons;
 import dev.cairnguard.runtime.GuardController;
 import dev.cairnguard.runtime.GuardController.Admission;
 import dev.cairnguard.runtime.GuardController.Prepared;
+import dev.cairnguard.runtime.GuardController.PassthroughToken;
 import dev.cairnguard.runtime.RateGate;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -59,6 +60,7 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
         boolean released = false;
         boolean ownsId = false;
         boolean collision = false;
+        boolean passthroughAttempt = false;
         try {
             ToolType tool = Objects.requireNonNull(request.toolSource().toolType());
             annotations = request.annotations();
@@ -67,6 +69,24 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
             synchronized (releaseLock) { collision = inFlight.containsKey(messageId) || preparing.contains(messageId); }
             if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
             if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
+            GuardController.NativeMode mode = controller.nativeMode();
+            if (mode.rejection() != null)
+                return block(rejected(mode.rejection()), mode.rejection(), annotations, false);
+            PassthroughToken token = mode.token();
+            if (token != null) {
+                passthroughAttempt = true;
+                // Deliberately before capture, EDT checks, slots, approvals and rate admission.
+                // No raw/native data, correlation entry or permit is retained for OFF traffic.
+                RequestToBeSentAction continuation = Objects.requireNonNull(actions.continueRequest(request, annotations));
+                synchronized (releaseLock) {
+                    if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
+                    collision = inFlight.containsKey(messageId) || preparing.contains(messageId);
+                    if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
+                    if (!controller.commitPassthrough(token))
+                        return block(rejected("FINAL_CHECK_REJECTED"), "FINAL_CHECK_REJECTED", annotations, false);
+                    return continuation;
+                }
+            }
             if (SwingUtilities.isEventDispatchThread())
                 return block(rejected("CALLBACK_ON_EDT"), "CALLBACK_ON_EDT", annotations, false);
             slot = callbacks.tryAcquire();
@@ -100,7 +120,7 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
             }
         } catch (RuntimeException | LinkageError e) {
             // No exception message/cause, raw URL/header/body or operator pattern crosses this boundary.
-            String reason = prepared == null ? "CAPTURE_FAILED" : "CONTINUATION_FAILED";
+            String reason = prepared == null && !passthroughAttempt ? "CAPTURE_FAILED" : "CONTINUATION_FAILED";
             if (prepared == null) prepared = rejected(reason);
             return block(prepared, reason, annotations, collision || messageId == null);
         } finally {
