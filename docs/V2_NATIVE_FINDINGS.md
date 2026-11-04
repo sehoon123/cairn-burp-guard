@@ -98,11 +98,50 @@ producer가 없습니다. UI의 저장 확인·지속 상태·설정·도움말�
 공식적으로 지원되는 공유 identity/다른 계약을 확인하기 전 H는 차단 상태입니다.
 요청/응답/annotation 수정이나 fail-open으로 수용 기준을 낮추지 않습니다.
 
+### 사용자 요청으로 재확인 — H의 뜻과 공개 타입 대안
+
+**H는 별도 리스너/프로세스 이름이 아니라 요구사항 목록의 ‘수신 포트별 보호 적용’ 항목입니다.**
+예를 들어 같은 Burp에서8080은 자동화용으로 보호하고8081은 사람용으로 검사 없이 통과시키는
+옵션입니다. 목적지 서버의80/443 포트와 다르며, 빈 목록의 기본 전체 리스너 보호와 별개입니다.
+‘중단’은 이 미완성 옵션을 포함한 전체 완료·배포 판정의 보류이지 기본 보호 기능이나
+사용자 Burp의 작동 정지가 아닙니다. 다른 개발/검증까지 기술적으로 불가능하다는 뜻도 아닙니다.
+
+공식 현재 소스와 실제 compile dependency인 Montoya2026.7의 공개 API를 다시 대조했습니다.
+
+- [`InterceptedHttpMessage`](https://portswigger.github.io/burp-extensions-montoya-api/javadoc/burp/api/montoya/proxy/http/InterceptedHttpMessage.html) /
+  [`InterceptedRequest`](https://portswigger.github.io/burp-extensions-montoya-api/javadoc/burp/api/montoya/proxy/http/InterceptedRequest.html)는 `listenerInterface()`를 제공합니다.
+- [`HttpRequestToBeSent`](https://portswigger.github.io/burp-extensions-montoya-api/javadoc/burp/api/montoya/http/handler/HttpRequestToBeSent.html)와 기반 `HttpRequest`에는 해당 메서드가 없습니다.
+  두 ID 설명은 각각 request/response 쌍의 일치만 명시하며 Proxy/HTTP 사이 공통 키를 보장하지 않습니다.
+- 로컬451에 쓰는 [`RequestToBeSentAction.spoof`](https://portswigger.github.io/burp-extensions-montoya-api/javadoc/burp/api/montoya/http/handler/RequestToBeSentAction.html)는 HTTP 단계 API입니다.
+  공개 Proxy 요청 action은 continue/intercept/drop이며 응답 spoof 기능이 없습니다.
+
+Main은 **이미 약관 허가된 같은 임시 상태**의 Community2026.10.1을 재실행하고, 운영 Guard가
+아닌 별도 임시 **metadata-only 공개 타입 진단 확장**을 사람 UI로 로드했습니다. 원래 요청/
+응답/annotation을 그대로 continuation하며 내용·ID·native 객체를 보관하지 않았습니다.
+같은 요청 bytes를 두 소유 inbound 포트로 각각16회, 총32회 보냈습니다(순차4+동시28, 동시성8).
+모두 소유 backend200/32회 도착이었으며, 사람 UI에서 복사한 카운터를 별도 파서로 검사했습니다.
+
+| 공개 API 진단 | 실제 카운터 |
+|---|---:|
+| Proxy 수신/송신 callback | 각각32, 두 listener 각각16, unknown0 |
+| HTTP의 PROXY callback | 32 |
+| HTTP 객체 `instanceof InterceptedRequest` | 0 |
+| HTTP 객체 `instanceof InterceptedHttpMessage` | 0 |
+| metadata getter 오류 | 0 |
+
+따라서 ‘HTTP 객체를 공개 listener 타입으로 직접 읽는다’는 추가 대안도 **이 버전의 실제
+HTTP/1.1 실행에서는 사용할 수 없었습니다.** 이 진단은 생산 JAR의 H 수용 검사가 아니고,
+모든 버전/모든 설계가 불가능하다는 증명도 아닙니다. 운영 코드와437503… JAR은 변경하지
+않았고, H는 여전히 미충족입니다. 임시 Burp/WM/runner/Xvfb와 소유 포트는 다시 종료 확인했습니다.
+원본 진단 구현·로그·스크린샷·프로필·clipboard는 저장소에 넣지 않습니다.
+
 ## 남은 gate와 정리
 
 - 정확한 최종 소스에 대한 요청 모델 `ica-se-claude/claude-advantage-assist`의 독립 감사3개는
-  **미완료**입니다. 세 차례 wave, 총9개 dispatch가 credential-rotator 오류로 실질적 보고서를
-  내지 못했습니다. exitCode0 메타데이터여도 error가 있어 승인으로 세지 않습니다.
+  **미완료**입니다. 기존 세 차례 wave의9개 dispatch에 더해 사용자 요청으로 새 감사 요청1개를
+  실제 전송했으나, 동일한 credential-rotator 오류로 검토 시작 전에 실패했습니다. 누적10개
+  dispatch, 실질적 보고서/승인0건입니다. 기존 task의 시도 한도 때문에 실행되지 않은 scheduler
+  호출은 dispatch로 세지 않습니다. exitCode0 메타데이터여도 error가 있어 승인으로 세지 않습니다.
   모델 대체·인증/라우팅 변경은 하지 않았습니다.
 - H 외에도 native OFF 중 기존 permit/대기 lifecycle, 전체 포화·프로젝트 race, health·fanout
   BLOCK/PAUSE·모든 후보 draft 조작, HTTPS/HTTP2, Professional 디스크 프로젝트,

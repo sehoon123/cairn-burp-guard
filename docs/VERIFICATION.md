@@ -23,8 +23,9 @@ three requested independent implementation audits remain incomplete. See
 | Authenticated isolated Xvfb + owned WM, scale1 and2 | **27 PASS each**, failures/errors/skips0 | Same new source; no broad platform/accessibility certification |
 | Clean isolated JAR and forced repeat | Both **43750326ca57a11fdb898850729c330d579538fb7d87261e0dc7b714993637b6** | Same bytes as Main's exact native test JAR; local reproducibility, not independent audit |
 | Actual disposable Community2026.10.1 | Exact6/rawpaths21/intent2/exempt2/heavy3/circuit3 logical cases, WARN3 owned paths, human raw UI + actual0600 JSON/HAR/incident checked | Partial HTTP/1.1 observations only; H still FAIL, old-permit/OFF/full native matrix unverified |
-| H mitigation | Both restricted inbound ports rejected before native content capture, zero target arrivals; no trusted native mappings | H desired selected protection/unselected bypass NOT supported. Empty guard list protects all |
-| Requested final audits A/B/C | Three waves / nine exact-model dispatches stopped at credential rotator, no substantive report | Zero approvals, no provider/model/auth/routing substitution |
+| H mitigation | Both restricted inbound ports rejected before native content capture, zero target arrivals; no trusted native mappings | H desired selected protection/unselected bypass NOT supported. Empty guard list protects all; not a basic-protection outage |
+| User-requested public-API type recheck | Separate disposable metadata-only probe:32 identical owned requests,16 per inbound; Proxy classifies both, HTTP32 objects are neither InterceptedRequest nor InterceptedHttpMessage; metadata errors0 | Not production Guard/H acceptance or proof every possible design is impossible; production code/JAR unchanged. Facts in V2_NATIVE_FINDINGS.md |
+| Requested final audits A/B/C | Three waves/nine dispatches plus one user-requested fresh exact-model recheck: all ten stopped at credential rotator before substantive review | Zero reports/approvals, no provider/model/auth/routing substitution |
 
 The first fresh desktop invocation could not start because xvfb-run was absent
 from PATH (exit127, no desktop cases executed). Main reused the already extracted

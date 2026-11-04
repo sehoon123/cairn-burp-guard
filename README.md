@@ -18,7 +18,7 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 | 현재 실제 Burp | 임시 인스턴스 약관의 명시 허가 후 Community2026.10.1. 새 `437503…` JAR의 raw target/본문/실제 service·EXEMPT·intent·heavy/circuit·WARN fanout·원문/내보내기 개별 성공. **H는 FAIL·미지원** |
 | 로컬 JAR SHA256 | `43750326ca57a11fdb898850729c330d579538fb7d87261e0dc7b714993637b6` — 배포 승인 hash가 아님 |
 | 구 로컬 후보 | `82ec781` / `217730…` bundle은 H 실패와 HEX export 결함이 있는 과거 후보. 재현됐어도 공개하면 안 됨 |
-| 남은 수용 조건 | H의 지원 가능한 식별 설계·남은 native matrix·최종 소스 독립 감사3개. 지정 모델9개 dispatch 모두 credential-rotator 중단, 보고서/승인0건. **미완료·미배포** |
+| 남은 수용 조건 | H의 지원 가능한 식별 설계·남은 native matrix·최종 소스 독립 감사3개. 지정 모델 기존9개+사용자 요청 재시도1개 dispatch 모두 credential-rotator 중단, 보고서/승인0건. H는 ‘수신 포트별 보호’ 옵션이며 기본 전체 보호의 작동 정지가 아님. **미완료·미배포** |
 
 후보별 hash/재빌드 범위와 독립 설계 검토 시도는 [VERIFICATION.md](docs/VERIFICATION.md)에 따로 적습니다. 과거 examples JAR(`c071…`)의13 native 시나리오 및 더 오래된12/54 결과를 v2에 이전하거나 합산하지 않습니다. 이전의 설계 제안/검토 문서는 역사적 자료이며 현재 구현 완료·승인 증거가 아닙니다.
 
