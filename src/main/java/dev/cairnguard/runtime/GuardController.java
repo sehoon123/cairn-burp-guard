@@ -33,7 +33,7 @@ import javax.crypto.spec.SecretKeySpec;
 /** Human UI policy + callback pipeline. No outbound HTTP, authentication actions or automatic saves. */
 public final class GuardController implements GuardUiAccess, AutoCloseable {
     private record State(ProjectAccess.Ref project, GuardConfig config, long revision) {}
-    private record Tracked(ResponseWatcher.Ticket ticket, long epoch, long started, long timeout) {}
+    private record Tracked(ResponseWatcher.Ticket ticket, long epoch, long started, long timeout, boolean expired) {}
     private static final int MAX_TICKETS = 4_096;
     private static final Set<String> RUNTIME_REASONS = Set.of("HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN",
             "FANOUT_SUSPECTED", "RESPONSE_WATCHER_CAPACITY", "INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED",
@@ -252,11 +252,20 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 evidence.outcome(p.evidenceId(), "QUEUED", "QUEUED", null);
             }
             RateGate.Permit permit = gate.acquire(p.rateHost(), () -> current(p));
-            synchronized (mutation) {
-                String failed = precheck(p);
-                if (failed != null) { permit.close(); return rejectLocked(p, failed, p.denied, ""); }
-                p.authorized = true;
-                return new Admission(true, "APPROVED", permit);
+            boolean transferred = false;
+            try {
+                synchronized (mutation) {
+                    String failed = precheck(p);
+                    if (failed != null) return rejectLocked(p, failed, p.denied, "");
+                    Admission admission = new Admission(true, "APPROVED", permit);
+                    p.authorized = true;
+                    transferred = true;
+                    return admission;
+                }
+            } finally {
+                // Before ownership reaches the adapter this is conclusively UNSENT. Exceptions
+                // must not leak a permit; an actually released native flight is never recycled here.
+                if (!transferred) permit.close();
             }
         } catch (RateGate.Rejected e) {
             // A predicate cancellation must report the actual current lifecycle/project reason,
@@ -355,7 +364,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 return commitRejected(p, budgetReason, null, "");
             }
             tickets.put(p.evidenceId(), new Tracked(ticket, runtimeEpoch, nanoTime.getAsLong(),
-                    TimeUnit.MILLISECONDS.toNanos(state.get().config().limits().requestTimeoutMillis())));
+                    TimeUnit.MILLISECONDS.toNanos(state.get().config().limits().requestTimeoutMillis()), false));
             p.terminal = true;
             String outcome = p.healthProbe() ? "probe_allowed" : ticket.halfOpen() ? "half_open"
                     : p.decision().mode() == Mode.EXEMPT ? "exempt" : "forwarded";
@@ -474,12 +483,18 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     }
     private void reapTickets() {
         long now = nanoTime.getAsLong();
-        Iterator<Tracked> iterator = tickets.values().iterator();
+        Iterator<Map.Entry<String, Tracked>> iterator = tickets.entrySet().iterator();
         while (iterator.hasNext()) {
-            Tracked tracked = iterator.next();
-            if (tracked.epoch != runtimeEpoch || now - tracked.started >= tracked.timeout) {
+            Map.Entry<String, Tracked> entry = iterator.next();
+            Tracked tracked = entry.getValue();
+            if (tracked.epoch != runtimeEpoch) {
                 iterator.remove();
-                watcher.abandon(tracked.ticket); // logical failure ONLY; no native permit reference.
+                watcher.cancel(tracked.ticket);
+            } else if (!tracked.expired && now - tracked.started >= tracked.timeout) {
+                // Logical failure is not physical completion. Keep this bounded masked ticket
+                // until the real response (or epoch reset), so slow heavy/5xx scalars are observed.
+                watcher.abandon(tracked.ticket);
+                entry.setValue(new Tracked(tracked.ticket, tracked.epoch, tracked.started, tracked.timeout, true));
             }
         }
     }
@@ -665,7 +680,8 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             result.put("watchers", watching);
             result.put("intents", intents.snapshot());
             result.put("listeners", listeners.snapshot());
-            result.put("watcherTickets", tickets.size());
+            result.put("watcherTickets", tickets.values().stream().filter(t -> !t.expired).count());
+            result.put("watcherLateTickets", tickets.values().stream().filter(t -> t.expired).count());
             result.put("approvalCount", approvals.snapshot().size());
             return Map.copyOf(result);
         }

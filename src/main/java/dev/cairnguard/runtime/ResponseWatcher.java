@@ -18,6 +18,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -69,6 +70,9 @@ public final class ResponseWatcher {
     private final Map<String, Protection> protections = new LinkedHashMap<>();
     private final Map<String, Protection> heavyPaths = new HashMap<>();
     private final Map<Ticket, Flight> flights = new LinkedHashMap<>();
+    // Subset of flights, not another unbounded history. Logical timeout cannot discard eventual
+    // response observation or reuse the physical host/path reservations. No raw/native data here.
+    private final java.util.Set<Ticket> expiredFlights = new HashSet<>();
     private final LinkedHashMap<String, CandidateMeta> candidateIndex = new LinkedHashMap<>(16, .75f, true);
     private final Ring<Event> events;
     private final Ring<Observation> observations;
@@ -132,7 +136,7 @@ public final class ResponseWatcher {
         LinkedHashSet<String> hashed = new LinkedHashSet<>();
         hashed.add(hash("path", service, rawPath));
         for (String route : routingPaths) {
-            if (route == null || route.isEmpty() || route.charAt(0) != '/' || route.length() > MAX_URL)
+            if (route == null || route.length() > MAX_URL)
                 throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
             hashed.add(hash("path", service, route));
         }
@@ -173,6 +177,7 @@ public final class ResponseWatcher {
         protections.clear();
         heavyPaths.clear();
         flights.clear();
+        expiredFlights.clear();
         candidateIndex.clear();
         maskedPaths.clear();
         maskedServices.clear();
@@ -252,6 +257,7 @@ public final class ResponseWatcher {
         Flight flight = current(ticket);
         if (flight == null) return;
         flights.remove(ticket);
+        expiredFlights.remove(ticket);
         finish(ticket, flight, true, now);
         Endpoint endpoint = fenced(flight.endpoint);
         bytes = Math.max(0, bytes);
@@ -279,19 +285,18 @@ public final class ResponseWatcher {
         Flight flight = current(ticket);
         if (flight == null) return;
         flights.remove(ticket);
+        expiredFlights.remove(ticket);
         finish(ticket, flight, false, now);
         if (flight.probeCircuit != null && flight.host.circuit == flight.probeCircuit
                 && flight.probeCircuit.probe == ticket) flight.probeCircuit.probe = null;
     }
 
-    /** Logical missing-response failure ONLY; there is no native permit to release or recycle. */
+    /** Logical missing-response failure ONLY. Retain bounded masked metadata for a real late response. */
     public synchronized void abandon(Ticket ticket) {
         Time now = time();
         sweep(now);
         Flight flight = current(ticket);
-        if (flight == null) return;
-        flights.remove(ticket);
-        finish(ticket, flight, true, now);
+        if (flight == null || !expiredFlights.add(ticket)) return;
         abandoned = increment(abandoned);
         failProbe(ticket, flight, now);
     }
@@ -444,7 +449,8 @@ public final class ResponseWatcher {
         out.put("epoch", epoch);
         out.put("hosts", hosts.size());
         out.put("paths", paths.size());
-        out.put("activeTickets", flights.size());
+        out.put("activeTickets", flights.size() - expiredFlights.size());
+        out.put("lateTickets", expiredFlights.size());
         out.put("overlays", protections.size() + (capacityProtection == null ? 0 : 1));
         out.put("circuits", hosts.values().stream().filter(h -> h.circuit != null).count());
         out.put("halfOpen", hosts.values().stream().filter(h -> h.circuit != null && h.circuit.probe != null).count());
@@ -687,9 +693,10 @@ public final class ResponseWatcher {
         while (active.hasNext()) {
             Map.Entry<Ticket, Flight> entry = active.next();
             Flight flight = entry.getValue();
-            if (now.nano - flight.started < flight.timeout) continue;
-            active.remove();
-            finish(entry.getKey(), flight, true, now);
+            if (now.nano - flight.started < flight.timeout || !expiredFlights.add(entry.getKey())) continue;
+            // Timeout fails a half-open lease ONCE, not its later native observation. Host/path
+            // reservations and the privacy-remasked endpoint stay bounded by MAX_FLIGHTS until
+            // observe/cancel/reset. A late success can never heal the failed/replacement probe.
             timedOut = increment(timedOut);
             failProbe(entry.getKey(), flight, now);
         }
