@@ -40,16 +40,15 @@ OFF도 확장 종료·유효하지 않거나 확인 불가능한 정책/프로�
 
 ## OFF와 listener 선택·health 예외를 혼동하지 마세요
 
-- `guardListenerPorts=[]`는 모든 Proxy listener 보호입니다. 선택 목록은 **실제
-  inbound listener 포트**이며 목적지 서버 포트가 아닙니다. 알려진 미선택 listener는
-  scope/rules/pause/watcher/Intent/rate 및 새 내용 수집을 우회하고 별도
-  `unguardedListenerCount`만 셉니다. 변경된 nonempty 선택을 저장할 때 위험을 확인합니다.
-- Observer는 received callback에서 ID+listenerInterface만 기록합니다. Native handler는
-  capture 전에 `nativeMode(messageId)`로 single-consumption mapping을 확인합니다.
-  알려진 선택 listener는 보호, 알려진 미선택만 bypass, missing/expired/duplicate/stale/
-  capacity mapping은 `LISTENER_UNVERIFIED`로 내용 없이 거절합니다. 목적지 fallback이
-  없으며 global OFF는 mapping보다 먼저 처리합니다. 실제 ID 공유·callback 순서·두
-  listener의 native acceptance는 **아직 미검증**입니다.
+- `guardListenerPorts=[]`는 정상적인 모든 Proxy listener 보호입니다. 제한 목록은
+  실제 inbound 포트이며 목적지 포트가 아니지만 **현재 native 한정은 미지원(H FAIL)**입니다.
+  Proxy/HTTP 숫자 ID·원본 annotation 연결은 검증에 실패했습니다. Observer는 원래
+  request/annotations를 그대로 continuation할 뿐 ID/listener/content를 읽거나 기록하지
+  않습니다. Native producer가 없어 제한 목록은 선택·미선택 모두 내용 검사 전에
+  `LISTENER_UNVERIFIED`입니다. 저장 확인과 지속 상태도 미지원·빈 목록 복구를 안내합니다.
+- Core known-unselected token/registry는 합성 trusted proof 검사일 뿐 native 지원이 아닙니다.
+  목적지·숫자·타이밍·내용 fingerprint로 대체하지 않습니다. Global OFF는 여전히 먼저
+  처리하는 별도의 명시적 사람 결정입니다. [실제 발견 기록](V2_NATIVE_FINDINGS.md)
 - Bypass token은 controller 발행 provenance와 project/revision/kind/listenerPort를
   최종 확인합니다. 원래 native request/annotations continuation factory가 성공한 뒤
   `commitPassthrough`하며 OFF/미선택 횟수를 구분합니다. 오래된 protected Prepared를
@@ -83,7 +82,9 @@ raw에도 수집하지 않습니다. project uncertainty/change·clear·eviction
 ## 검증 구분
 
 Headless layout, 실제 Swing modal lifecycle, Mockito native-boundary, owned socket,
-설치 Burp는 서로 다른 층입니다. 현재 revision3 clean Java1221 / native-harness
+설치 Burp는 서로 다른 층입니다. 최신437503…의 Java1231 / Swing27(scale1·2),
+개별 실제 native 성공과 H 실패는 [최신 검증](VERIFICATION.md)·[발견 기록](V2_NATIVE_FINDINGS.md)을
+따릅니다. **다음은 허가 전 과거 체크포인트 기록입니다:** revision3 clean Java1221 / native-harness
 Python27 / local-template18 PASS이며 실제 upstream은 미실행입니다. 격리 Xvfb+소유 WM의
 Swing은 scale1·scale2 각각27 PASS, scale2 반복27 PASS입니다. 테스트의 비동기 레이아웃·
 클릭 좌표 대기만 보완했고 포커스/스크롤 단언은 유지했습니다. v2 Burp 시도는 첫 EULA에서

@@ -6,7 +6,45 @@ certified safety boundary. Source, frozen snapshots, automated checks, disposabl
 Swing, exact JAR/native observations and independent review are separate evidence.
 Historical counts/hashes never transfer to a new candidate.
 
-## Current v2 source: established and pending
+## Latest safe-source checkpoint — native H FAILED / UNSUPPORTED
+
+Main found two problems after user-authorized temporary-instance terms: native
+listener ID correlation failed and a human JSON export retained a credential's
+HEX reflection. The latter is fixed; weak cross-namespace proof production is
+removed, **not replaced with a guessed listener identity**. Full native A–H and
+three requested independent implementation audits remain incomplete. See
+[V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md) for exact-case facts and limits.
+
+| Latest layer | Direct result | Boundary |
+|---|---|---|
+| Safe source Java, including new HEX6 + namespace4 regressions | Fresh isolated clean **1231 PASS**, failures/errors/skips0 | Not native/audit approval; synthetic trusted registry tests do not establish Montoya identity |
+| Focused Python harness | **27 PASS** | Fixture/client assertions, not27 native phases |
+| Local templates | **18 PASS** plus two fixture-only loader checks; actual upstream **SKIP** | No live CAIRN/Pi/model/report E2E |
+| Authenticated isolated Xvfb + owned WM, scale1 and2 | **27 PASS each**, failures/errors/skips0 | Same new source; no broad platform/accessibility certification |
+| Clean isolated JAR and forced repeat | Both **43750326ca57a11fdb898850729c330d579538fb7d87261e0dc7b714993637b6** | Same bytes as Main's exact native test JAR; local reproducibility, not independent audit |
+| Actual disposable Community2026.10.1 | Exact6/rawpaths21/intent2/exempt2/heavy3/circuit3 logical cases, WARN3 owned paths, human raw UI + actual0600 JSON/HAR/incident checked | Partial HTTP/1.1 observations only; H still FAIL, old-permit/OFF/full native matrix unverified |
+| H mitigation | Both restricted inbound ports rejected before native content capture, zero target arrivals; no trusted native mappings | H desired selected protection/unselected bypass NOT supported. Empty guard list protects all |
+| Requested final audits A/B/C | Three waves / nine exact-model dispatches stopped at credential rotator, no substantive report | Zero approvals, no provider/model/auth/routing substitution |
+
+The first fresh desktop invocation could not start because xvfb-run was absent
+from PATH (exit127, no desktop cases executed). Main reused the already extracted
+read-only test dependency with explicit private authentication, then ran both
+scales successfully; no system package install, test weakening or skipped assertion.
+The temporary Burp/WM/runner and owned listener ports were confirmed closed.
+Current user Burp/JAR/settings were not replaced. No public push/tag/release/install.
+The old217730… prerelease bundle is a **rejected historical candidate**, not the
+current safe checkpoint or a publishable artifact. Final gates are supported H
+design, remaining exact-artifact native acceptance and fresh requested audits on
+the eventual final source. Local commits/builds cannot clear these gates.
+
+## Historical pre-authorization checkpoint (superseded status below)
+
+**The following record describes the earlier82ec/217730 stage, before the user's
+temporary-instance terms authorization and subsequent native findings.** Its EULA
+stop, pending-only language and old counts are not current status; the latest
+section/findings above take precedence. Historical design reports remain distinct.
+
+### Then-current v2 source: established and pending
 
 Implementation work for model/policy, watcher/budget/pacing, evidence/raw UI,
 controller/listeners, human UI and native adapter is present in the worktree.

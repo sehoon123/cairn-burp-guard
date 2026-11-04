@@ -2,7 +2,7 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립 Burp Extension 개발 프로젝트입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> **현재 소스: UNRELEASED SOURCE v2 · 통합 검증 진행 중.** 소스 구현, 자동 검사, 실제 Burp, 독립 감사, 배포는 서로 다른 단계입니다. 이 문서의 v2 기능이 설치되었거나 공개 JAR에 들어 있다고 해석하지 마세요. 확장이 사용자 프로젝트·프록시·데스크톱을 자동 설정하지 않습니다.
+> **현재 소스: UNRELEASED / BLOCKED v2. 리스너 한정 모드(H)는 미지원입니다.** 개별 native 성공과 전체 수용·독립 감사·배포는 다릅니다. [실제 발견·수정·남은 차단 사유](docs/V2_NATIVE_FINDINGS.md)를 먼저 보세요. 사용자 프로젝트·프록시·데스크톱을 자동 설정하지 않으며 공개 push/tag/release/사용자 설치는 하지 않았습니다.
 
 **[과거 개발 프리뷰 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-04-conditions-passthrough)** · [검증 현황](docs/VERIFICATION.md) · [실제 Burp 기록](docs/NATIVE_BURP_RESULTS.md) · [v2 API](docs/INTERFACES.md)
 
@@ -13,11 +13,12 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 | 과거 공개 프리뷰 | `dev-2026-11-04-conditions-passthrough`, 소스 기준 `738b41e`; 모달·전체 통과·조건 추가 수정. **v2 배포가 아님** |
 | 그 프리뷰 JAR SHA256 | `4232ae63d0a158d294fbe9ee3cf40cf58b9e8bdc85a300c8f829a5135b4bd159` |
 | 그때의 검사 | Java845 / Swing20(scale1·2) / Python35. **그 JAR의 실제 Burp는 미실행**. 당시 제한된 수정 검토도 v2 감사가 아님 |
-| 현재 v2 소스 | 모델·정책·runtime·증거·UI·native adapter 구현을 로컬 체크포인트로 기록. 새 설치·공개·릴리스 완료를 주장하지 않음 |
-| 현재 통합 검사 기록 | revision3 clean Java **1221 PASS**. Python harness **27 PASS** + local template **18 PASS** (실제 upstream 미실행). 격리 Xvfb+소유 WM의 Swing은 scale1 **27 PASS**, scale2 **27 PASS**, scale2 반복 **27 PASS**. 초기 HiDPI 테스트의 비동기 레이아웃·클릭 좌표 대기를 보완했으며 기존 포커스/마지막 줄 도달 단언은 유지. 후보 JAR 로컬 반복 재빌드 동일; native/독립 구현 승인 아님 |
-| 현재 실제 Burp 시도 | 완전히 분리된 임시 HOME/display·소유 임시 포트로 시작했으나 **첫 EULA 화면에서 중단**. 약관 동의·확장 로드·native phase 실행 없음 |
-| 재검사 및 로컬 후보 | 같은 소스로 Java1221 / Python27+18 / Swing scale1·2·scale2반복 각27을 다시 통과하고 같은 JAR hash를 재현. 로컬 소스 체크포인트·후보 빌드이며 공개 push/tag/release/설치 완료가 아님 |
-| 남은 수용 조건 | 재현한 정확한 후보 JAR의 실제 native A–H, listener ID·순서·두 listener, 요청된 최종 독립 구현 감사. 감사 A/B/C 재시도도 공급자 오류로 중단, 실질적 보고서0건. **미완료·미배포** |
+| 현재 v2 소스 | 핵심 모델·정책·runtime·증거·UI 구현. HEX 반사 누출 수정 및 잘못된 numeric listener-proof 경로 제거. H 완료를 주장하지 않음 |
+| 최신 Java 검사 | **1231 PASS**. 새 HEX6개는 수정 전6 FAIL, namespace4개는 구 소스의 같은 ID2개에서 FAIL. Python/Swing/재현 빌드의 산출물별 범위는 검증 문서에 구분 |
+| 현재 실제 Burp | 임시 인스턴스 약관의 명시 허가 후 Community2026.10.1. 새 `437503…` JAR의 raw target/본문/실제 service·EXEMPT·intent·heavy/circuit·WARN fanout·원문/내보내기 개별 성공. **H는 FAIL·미지원** |
+| 로컬 JAR SHA256 | `43750326ca57a11fdb898850729c330d579538fb7d87261e0dc7b714993637b6` — 배포 승인 hash가 아님 |
+| 구 로컬 후보 | `82ec781` / `217730…` bundle은 H 실패와 HEX export 결함이 있는 과거 후보. 재현됐어도 공개하면 안 됨 |
+| 남은 수용 조건 | H의 지원 가능한 식별 설계·남은 native matrix·최종 소스 독립 감사3개. 지정 모델9개 dispatch 모두 credential-rotator 중단, 보고서/승인0건. **미완료·미배포** |
 
 후보별 hash/재빌드 범위와 독립 설계 검토 시도는 [VERIFICATION.md](docs/VERIFICATION.md)에 따로 적습니다. 과거 examples JAR(`c071…`)의13 native 시나리오 및 더 오래된12/54 결과를 v2에 이전하거나 합산하지 않습니다. 이전의 설계 제안/검토 문서는 역사적 자료이며 현재 구현 완료·승인 증거가 아닙니다.
 
@@ -61,7 +62,7 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 | 규칙 | 메서드/실제 URL/경로/query/header/body/JSON/form, AND/OR·RE2, EXEMPT 위험 확인 |
 | 요청 기록 | **사람 로컬 unmasked 원문 사본**·검사 경고·intent/run·결과·상태. JSON/HAR는 별도의 masked 증거만 내보냄 |
 | 승인 대기 | 읽기 전용 검토 후 별도1회 승인/거절. 오래된 승인·프로젝트/버전 변경은 취소 |
-| 설정 | RPS/동시성/초 단위 제한, 응답/circuit/fanout, 태그 한도, inbound listener 선택, 정확한 GET health 경로 |
+| 설정 | RPS/동시성/초 단위 제한, 응답/circuit/fanout, 태그 한도, 정확한 GET health 경로. inbound listener 한정은 현재 미지원 경고 |
 | 자동 차단 | 메모리 overlay TTL/원인; 확인 후 선택/전체 해제. 정책·pause·native permit은 바꾸지 않음 |
 | 대용량 후보 | 보관 창 최대 bytes/근사 p95. 안전한 `policyUrl`만 미저장 BLOCK/한도 초안으로 검토. 무시는 표시만 숨김 |
 
@@ -73,7 +74,7 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 
 **모두 통과 (보호 끔)…**는 사람이 확인하는 runtime-only 상태입니다. 새 Proxy callback은 범위/규칙/승인/안전 예산/속도/내용 수집을 건너뛰고 횟수만 셉니다. 기존 대기는 승인하지 않고 취소하며 기존 flight/overlay/intent debt를 보존합니다. **OFF 이전 수동 pause도 ON에서 그대로 돌아옵니다**. OFF는 resume이 아닙니다. 프로젝트 전환/불확실성·재시작에 유지하지 않습니다. 복원 전 트래픽을 멈추고 OFF 연결 완료를 별도로 확인하세요. [PASSTHROUGH.md](docs/PASSTHROUGH.md)
 
-`guardListenerPorts=[]`는 모든 Proxy listener 보호입니다. 선택 목록이 있으면 **알려진 미선택 inbound listener**만 보호·pause·예산·새 내용 수집을 우회합니다. mapping을 모르면 `LISTENER_UNVERIFIED`로 내용 없이 거절하며 목적지 포트로 추정하지 않습니다. 실제 native ID/순서/두 listener 수용 검증은 아직 남아 있습니다.
+`guardListenerPorts=[]`는 정상적인 모든 Proxy listener 보호입니다. **현재 native 한정 모드는 미지원**입니다. Proxy/HTTP 콜백 ID와 원본 annotation은 검증된 공통 식별자가 아니므로 연결 증거 생산을 제거했습니다. 제한 목록을 저장하면 보호 중 선택·미선택 모두 내용 검사 전에 `LISTENER_UNVERIFIED`로 거절됩니다. 빈 목록으로 전체 보호를 복구하세요. 숫자·목적지 포트·내용 fingerprint로 추정하거나 H 통과로 취급하지 않습니다.
 
 Health 예외는 기본 OFF인 별도 사람 설정입니다. 정확한 scheme/host/port/path의 **query·body 없는 GET**만 운영자 pause/circuit을 통과합니다. 범위·일반 규칙·다른 overlay·속도·예산·수명 실패는 못 넘고 응답으로 circuit을 치유하지 않습니다. GET도 부작용이 있을 수 있어 활성화/경로 변경 저장에 확인이 필요합니다.
 
@@ -81,7 +82,7 @@ Health 예외는 기본 OFF인 별도 사람 설정입니다. 정확한 scheme/h
 
 ## 빌드 및 수동 검증 시작점
 
-필요: Java **21**, Montoya API **2026.7** 호환 Burp. 의존성은 Gradle lock/strict verification으로 고정합니다. Montoya는 compile-only이며 포함 의존성의 고지는 [NOTICE](NOTICE)를 보세요. 다음은 **개발자가 별도로 실행할 명령**이며 이 문서 수정 작업에서 빌드/설치하지 않았습니다.
+필요: Java **21**, Montoya API **2026.7** 호환 Burp. 의존성은 Gradle lock/strict verification으로 고정합니다. Montoya는 compile-only이며 포함 의존성의 고지는 [NOTICE](NOTICE)를 보세요. 다음은 **개발자가 별도로 재현할 명령**입니다. 실제 실행한 자동/native 검사 범위와 미검증 항목은 위 검증 문서를 따르세요. 설치·릴리스 명령이 아닙니다.
 
 ```sh
 ./gradlew clean test jar
@@ -101,4 +102,4 @@ HTTPS TLS pass-through, opaque CONNECT, WebSocket frames, 비Proxy 도구, 다�
 
 ## 문서
 
-[정책](docs/POLICY.md) · [속도/승인](docs/RATE_APPROVAL.md) · [UI](docs/UI.md) · [Runtime/UI 계약](docs/RUNTIME_UI_CONTRACT.md) · [증거](docs/EVIDENCE.md) · [Burp adapter](docs/BURP_ADAPTER.md) · [Controller 검사](docs/CONTROLLER_TESTS.md) · [검증](docs/VERIFICATION.md) · [실제 Burp 기록](docs/NATIVE_BURP_RESULTS.md) · [수동 smoke](docs/MANUAL_BURP_SMOKE.md)
+[정책](docs/POLICY.md) · [속도/승인](docs/RATE_APPROVAL.md) · [UI](docs/UI.md) · [Runtime/UI 계약](docs/RUNTIME_UI_CONTRACT.md) · [증거](docs/EVIDENCE.md) · [Burp adapter](docs/BURP_ADAPTER.md) · [Controller 검사](docs/CONTROLLER_TESTS.md) · [검증](docs/VERIFICATION.md) · [실제 Burp 기록](docs/NATIVE_BURP_RESULTS.md) · [v2 발견·차단 사유](docs/V2_NATIVE_FINDINGS.md) · [수동 smoke](docs/MANUAL_BURP_SMOKE.md)

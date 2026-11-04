@@ -5,6 +5,11 @@ historical `738b41e` / `4232ae…` preview. Frozen-snapshot results and pending 
 are in [VERIFICATION.md](VERIFICATION.md). `EvidenceStore` implements
 [INTERFACES.md](INTERFACES.md); source is authoritative.
 
+**Native finding:** the old217730… candidate leaked a credential reflected as HEX.
+The current437503… source fixes and rechecks that case; see
+[V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md). This is not universal DLP or release approval.
+Native listener restriction is separately unsupported and fails closed.
+
 ## Two stores, not two export modes
 
 `EvidenceStore` owns synchronized, bounded, **memory-only** masked evidence and a
@@ -115,10 +120,12 @@ a later JSON field/header can be removed from earlier URL/project/rule/echo data
   No raw-prefix fallback exists in the masked store. Unsafe discovery can suppress
   unconstrained metadata/scalars conservatively. Empty bodies remain empty.
 - Request credentials reflected in a response, benign field/long string,
-  percent/Unicode escape or standard/URL Base64 can be detected by bounded keyed
-  **HMAC-SHA256 fingerprints**. Basic credentials are also decoded for reflection.
-  A rolling-hash prefilter is verified by HMAC. This is not arbitrary decryption
-  or a universal transformation/DLP classifier.
+  percent/Unicode escape, UTF-8 HEX or standard/URL Base64 can be detected by bounded
+  keyed **HMAC-SHA256 fingerprints**. HEX lower/upper aliases use the same bounded
+  builder; transient case-folding of HEX runs catches mixed-case reflections and
+  masks a matching run in full. Nonmatching text retains original case. Basic
+  credentials are also decoded. A rolling-hash prefilter is verified by HMAC.
+  This is not arbitrary decryption or a universal transformation/DLP classifier.
 - Fingerprints are bounded to128 candidates,24 distinct lengths,8192 characters
   per candidate; overflow switches to conservative suppression, not silent loss.
   Derived keys/fingerprints stay private in memory and are discarded on eviction/

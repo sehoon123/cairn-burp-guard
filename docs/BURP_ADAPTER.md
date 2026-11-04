@@ -1,6 +1,6 @@
 # Native Burp adapter
 
-`dev.cairnguard.GuardExtension` owns the human Swing tab, project-local storage, a **data-free Proxy request observer**, and a Montoya `HttpHandler`. Only `ToolType.PROXY` requests are protected; other tools continue with their original objects. No network sender, Burp admin interface, worker API, login or session management is added.
+`dev.cairnguard.GuardExtension` owns the human Swing tab, project-local storage, a **data-free original-object Proxy continuation handler**, and a Montoya `HttpHandler`. Only `ToolType.PROXY` requests are protected; other tools continue with their original objects. No network sender, Burp admin interface, worker API, login or session management is added.
 
 ## Native identity and bounded inspection
 
@@ -18,18 +18,18 @@ Human request-history raw getters use a separate bounded memory-only cache, labe
 
 ## Listener boundary and OFF
 
-The pinned Montoya 2026.7 API exposes `InterceptedRequest.messageId()` and `listenerInterface()` through a `ProxyRequestHandler`. `ListenerObserver` is registered **before** the HTTP handler and records only these two metadata values on request received. Both Proxy callbacks continue the original request/annotations without interception changes. It does not record twice or use destination service port as a fallback. Deregistration handles initialization failures and synchronous unload during registration.
+**Restricted listener attribution is UNSUPPORTED and H acceptance FAILED.** Native Community2026.10.1 exposed distinct Proxy/HTTP callback IDs; the pinned2026.7 API gives no documented shared identity. Original-annotation identity also failed. The production `ListenerObserver` now only continues original requests/annotations: it does **not read IDs/listener/content or populate any trusted registry**. Registration order is lifecycle wiring, not identity proof. Deregistration still handles initialization failures and synchronous unload. See [exact-artifact findings](V2_NATIVE_FINDINGS.md).
 
 Before content capture, `HttpHandler` calls `controller.nativeMode(messageId)`:
 
 * Human-confirmed global OFF returns a project/revision-bound, count-only bypass token first.
-* A known unselected inbound listener returns a separate unguarded-listener bypass token.
-* Missing, duplicate, stale, malformed, expired or capacity-exhausted mapping with configured listener restrictions yields **data-free `LISTENER_UNVERIFIED`**, before content capture.
-* Selected/all-listener traffic follows protection.
+* Empty `guardListenerPorts` protects all Proxy listeners normally.
+* Every configured restriction currently yields **data-free `LISTENER_UNVERIFIED`** before native content capture, for selected AND unselected ports. UI explicitly warns; this is a mitigation, not H acceptance.
+* Core trusted-registry/unselected-token behavior is exercised with synthetic supplied proof only. There is no supported native producer. It must never be fed cross-namespace numeric equality, annotation identity/values, timing/FIFO/content fingerprints or destination-port guesses.
 
 OFF/unselected paths create no new evidence, approval, rate permit, watcher/budget state or response correlation. Untracked responses do not even read native response status/body-length scalars. Existing protected flights still complete their own permits and evidence across OFF/unselected traffic. Bypass construction is non-sending and its token is rechecked at final return; stale generation/project/shutdown/collisions cannot smuggle an old bypass. See [PASSTHROUGH.md](PASSTHROUGH.md).
 
-The observer/HTTP ID relationship is an integration assumption **until verified with real Burp and two actual inbound listeners**. Mockito tests and `javap` prove the source API, not native callback order, ID correlation or the listener string's runtime spelling. Missing native correlation fails closed, not silently bypasses.
+The previous observer/HTTP ID assumption was **falsified, not merely untested**. Both native listeners now reject without target arrivals; fixed omission placeholders can be recorded, never their original native contents. Core registry tests are not native evidence. A supported identity/design resolution is required before H can pass; normal HTTP-handler request/response flight correlation is separate and is not replaced.
 
 ## Final handoff and local denial
 
@@ -65,7 +65,7 @@ Each phase requires the human UI to set its preconditions, separately, in a fres
 | `circuit --open-seconds 1` | Threshold5 in60s, open1s (must match flag), half-open1, health bypass disabled. Five actual503s → local circuit451 → one held half-open request, concurrent attempt denied → successful response closes. For failure/reopen/cadence repeat manually with a5xx probe; unit/controller tests cover missing/failing probe/deadlines. |
 | `exempt` | Explicit BLOCK PATH exact`/broker` plus EXEMPT same exact path, ordinary DELETE default retained. Broker passes; DELETE elsewhere still blocks. Confirm EXEMPT evidence and hard scope separately in UI. |
 | `intent` | Per-intent limit20; fresh synthetic run UUID isolates previous debt. Exactly20 target arrivals;21st same intent local typed budget451; other intent passes. |
-| `listeners --proxy-port 8080 --unselected-proxy-port 8081` | Both actual inbound listeners exist; human restricts guard ports to8080. Selected DELETE denied; unselected DELETE arrives. Human additionally checks no unselected history/raw capture, watcher, intent or approval entry: external clients cannot prove in-memory non-capture. |
+| `listeners --proxy-port 8080 --unselected-proxy-port 8081` | **Required H contract, currently EXPECTED FAIL/UNSUPPORTED.** Both actual inbound listeners exist and the human confirms the unsupported restriction warning. Desired selected RULE_BLOCK/unselected arrival is NOT implemented safely; currently both get LISTENER_UNVERIFIED before native capture. Never count the fallback check as H PASS. |
 | `incident --incident-file /path/to/human-export.json` | **Offline only; no fixtures or clients started.** Bounded4MiB read checks retained `[from,to)` schema, events/top arrays, scalar types, IDs, approximation/retention/truncation flags and absence of known fixture secrets. Human performs export; script does not access Burp data. |
 
 All denial phases validate the local source marker **plus `local:true`, typed guardState and numeric policyRevision**. They also assert zero new fixture arrivals. The fixture records the raw request line (not the standard library's normalized `self.path`), exact body bytes and Host for owned equality assertions. An upstream parser rejection is not a local451; the owned raw Java fixture specifically accepts malformed-percent bytes to prove handoff independent of a generic URI parser.

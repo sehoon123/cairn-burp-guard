@@ -1,11 +1,12 @@
 # Future owned native A–H checklist — unreleased v2
 
-**Procedure, not results. All current v2 native acceptance remains PENDING.**
-The latest real disposable Burp attempt stopped at its **first EULA screen**:
-no terms accepted, no extension loaded, no phase run. Do not convert that startup,
-Swing/Mockito/owned sockets, or a historical JAR's results into native PASS.
-Current hashes/rebuild/desktop/audit limits are in [VERIFICATION.md](VERIFICATION.md);
-actual historical observations are in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
+**Procedure, not a PASS log. H is currently FAIL/UNSUPPORTED.**
+After explicit authorization for the temporary instance's terms, Main ran individual
+owned Community2026.10.1 cases and found/fixed HEX export reflection, but listener
+identity remained unsupported. The prior first-EULA stop is historical. See
+[actual-artifact findings](V2_NATIVE_FINDINGS.md), [verification](VERIFICATION.md)
+and [native records](NATIVE_BURP_RESULTS.md). Do not turn partial observations,
+Swing/Mockito/owned sockets or historical hashes into full native A–H approval.
 
 Only a human/operator may perform this workflow under appropriate authorization.
 It is not a worker prompt, Burp control API or permission to accept terms, bypass
@@ -285,7 +286,14 @@ unsupported optional bodies to arrive; old preview expectations do not apply.
 and1.5second fixture hold. `queue` uses concurrency1/queue0.080seconds. Match these
 explicitly, then restore; do not confuse them with new-profile defaults60/30seconds.
 
-## H — Actual inbound listener restriction (critical pending gate)
+## H — Actual inbound listener restriction (FAILED / UNSUPPORTED gate)
+
+**The procedure below is the REQUIRED future acceptance contract, not current
+support.** Production no longer feeds Proxy numeric IDs/annotations into the HTTP
+listener registry. Both restricted ports currently reject LISTENER_UNVERIFIED
+before native capture; UI says unsupported. The script should FAIL the selected
+RULE_BLOCK expectation. Do not accept that mitigation as H PASS or add heuristic
+identity/traffic markers. A supported shared identity/design decision is needed first.
 
 Human creates **two distinct owned inbound Proxy listeners** in the disposable
 instance. Start empty selection (all protected), then explicitly save only
@@ -305,9 +313,10 @@ separate saturating counter. Pause must not block known-unselected traffic.
 Unknown/missing/collision/expired/stale mapping must deny `LISTENER_UNVERIFIED`
 **before capture**, not silently protect/capture or bypass via destination fallback.
 
-**Prove, do not infer**, actual observer→HttpHandler message-ID correlation,
-received/to-be-sent ordering and listenerInterface representation on this product/
-JAR. `javap`/Mockito/registry unit tests only establish API/source compatibility.
+**Prove a supported shared identity, do not infer one** from Proxy→HTTP numbers,
+annotation identity/values, order, timing or content fingerprints. Native testing
+already falsified the original numeric and annotation-identity assumptions.
+`javap`/Mockito/registry tests only establish API/source compatibility.
 If existing authorized product observations cannot establish it, record that
 blocker; do not add probes/control APIs, copy logs containing content or call this
 H PASS. External clients alone cannot prove in-memory no-capture. Test selection

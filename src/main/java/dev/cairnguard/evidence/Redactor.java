@@ -19,6 +19,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +45,7 @@ public final class Redactor {
     private static final Pattern ASSIGNMENT = Pattern.compile("(?i)([\"']?(?:" + SECRET_WORDS
             + ")[\"']?)\\s*[:=]\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s&;,<>]+))");
     private static final Pattern AUTH = Pattern.compile("(?i)\\b(bearer|basic)\\s+([^\\s,;<>]+)");
+    private static final Pattern HEX_RUN = Pattern.compile("[0-9a-fA-F]{4,}");
 
     public Redactor() {}
 
@@ -212,9 +214,30 @@ public final class Redactor {
             if (normalized.contains("://")) return url(normalized, secrets);
             normalized = inlineMask(normalized, ASSIGNMENT);
             normalized = inlineMask(normalized, AUTH);
-            String masked = secrets.mask(normalized);
+            String masked = secrets.mask(maskHexReflections(normalized, secrets));
             return singleLine ? display(masked) : masked;
         } catch (UnsafeInput ignored) { return REDACTED; }
+    }
+
+    /** Canonicalize only transient HEX runs for matching, never ordinary case-sensitive text.
+     * Redact a matching run in full rather than corrupting offsets or retaining an encoded prefix.
+     * Nonmatching text keeps its original case. Matching remains bounded/keyed; no plaintext alias
+     * is retained, and this changes export/display evidence only, never native traffic or raw UI.
+     */
+    private static String maskHexReflections(String value, SecretFingerprints secrets) {
+        if (secrets.opaque()) return REDACTED;
+        Matcher matches = HEX_RUN.matcher(value);
+        StringBuilder result = null;
+        int end = 0;
+        while (matches.find()) {
+            String canonical = matches.group().toLowerCase(Locale.ROOT);
+            if (!secrets.mask(canonical).equals(canonical)) {
+                if (result == null) result = new StringBuilder(value.length());
+                result.append(value, end, matches.start()).append(REDACTED);
+                end = matches.end();
+            }
+        }
+        return result == null ? value : result.append(value, end, value.length()).toString();
     }
 
     static String url(String value, SecretFingerprints secrets) {
@@ -363,6 +386,8 @@ public final class Redactor {
 
     private static void encodedVariants(String value, SecretFingerprints.Builder builder) {
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        builder.add(HexFormat.of().formatHex(bytes));
+        builder.add(HexFormat.of().withUpperCase().formatHex(bytes));
         builder.add(Base64.getEncoder().encodeToString(bytes));
         builder.add(Base64.getEncoder().withoutPadding().encodeToString(bytes));
         builder.add(Base64.getUrlEncoder().encodeToString(bytes));

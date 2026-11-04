@@ -1,6 +1,6 @@
 # 가용성·귀속·정책 확장 명세 검토 초안 — 2026-11-04
 
-> **설계 검토이며 구현 완료 문서가 아닙니다. 4자 검토/합의는 미완료입니다.**
+> **이하 내용은 과거 설계 검토이며 현재 구현/수용 현황이 아닙니다. 4자 검토/합의는 미완료입니다.** 최신 실제 검사·HEX 수정·H 미지원 및 독립 감사 차단 상태는 [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md)·[VERIFICATION.md](VERIFICATION.md)를 따릅니다.
 > 현재 코드에 EXEMPT, ResponseWatcher, 자동 overlay, intent 예산, 사고 bundle, 호스트 RR, 리스너 선택, schema2를 추가했다는 뜻이 아닙니다. 기존 기본 `ANY CONTAINS delete` 규칙 제거도 아직 이 작업에 포함하지 않았습니다.
 
 ## 검토 상태

@@ -1,5 +1,12 @@
 # Controller, native-boundary mocks and owned-loopback verification
 
+**Latest correction:** native Proxy/HTTP identity assumptions were falsified.
+Production supplies no listener proof and restricted mode is unsupported/H FAIL.
+The safe437503… snapshot passed fresh Java1231, Python27/local18 and Swing27 at
+scale1/2; individual real Burp observations are separate in
+[V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md). Trusted registry tests below are
+synthetic model seams, not native support.
+
 ## Current source and evidence boundary
 
 These tests invoke real `GuardController`, `PolicyEngine`, `RateGate`,
@@ -16,7 +23,7 @@ watcher themselves perform no outbound HTTP, automatic saves, health polling or
 authentication actions. No installed Burp/user project/display/license/system
 settings are required by these tests.
 
-## Recorded runs — do not add overlapping slices
+## Historical checkpoint/slice runs — do not add overlapping slices
 
 | Snapshot / scope | Result / boundary |
 |---|---|
@@ -212,10 +219,12 @@ message ID collision, callback/correlation bounds and reentrant unload/registrat
 Observer is registered before HttpHandler and deregistered on error/close, with
 late handles cleaned. `javap` confirms API presence only.
 
-**Neither mocks nor listener-registry tests prove the real product's observer /
-HttpHandler message IDs are shared or ordered as assumed**, nor actual two-listener
-no-capture, native response correlation or final exact-JAR behavior. Future native
-acceptance must record those facts rather than infer them from these suites.
+**Native testing falsified the shared Proxy/HTTP ID and original-annotation
+assumptions.** Production observer proof generation is removed; both restricted
+ports reject LISTENER_UNVERIFIED before native capture. Four added regressions
+reject false proof even for equal numeric IDs/shared original annotations. H is
+not supported. Ordinary within-HTTP response flight correlation is distinct;
+see the exact-artifact findings rather than inferring native support from mocks.
 
 ## Historical controller runs (2026-11-03)
 

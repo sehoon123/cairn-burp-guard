@@ -820,7 +820,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (candidate.rules().stream().anyMatch(r -> r.enabled() && r.mode() == Mode.EXEMPT && !base.policy().rules().contains(r))
                 && !dialogs.confirm(this, "EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·자동 차단·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
         if (!candidate.guardListenerPorts().isEmpty() && !candidate.guardListenerPorts().equals(base.policy().guardListenerPorts())
-                && !dialogs.confirm(this, "보호 리스너를 " + candidate.guardListenerPorts() + " 포트로 제한할까요? 다른 Burp Proxy 리스너는 범위·규칙·일시중지·자동 차단·예산·내용 기록을 우회합니다. 실제 인바운드 포트이며 목적지 서버 포트가 아닙니다.", "리스너 제한 저장")) return;
+                && !dialogs.confirm(this, "리스너 포트는 실제 인바운드 포트이며 목적지 서버 포트가 아닙니다. 현재 Burp/Montoya의 Proxy·HTTP 콜백에는 검증된 공통 식별자가 없어 리스너 제한은 미지원입니다. " + candidate.guardListenerPorts() + " 설정을 저장하면 보호 켜짐 상태에서 선택·미선택 모두 새 Proxy 전송이 내용 검사 전에 LISTENER_UNVERIFIED로 거절됩니다. 정상적인 전체 리스너 보호는 빈 목록을 사용하세요. 미지원 제한을 저장할까요?", "미지원 리스너 제한 저장")) return;
         if (candidate.limits().healthProbePassthrough() && (!base.policy().limits().healthProbePassthrough()
                 || !candidate.limits().healthProbePaths().equals(base.policy().limits().healthProbePaths()))
                 && !dialogs.confirm(this, "GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지·회로 차단을 통과합니다. 범위·일반 규칙·다른 자동 차단·속도·예산은 유지됩니다.", "GET 통과 저장")) return;
@@ -937,7 +937,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         boolean off = Boolean.TRUE.equals(status.get("passthrough"));
         boolean ended = Boolean.TRUE.equals(status.get("passthroughEnded"));
         protectionState.setText(off ? "전체 통과 · 보호 꺼짐 · 새 기록 미수집" : (ended ? "전체 통과 자동 종료 · " : "") + (paused ? "새 요청 차단 중 (보호 리스너)" : "보호 켜짐")
-                + (config.guardListenerPorts().isEmpty() ? "" : " · 선택 리스너만 " + config.guardListenerPorts()));
+                + (config.guardListenerPorts().isEmpty() ? "" : " · 리스너 제한 미지원 " + config.guardListenerPorts() + " · 새 Proxy 모두 거절"));
         protectionState.setIcon(off ? UIManager.getIcon("OptionPane.warningIcon") : null);
         passthroughCounter.setText("전체 통과 누적 " + count(status, "passthroughCount") + "건");
         passthrough.setText(off ? "보호 다시 켜기" : "모두 통과 (보호 끔)…");
@@ -953,7 +953,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n로컬 451은 source=cairn-proxy-guard / local=true인 확장 거절이며 대상 서버의 5xx와 다릅니다. 대상 응답이 없다는 사실만으로 장애를 단정하지 마세요."
                 + "\n응답 감지: 자동 차단 " + count(watcher, "overlays") + " / 회로 " + count(watcher, "circuits")
                 + " / 확산 에피소드 " + count(watcher, "fanoutWarnings") + " · 태그 사용 " + count(intents, "consumed") + " / 거절 " + count(intents, "rejected")
-                + "\n보호 리스너: " + (config.guardListenerPorts().isEmpty() ? "모든 Proxy 리스너" : config.guardListenerPorts() + " (다른 리스너는 검사·기록 안 함)"));
+                + "\n보호 리스너: " + (config.guardListenerPorts().isEmpty() ? "모든 Proxy 리스너" : config.guardListenerPorts() + " (네이티브 제한 미지원 · 모두 LISTENER_UNVERIFIED)"));
         setDetail(warnings, Boolean.TRUE.equals(watcher.get("automaticPause")) ? "경고: 확산으로 전체 자동 차단 중입니다. 운영자 일시중지와 별개이며 ‘자동 차단’에서 확인·해제하세요."
                 : count(watcher, "fanoutWarnings") > 0 ? "경고: 경로 확산 감지 에피소드가 있습니다. 요청 발생을 검토하고 ‘자동 차단’ 및 사건을 확인하세요."
                 : count(watcher, "overlays") > 0 || count(watcher, "circuits") > 0 ? "경고: 자동 차단/회로가 열려 있습니다. 범위와 규칙을 바꿔도 자동 해제되지 않습니다."
@@ -973,7 +973,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             stateHelp.setText(UiText.next("IN_FLIGHT_TIMEOUT"));
         } else if (paused) {
             stateTitle.setText("일시중지 · 보호 리스너의 새 요청 차단");
-            stateHelp.setText("보호하도록 선택한 리스너의 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). 미선택 리스너까지 막는 기능이나 OFF 모드가 아닙니다. ‘보호 재개’는 운영자 일시중지만 해제하고 자동 차단·기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
+            stateHelp.setText("보호할 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). OFF 모드가 아닙니다. 리스너 제한은 현재 네이티브 미지원으로 선택 여부와 무관하게 LISTENER_UNVERIFIED로 거절됩니다. ‘보호 재개’는 운영자 일시중지만 해제하고 자동 차단·기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
         } else if (allowed == 0) {
             stateTitle.setText("허용 대상 없음 · 모든 요청 차단");
             stateHelp.setText("아직 요청을 보낼 수 없습니다. ‘허용 대상 등록’에서 허가받은 URL을 입력하고 호스트·포트·경로를 확인하세요. 등록하지 않은 대상은 계속 차단합니다.");
@@ -1014,7 +1014,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n(Run, Intent)별 최대 요청: " + l.perIntentMaxRequests() + " (0=끔, 태그는 비신뢰)"
                 + "\n상태 확인 GET 통과: " + (l.healthProbePassthrough() ? "사용 (부작용 주의)" : "끔") + " / 정확한 경로 " + l.healthProbePaths().size() + "개"
                 + "\n경로별 응답 한도: " + l.heavyPathLimits().size() + "개 (첫 초과 응답 예방 불가)"
-                + "\n보호 Proxy 리스너: " + (config.guardListenerPorts().isEmpty() ? "모두" : config.guardListenerPorts() + " (미선택은 검사·기록·일시중지 우회)")
+                + "\n보호 Proxy 리스너: " + (config.guardListenerPorts().isEmpty() ? "모두" : config.guardListenerPorts() + " (네이티브 제한 미지원 · 보호 중 새 Proxy 모두 거절, 빈 목록으로 복원)")
                 + "\n\n보호 켜짐 상태에서만 범위·규칙·속도 제한을 적용합니다. 전체 통과 상태에서 설정을 저장해도 보호를 자동으로 켜지 않습니다.\n보호 중 응답을 확인하지 못하면 새 요청을 막으며 진행 중 요청의 자리를 임의로 비우지 않습니다.\n\n‘요청 제어 설정 변경’에서 읽기 쉬운 폼으로 수정할 수 있습니다.";
         setDetail(settingsSummary, summary);
     }

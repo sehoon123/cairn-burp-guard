@@ -100,7 +100,7 @@ final class UiText {
             case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION", "EXEMPT", "RULE_EXEMPT" -> "요청 기록의 처리 결과·검사 경고·응답을 확인하세요. 정책상 허용과 실제 대상 도착은 다릅니다.";
             case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "‘자동 차단’에서 만료·해제와 ‘사건 내보내기’를 확인하세요. 로컬 451을 대상 장애로 오인하지 마세요. 첫 큰 응답은 예방할 수 없습니다.";
             case "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "‘설정’의 태그 한도와 클라이언트 X-Cairn 태그를 검토하세요. 초기화는 ‘개요’에서 명시 확인해야 하며 태그는 인증이 아닙니다.";
-            case "LISTENER_UNVERIFIED" -> "‘설정’의 실제 Burp 인바운드 리스너 포트와 현재 리스너 정보를 확인하세요. 목적지 서버 포트로 대체하지 않습니다.";
+            case "LISTENER_UNVERIFIED" -> "현재 네이티브 리스너 제한은 미지원입니다. 정상적인 전체 보호는 ‘설정’의 리스너 목록을 비우세요. Proxy·HTTP ID/주석이나 목적지 포트로 리스너를 추정하지 않습니다.";
             case "PATH_INTERPRETATION_INCOMPLETE" -> "명시적 모든 경로 범위에서 원래 target은 바꾸지 않습니다. 제한 경로·명시 차단은 계속 검사하며 불완전 경로로 EXEMPT를 부여하지 않습니다.";
             case "SCOPE_NOT_ALLOWED" -> "허가받은 대상인지 확인한 뒤 ‘대상’에서 호스트·연결 방식·포트·경로를 등록하세요. 빈 허용 목록은 모든 요청을 차단합니다.";
             case "SCOPE_BLOCKED" -> "‘대상 → 차단 대상’에서 해당 범위를 확인하세요. 차단 대상은 허용 대상보다 우선합니다.";

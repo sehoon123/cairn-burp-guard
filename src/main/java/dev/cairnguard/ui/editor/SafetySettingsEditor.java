@@ -92,7 +92,7 @@ final class SafetySettingsEditor {
         row(tags, "(Run, Intent)별 전송 허가 횟수 (0=끔, 최대 1000000)", intent);
         row(tags, "보호할 Proxy 리스너 포트 (쉼표 구분, 빈칸=모두)", listeners);
         panel.add(tags);
-        panel.add(note("X-Cairn-Intent / X-Cairn-Run은 클라이언트가 주장한 태그이며 인증·신뢰 경계가 아닙니다. 한도가 꺼져도 기존 사용량은 보존됩니다. 선택하지 않은 리스너는 검사·일시중지·기록·예산을 우회합니다. 목적지 서버 포트가 아니라 실제 Burp 인바운드 리스너 포트입니다. 최대 16개, 1~65535, 중복 불가."));
+        panel.add(note("X-Cairn-Intent / X-Cairn-Run은 클라이언트가 주장한 태그이며 인증·신뢰 경계가 아닙니다. 한도가 꺼져도 기존 사용량은 보존됩니다. 현재 네이티브 리스너 제한은 미지원입니다. 목록을 제한하면 보호 중 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED로 거절됩니다. 정상적인 전체 보호는 빈칸으로 두세요. 목적지 서버 포트가 아니라 실제 Burp 인바운드 리스너 포트입니다. 최대 16개, 1~65535, 중복 불가."));
         panel.add(probes);
         panel.add(note("GET도 부작용이 있을 수 있습니다. 아래 정확한 scheme/host/port/path만 지정하세요. query·fragment·모호한 경로 불가. 상태 확인도 범위·일반 규칙·대용량/확산 차단·예산·속도는 우회하지 않습니다. 통과 응답으로 회로를 회복시키지 않습니다. 활성화/경로 변경 저장에는 별도 확인이 필요합니다."));
         panel.add(probeRoutes.panel);

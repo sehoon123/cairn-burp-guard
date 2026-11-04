@@ -269,7 +269,10 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         }
     }
 
-    /** Data-free observer seam, called only with the ACTUAL inbound listener, never service.port(). */
+    /** Trusted synthetic/future-bridge seam, not a cross-namespace numeric-ID authorization API.
+     * Production Montoya has NO verified producer: Proxy IDs/annotations cannot identify the HTTP
+     * callback. Only a supported shared identity may supply ACTUAL inbound listener evidence here.
+     */
     public void recordListener(int messageId, String listenerInterface) {
         synchronized (mutation) {
             reconcileProjectFailure();

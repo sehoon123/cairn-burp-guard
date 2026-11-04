@@ -2,6 +2,8 @@
 
 일반적인 대상·규칙·속도·자동 안전 제어·태그 예산·리스너 설정은 **JSON 없이 폼으로 작성**합니다. `Cairn Guard`는 Burp 안에서 사람이 사용하는 Swing UI입니다. 워커 제어 API, 요청 전송/재실행 도구, 인증 편집기·쿠키 주입·세션 복구 기능은 없습니다. 허용한 native 요청·응답·annotation을 수정하는 기능도 아닙니다.
 
+> **현재 native 리스너 한정은 미지원(H FAIL)입니다.** 빈 목록으로 모든 리스너를 보호하세요. 제한 목록은 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED로 거절합니다. UI 경고와 [실제 발견 기록](V2_NATIVE_FINDINGS.md)을 따르세요.
+
 ## 시작과 상단 보호 상태
 
 1. 허가받은 검증용 Burp 프로젝트에서 **개요 → 허용 대상 등록…**을 누릅니다. 빈 허용 목록은 보호 대상 요청을 전부 차단합니다.
@@ -14,7 +16,7 @@
 
 **OFF → ON에서도 이전 운영자 일시중지·자동 차단·태그 사용량·미완료 native 자리는 보존**합니다. 다시 켠 뒤 필요하면 운영자 일시중지를 별도로 재개해야 합니다. OFF는 프로젝트 전환·확장 재시작·상태 불확실성에서 끝나는 임시 상태입니다. 설정 저장은 OFF를 자동으로 켜거나 사용량을 초기화하지 않습니다. 복원 전에 트래픽을 멈추고 기존 연결 완료를 확인하세요.
 
-**새 요청 모두 차단 / 보호 재개**는 운영자 일시중지입니다. **보호하도록 선택한 리스너**에 적용하며 미선택 리스너까지 막는 방화벽이 아닙니다. 명시적으로 설정한 GET 상태 확인 경로는 일시중지의 예외일 수 있습니다. 자동 PAUSE는 운영자 일시중지와 별개이며 자동 차단 탭에서 확인합니다.
+**새 요청 모두 차단 / 보호 재개**는 운영자 일시중지이며 전체 통과/OFF가 아닙니다. 현재 native 한정 모드는 미지원이므로 빈 목록에서 전체 보호를 사용하세요. 제한 목록에서는 pause와 무관하게 선택·미선택 모두 LISTENER_UNVERIFIED로 거절됩니다. 명시적으로 설정한 GET 상태 확인 경로는 일시중지의 예외일 수 있습니다. 자동 PAUSE는 운영자 일시중지와 별개이며 자동 차단 탭에서 확인합니다.
 
 확인/오류 창은 plain text, 선택·복사·줄바꿈·세로 스크롤·크기 조절을 지원하며 버튼은 본문 밖에 남습니다. 확인 창의 초기 Enter/Escape/닫기는 **취소**입니다. 위험 작업은 확인 버튼을 명시적으로 선택해야 합니다. 창은 사용 가능한 모니터 영역으로 제한합니다. [전체 통과 경계](PASSTHROUGH.md)
 
@@ -88,7 +90,7 @@ EXEMPT 행은 주황/적색 경고와 함께 표의 **보기에서만** 위에 �
 
 **GET 상태 확인 통과 활성화/활성 경로 변경**에는 별도 확인이 필요합니다. 정확한 GET만 운영자 일시중지·회로를 통과합니다. 범위·일반 규칙·heavy/fanout·예산·속도는 유지하고 회로를 회복시키지 않습니다. GET도 부작용이 있을 수 있습니다.
 
-**리스너 제한을 새로 지정/변경**하면 별도 확인합니다. 실제 Burp **인바운드 Proxy listener**이며 목적지 서비스 포트가 아닙니다. 미선택 리스너는 내용 수집·검사·일시중지·예산을 우회합니다. 리스너를 확실히 확인하지 못한 보호 콜백은 내용 수집 없이 거절할 수 있습니다. [adapter 경계](BURP_ADAPTER.md)
+**리스너 제한을 새로 지정/변경**하면 현재 native **미지원·모두 거절** 경고를 별도 확인합니다. 실제 Burp 인바운드 포트이며 목적지 포트가 아닙니다. Proxy/HTTP 숫자 ID·원본 annotation 연결 가정은 실제 검사에서 실패해 증거 생산을 제거했습니다. 제한 목록은 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED, 빈 목록은 정상 전체 보호입니다. [adapter 경계](BURP_ADAPTER.md)
 
 응답 미확인은 native permit을 임의 반환하지 않습니다. stalled host를 격리하며 다른 host는 실제 사용 가능한 전체 슬롯만 쓸 수 있습니다. 설정 저장/재개/논리 timeout으로 in-flight 자리를 재활용하지 않습니다.
 
@@ -144,6 +146,6 @@ POSIX에서는 임시/결과 파일 `0600`, 같은 디렉터리 atomic publicati
 
 패널/폼은 EDT-only, 1초 coalescing refresh입니다. evidence/approval/overlay/candidate 표시와 입력은 bounded입니다. 이름·요청·응답·정책은 plain text(HTML 해석 없음)이고 새 요청을 보내거나 URL을 여는 viewer가 아닙니다. 오류는 고정 범주이며 원본 exception/traffic을 로그나 오류 문자열로 붙이지 않습니다. close는 자신의 timer/worker/window와 화면 사본을 정리할 뿐 controller/native permit을 임의로 닫지 않습니다.
 
-현재 소스 UI 검증은 합성 input·mock CAS·실제 in-process controller를 사용하는 **분리된 private source copy**에서 **291 headless UI cases PASS / 27 desktop-tag Swing cases PASS**입니다 (2026-11-04). 새 회귀는 `GuardPanelV2Test` 24개, `SettingsV2Test` 4개, `GuardPanelV2DesktopTest` 7개입니다. 모든 v2 설정 roundtrip/host·preset 보존, EXEMPT 정렬·확인, overlay 만료/교체/stale 해제, 후보 초안/한도/재마스킹, raw-screen/masked-export, 태그 필터/초기화, migration cancel/manual-save/reopen/원본 export, UTC 사건/파일 안전성을 포함합니다. desktop는 자기 소유의 격리 Xvfb에서 실행했으며 실제 모달 lifecycle·14/28pt 폼·listener/GET 추가 확인·migration·threshold 저장/취소를 검사했습니다. 패키지는 scratch에만 추출했고 시스템 설치/설정 변경이나 live display 사용은 하지 않았습니다. 실행 명령은 `./gradlew --no-daemon --offline --max-workers=2 test --tests 'dev.cairnguard.ui.*'`, 별도 private display의 `./gradlew --no-daemon --offline --max-workers=2 desktopTest`입니다.
+다음은 이전 v2 UI 작업 스냅샷의 기록이며, 최신 안전 수정의 Java1231/Swing27(scale1·2)와 실제 native 범위는 [검증](VERIFICATION.md)·[발견 기록](V2_NATIVE_FINDINGS.md)을 따릅니다. 합성 input·mock CAS·실제 in-process controller를 사용하는 **분리된 private source copy**에서 **291 headless UI cases PASS / 27 desktop-tag Swing cases PASS**입니다 (2026-11-04). 새 회귀는 `GuardPanelV2Test` 24개, `SettingsV2Test` 4개, `GuardPanelV2DesktopTest` 7개입니다. 모든 v2 설정 roundtrip/host·preset 보존, EXEMPT 정렬·확인, overlay 만료/교체/stale 해제, 후보 초안/한도/재마스킹, raw-screen/masked-export, 태그 필터/초기화, migration cancel/manual-save/reopen/원본 export, UTC 사건/파일 안전성을 포함합니다. desktop는 자기 소유의 격리 Xvfb에서 실행했으며 실제 모달 lifecycle·14/28pt 폼·listener/GET 추가 확인·migration·threshold 저장/취소를 검사했습니다. 패키지는 scratch에만 추출했고 시스템 설치/설정 변경이나 live display 사용은 하지 않았습니다. 실행 명령은 `./gradlew --no-daemon --offline --max-workers=2 test --tests 'dev.cairnguard.ui.*'`, 별도 private display의 `./gradlew --no-daemon --offline --max-workers=2 desktopTest`입니다.
 
-**이 문서는 v2 native Burp/두 리스너/실제 6MiB/5xx/최종 JAR 검증이나 release 승인을 주장하지 않습니다.** 이전 artifact의 native 결과와 최신 소스 UI 결과는 구분해야 합니다. [산출물별 실제 native 결과](NATIVE_BURP_RESULTS.md)
+**개별 native 6MiB/5xx/원문·export 관찰은 두 리스너 H 통과나 release 승인이 아닙니다.** 이전 artifact의 native 결과와 최신 소스 UI 결과는 구분해야 합니다. [산출물별 실제 native 결과](NATIVE_BURP_RESULTS.md)

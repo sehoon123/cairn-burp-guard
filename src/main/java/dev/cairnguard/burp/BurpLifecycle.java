@@ -44,8 +44,8 @@ public final class BurpLifecycle implements AutoCloseable {
                 install(tabRegistration, api.userInterface().registerSuiteTab("Cairn Guard", created));
                 if (closed.get()) stopPanel();
             });
-            // Listener observation must be installed before the HTTP boundary can consume IDs.
-            if (!closed.get()) install(listenerRegistration, api.proxy().registerRequestHandler(new ListenerObserver(controller)));
+            // Lifecycle wiring only: Proxy callbacks do not supply HTTP listener identity proof.
+            if (!closed.get()) install(listenerRegistration, api.proxy().registerRequestHandler(new ListenerObserver()));
             if (!closed.get()) install(httpRegistration, api.http().registerHttpHandler(handler));
         } catch (RuntimeException | LinkageError e) {
             close();

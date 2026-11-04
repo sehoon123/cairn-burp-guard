@@ -7,6 +7,8 @@ for the frozen-snapshot results and pending acceptance gates. No worker/network
 control API, outbound HTTP client, authentication mutation or automatic policy
 save is introduced by these interfaces.
 
+**Native listener selection is currently UNSUPPORTED (H FAIL).** The old cross-namespace ID assumption was falsified; [exact-artifact findings](V2_NATIVE_FINDINGS.md) supersede earlier pending-only descriptions. Trusted registry tests are model seams, not a production Montoya identity producer.
+
 ## Models and strict project policy
 
 ### `model.GuardConfig`
@@ -69,8 +71,10 @@ It is intentionally different from a **new v2 profile**:
 | Intent / health / listener selection | Off / off / empty = all Proxy listeners protected |
 
 `guardListenerPorts` selects **actual inbound Burp listener ports**, not target
-server ports: at most16 unique integers1–65535. Known unselected listeners bypass
-protection and new content capture; unknown mappings do not. See native seam below.
+server ports: at most16 unique integers1–65535. Empty protects all. With the current
+native adapter, nonempty selection always rejects before native content capture:
+there is no verified shared-identity producer. Core known-unselected bypass needs
+trusted proof and is synthetic-only, not successful H. See native seam below.
 Authored health/byte-limit routes remain strict exact scheme/host/port/path,
 without query/fragment or ambiguous routing aliases. Relaxed pentest **traffic**
 acceptance is not permission to write ambiguous probe configuration.
@@ -329,19 +333,20 @@ is one-shot and still subject to cancellation/expiry until consumed.
 
 ## Native listener / OFF seam and local451
 
-- `recordListener(int messageId,String listenerInterface)` is data-free. The
-  `ListenerObserver` records only received ID+actual inbound interface and
-  continues the original object/annotations in both observer callbacks. It does
-  **not** record twice, use destination fallback or inspect content.
+- `recordListener(int messageId,String listenerInterface)` is a data-free trusted
+  synthetic/future-bridge seam. Production does NOT call it: `ListenerObserver`
+  only continues original objects/annotations and reads no ID/listener/content.
+  Native Proxy and HTTP numeric IDs or annotations are not a shared identity.
 - `ListenerRegistry.record(id,interface,generation)`, `consume(id,generation)`,
   `reset`, `snapshot`:4096 entries,30second TTL, strict host:port / bracketedIPv6.
   Duplicate (even identical), missing, expired, stale or capacity mappings are
   UNKNOWN, never evidence of an unselected listener.
 - `nativeMode(int messageId)` checks **before capture**: protected `(null,null)`,
   data-free rejection, or controller-issued `PassthroughToken`. Global OFF comes
-  first. Empty ports protects all; selected protects; known unselected bypasses
-  scope/rules/pause/watchers/budget/rate/content capture. Unknown configured
-  listener rejects `LISTENER_UNVERIFIED` without capture.
+  first. Empty ports protects all. Supplied trusted model proof can protect a
+  selected or bypass an unselected port; production supplies no such proof, so
+  every configured restriction rejects `LISTENER_UNVERIFIED` before native capture.
+  A fixed synthetic UNKNOWN/redacted omission record is not native content capture.
 - Compatibility `nativeMode()` / `passthroughToken()` remain; no-ID cannot prove
   a selected/unselected listener when ports are restricted.
 - `PassthroughToken` is a final class with original `(projectId,revision)` and
@@ -352,9 +357,10 @@ is one-shot and still subject to cancellation/expiry until consumed.
 
 Only `ToolType.PROXY` enters protection. `BurpLifecycle` registers the observer
 before HttpHandler and deregisters both/tab/unload on normal/error/reentrant close,
-including late registration handles. This **source wiring is not native proof** of
-shared observer/HttpHandler IDs, callback order, interface spelling or two-listener
-acceptance; these remain pending exact-artifact tests.
+including late registration handles. Source wiring is not identity proof. Native
+checks falsified shared Proxy/HTTP ID and annotation-identity assumptions. H remains
+FAILED/UNSUPPORTED; accepting equal numbers would not fix it. Ordinary HTTP-handler
+request/response flight correlation remains separate.
 
 Native allows continue the **same request/response objects and annotations**.
 Native bounds are128 protected callbacks,8 optional inspection slots,100 flights;

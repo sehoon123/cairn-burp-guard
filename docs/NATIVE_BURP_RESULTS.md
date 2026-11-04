@@ -1,51 +1,31 @@
 # 실제 Burp 기록 — 미배포 v2와 과거 산출물 구분
 
-## 현재 v2 후보 — 첫 EULA에서 중단, native 수용 미실행
+## 현재 v2 후보 — 개별 native 성공, H 미지원으로 배포 차단
 
-현재 작업 트리에는 EXEMPT/ResponseWatcher/overlay/Intent/schema2/별도 Raw UI/
-listener observer와 native adapter 구현이 있습니다. **구현 존재는 설치·실제 native
-수용·독립 구현 감사·배포 완료가 아닙니다.** 정확한 API는 [INTERFACES.md](INTERFACES.md),
-현재 자동 검사/후보별 hash와 남은 gate는 [VERIFICATION.md](VERIFICATION.md)를 보세요.
+**최신 상세 기록은 [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md)입니다.**
+사용자의 임시 인스턴스 약관 허가 후 정상 Community2026.10.1에서 진행했습니다.
+허가 전 첫 EULA 중단은 과거 관찰이며 더 이상 현재 상태가 아닙니다. 라이선스/활성화
+복사·우회, 사용자 기존 프로젝트·설치 JAR 변경은 없었습니다.
 
-Main이 실제 disposable Burp를 **완전히 분리한 임시 HOME·profile·display 및 소유
-임시 포트**로 시작했으나 **첫 EULA 화면에서 중단**했습니다. **약관을 동의하지 않았고,
-확장을 로드하지 않았으며 어떤 native phase도 실행하지 않았습니다.** 사용자 live
-프로젝트/라이선스·활성화·프로필 자료를 복사하거나 우회한 것으로 해석하지 마세요.
-이는 제품 시작 관찰이지 확장 로드 성공이나 native A–H PASS가 아닙니다.
+직접 재로드한 최종 로컬 JAR SHA256:
+`43750326ca57a11fdb898850729c330d579538fb7d87261e0dc7b714993637b6`.
+소유 loopback fixture에서 `exact`6 / `rawpaths`21 / `intent`2 / `exempt`2 /
+`heavy`3 / `circuit`3개 논리 시나리오와 Main의 WARN fanout3경로 관찰을 통과했습니다.
+사람 원문과 실제0600 JSON/HAR/incident 내보내기도 구분해 검사했습니다.
+숫자는 HTTP 요청 수·JUnit 수·A–H 완료 수가 아닙니다.
 
-현재 native 상태:
+기존217730… 후보의 HEX 반사 export 누락은 수정하고 최종 hash에서 재검증했습니다.
+그러나 Proxy/HTTP ID 연결 가정은 실제 검사에서 실패했습니다. 약한 숫자 연결은
+생산 경로에서 제거했으며 **리스너 한정 모드는 미지원·H 수용 FAIL**입니다.
+빈 목록은 전체 보호, 제한 목록은 선택·미선택 모두 내용 검사 전에
+`LISTENER_UNVERIFIED`입니다. 목적지 포트·annotation·타이밍으로 대체하지 않습니다.
 
-| 확인할 항목 | 상태 |
-|---|---|
-| 정확한 최종 v2 JAR 로드·native A–H | **PENDING** |
-| Observer → HttpHandler ID 공유/순서, 실제 listenerInterface | **PENDING**; API/Mockito/registry로 증명하지 못함 |
-| 두 실제 inbound listener: 선택 보호 / 미선택 no-capture | **PENDING**; 목적지 포트 fallback 없음, unknown은 내용 없이 거절 |
-| 실제 목적지 vs fuzzed Host, all-path `/c/;/main.do`, `/c/%2e/main.do` 및 변형 원형 보존 | **PENDING native**, 소스·합성·owned socket 회귀와 구분 |
-| 지원하지 않는 body/charset/encoding·선택적 capture 한계 경고, 원형 전달 | **PENDING native**, 자동451을 요구하지 않음 |
-| 첫6MiB/actual bytes·circuit·half-open·EXEMPT·21st Intent·로컬 no-spend | **PENDING native** |
-| Raw human 화면만 원문 / JSON·HAR·incident 마스킹 / OFF·미선택 내용 미수집 | **PENDING native**, 외부 client만으로 메모리 미수집 증명 못함 |
-| pause 보존/OFF·설정·listener·health 확인/저장·프로젝트 lifecycle | **PENDING native** |
-
-자동 검사 기록은 revision3 clean Java1221 PASS, focused Python27 PASS와 local-template18
-PASS(실제 upstream 미실행)입니다. 초기 HiDPI 테스트의 비동기 wrap·클릭 좌표 대기만 보완해
-포커스/마지막 줄 도달 단언을 유지했고, 격리 Xvfb+소유 WM의 Swing은 scale1 27 PASS,
-scale2 27 PASS 및 scale2 반복27 PASS입니다. 후보 SHA256
-`217730d68b66f7ddb7f1c8d5ef4271873ac05e3e77efeb7dffb29c4bc105607d`는
-revision2/3 clean 및 반복 로컬 재빌드에서 동일했습니다. 독립 코드 검토나 native 검증은
-아닙니다. Swing/Mock/직접 loopback 결과나 이전 native hash를 이 후보의 native 증거로
-이전하지 않습니다. 사용자 재요청 뒤 같은 소스의 fresh clean Java1221, Python27+18,
-격리 Swing scale1·2 및 scale2반복 각27도 다시 통과했고 clean/반복 JAR hash도 같았습니다.
-로컬 체크포인트·후보 빌드는 이 검사 상태를 보존할 뿐 공개 push/tag/release나 실제 native
-수용 완료가 아닙니다. 기존 사용자 Burp/JAR를 교체하거나 약관에 동의하지 않았습니다.
-
-요청된 독립 A **설계** 검토는3회 시도 뒤 credential rotation으로 중단됐고,
-앞선 B/C **DESIGN** 보고서는 최종 구현 감사가 아닙니다. 이어 frozen revision4의
-통합 소스 A/B/C 감사는 최초3건과 사용자 재요청 뒤 재시도3건, 총6개 요청 모두 정확한
-provider/model metadata를 확인했으나3–7초 안에 같은 공급자 오류로 중단됐습니다.
-도구 출력·감사 보고서가 없어 실질적 최종 감사/승인은0건입니다. 대체 모델·인증/라우팅 변경·전체 합의로 세지 않습니다. 원본 보고서·로그·스크린샷·profile·auth·license
-자료와 사설 경로를 이 저장소에 복사하지 않습니다. 재현 절차는 generic `$TMP`와
-합성·소유 fixture만 사용합니다. 다음 [수동 checklist](MANUAL_BURP_SMOKE.md)는 앞으로
-사람이 수행할 절차이며 현재 실행 증거가 아닙니다.
+독립 구현 감사3개는 지정 모델의 세 차례 wave/9개 dispatch가 공급자 오류로
+실질적 보고서를 내지 못했습니다. **최종 승인0건, 공개 push/tag/release/설치 없음.**
+기존 permit/OFF·전체 native lifecycle·HTTPS/HTTP2 등의 남은 범위와 정리 결과는
+상세 기록을 따릅니다. 테스트 Burp/WM/runner와 소유 listen 포트는 종료를 확인했습니다.
+자동 검증 및 산출물 계보는 [VERIFICATION.md](VERIFICATION.md),
+향후 재검사 절차는 [MANUAL_BURP_SMOKE.md](MANUAL_BURP_SMOKE.md)를 보세요.
 
 ## HISTORICAL — 공개 모달·전체 통과·조건 추가 프리뷰
 

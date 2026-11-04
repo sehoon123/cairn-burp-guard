@@ -97,7 +97,7 @@ class GuardPanelV2Test {
     @Test void listenerNarrowingAndProbeEnableEachRequireExplicitConfirmationAndUseOriginalCas() throws Exception {
         open(); dialogs.confirmed=false;
         dialogs.edit=(form,save)->{get("settings.listenerPorts",JTextField.class).setText("8080");save.run();};
-        edt(()->{click("settings.edit");return null;});assertEquals(0,access.updates);assertTrue(dialogs.confirmations.getLast().contains("실제 인바운드"));
+        edt(()->{click("settings.edit");return null;});assertEquals(0,access.updates);assertTrue(dialogs.confirmations.getLast().contains("실제 인바운드"));assertTrue(dialogs.confirmations.getLast().contains("미지원"));assertTrue(dialogs.confirmations.getLast().contains("LISTENER_UNVERIFIED"));assertTrue(dialogs.confirmations.getLast().contains("선택·미선택 모두"));
         dialogs.confirmed=true;edt(()->{click("settings.edit");return null;});assertEquals(List.of(8080),access.policy.guardListenerPorts());assertEquals(1,access.updates);
         dialogs.confirmed=false;
         dialogs.edit=(form,save)->{

@@ -9,7 +9,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
 /**
- * Data-free, single-consumption correlation of an actual inbound Proxy listener to a message ID.
+ * Data-free, single-consumption registry for a verified shared identity and actual inbound listener.
+ * This abstraction is NOT proof that Montoya Proxy and HTTP IDs share a namespace. Production
+ * currently has no verified producer; direct tests supply synthetic trusted observations only.
  * No destination-port fallback, native objects, traffic, DNS, threads or I/O. Unknown, collided,
  * expired and capacity-exhausted mappings all remain UNKNOWN (never an unprotected listener).
  */

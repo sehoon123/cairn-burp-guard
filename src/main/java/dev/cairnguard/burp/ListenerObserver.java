@@ -5,20 +5,23 @@ import burp.api.montoya.proxy.http.InterceptedRequest;
 import burp.api.montoya.proxy.http.ProxyRequestHandler;
 import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
 import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
-import dev.cairnguard.runtime.GuardController;
 import java.util.Objects;
 
-/** Data-free inbound listener correlation. No content, destination fallback, intercept or edits. */
+/** Original-object Proxy continuation only. Listener attribution is NOT supported here: native
+ * Proxy and HTTP callbacks use distinct message-ID namespaces and have no documented shared key.
+ * Equal numbers or annotations are not proof. Do not populate the controller's trusted registry.
+ * With no supported producer, restricted-listener HTTP admission stays LISTENER_UNVERIFIED before
+ * content capture. No content, listener/destination guessing, marker, annotation edit or I/O.
+ */
 final class ListenerObserver implements ProxyRequestHandler {
     interface Actions {
         ProxyRequestReceivedAction received(InterceptedRequest request, Annotations annotations);
         ProxyRequestToBeSentAction sending(InterceptedRequest request, Annotations annotations);
     }
-    private final GuardController controller;
     private final Actions actions;
 
-    ListenerObserver(GuardController controller) {
-        this(controller, new Actions() {
+    ListenerObserver() {
+        this(new Actions() {
             @Override public ProxyRequestReceivedAction received(InterceptedRequest request, Annotations annotations) {
                 return ProxyRequestReceivedAction.continueWith(request, annotations);
             }
@@ -27,21 +30,15 @@ final class ListenerObserver implements ProxyRequestHandler {
             }
         });
     }
-    ListenerObserver(GuardController controller, Actions actions) {
-        this.controller = Objects.requireNonNull(controller);
+    ListenerObserver(Actions actions) {
         this.actions = Objects.requireNonNull(actions);
     }
     @Override public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest request) {
-        try { controller.recordListener(request.messageId(), request.listenerInterface()); }
-        catch (RuntimeException | LinkageError ignored) {
-            // Missing observation is UNKNOWN, never evidence for bypass. HttpHandler rejects an
-            // unverified restricted listener before capture. No raw native exception is retained.
-        }
         try { return Objects.requireNonNull(actions.received(request, request.annotations())); }
         catch (RuntimeException | LinkageError e) { throw new IllegalStateException("NATIVE_LISTENER_CONTINUATION_UNAVAILABLE"); }
     }
     @Override public ProxyRequestToBeSentAction handleRequestToBeSent(InterceptedRequest request) {
-        // Do NOT record twice: identical duplicate observations must fail closed in the registry.
+        // No cross-callback correlation, even if an ID or the original annotations happen to match.
         try { return Objects.requireNonNull(actions.sending(request, request.annotations())); }
         catch (RuntimeException | LinkageError e) { throw new IllegalStateException("NATIVE_LISTENER_CONTINUATION_UNAVAILABLE"); }
     }

@@ -211,18 +211,19 @@ Current risk confirmations in the common save path:
 | Action | Confirmation / retained constraints |
 |---|---|
 | New/enabled/changed enabled EXEMPT | Explicit ordinary BLOCK/ASK bypass warning; hard/automatic/budget gates retained |
-| Nonempty changed listener selection | Actual inbound ports; known unselected listeners bypass scope/rules/pause/watchers/budget/rate/new content capture |
+| Nonempty changed listener selection | Explicit UNSUPPORTED warning: no verified native shared identity; both selected/unselected reject LISTENER_UNVERIFIED before native capture. Empty list restores normal all-listener protection |
 | Health enabled or enabled routes changed | GET can have side effects; exact authored service/path only, no query/body; bypass only operator pause/circuit |
 | Pending v1 → v2 save | Original backup/comparison, full schema2 save, no automatic legacy removal/old-JAR compatibility |
 | Candidate path threshold | First-heavy limitation and retained active overlays |
 | Overlay release/all / candidate ignore / intent reset | Scope of runtime change; no policy/native completion implied |
 | Protection OFF / destructive clear/delete/overwrite | Separate explicit choice; stale baseline rejects |
 
-Empty `guardListenerPorts` protects all. Restricted selection requires data-free
-observer ID/interface mapping before capture; unknown/collision/expired/stale mapping
-is `LISTENER_UNVERIFIED`, **never destination-port fallback**. Actual native order/
-ID correlation/two-listener behavior is pending acceptance, not established by UI
-settings/tests.
+Empty `guardListenerPorts` protects all. Native Proxy/HTTP shared-ID and original-
+annotation assumptions were falsified. The observer supplies no trusted registry
+proof; every current restriction rejects `LISTENER_UNVERIFIED` before native
+capture. H is FAIL/UNSUPPORTED, not merely pending UI confirmation. No destination,
+number, timing or content-fingerprint fallback. Synthetic trusted-registry behavior
+must not be presented as native support. See [findings](V2_NATIVE_FINDINGS.md).
 
 Health exception requires exact configured actual service/path, **GET**, verified
 empty body metadata, no query, and all routing views identical. It cannot bypass
@@ -260,7 +261,11 @@ masked JSON/HAR/incident. No original logs/screenshots/profile data belong in Gi
 
 ## Validation status, not approval
 
-Current frozen integration: revision3 clean Java1221 PASS; native-harness Python27
+Latest actual-artifact observations, HEX fix and unsupported-listener mitigation
+are in [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md) and
+[VERIFICATION.md](VERIFICATION.md). No all-A–H/release approval exists.
+
+**Historical pre-authorization checkpoint only:** revision3 clean Java1221 PASS; native-harness Python27
 and local-template18 PASS (actual upstream not run). Real isolated Xvfb+owned-WM
 Swing passed27 each at scale1 and scale2, then27 in a scale2 repeat. Test-only
 synchronization now observes stable native wrap geometry and click coordinates;
