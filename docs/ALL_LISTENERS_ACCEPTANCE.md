@@ -6,11 +6,50 @@
 현재 범위는 **A–G + 기존 보호 OFF/일시중지/진행 요청/원문 분리 요구사항**이며,
 `guardListenerPorts=[]`로 모든 Proxy 리스너를 보호합니다. H는 현재 완료 조건도 성공 기능도
 아닙니다. 이전 artifact의 H 실패·HEX 수정은 [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md)의
-역사적 관찰입니다. 아래는 **새 exact JAR에서 직접 다시 실행한 개별 검사**입니다.
+역사적 관찰입니다. 아래의 native 표는 **956bcf… exact JAR에서 직접 실행한 개별 검사**이며,
+뒤이은 소스 수정/새 artifact에 그 성공을 이전하지 않습니다.
 
 정의된 자동/native 시나리오를 아래처럼 확인했지만, **요청한 독립 구현 감사3개는 미완료**입니다.
 이를 전체 수용·독립 검토·배포 승인으로 합치지 않습니다. 로컬 후보만 유지하며
 **공개 push/tag/release/사용자 설치는 하지 않았습니다.**
+
+## 감사 이후 소스 수정 — native 수용 미완료
+
+두 개의 cold 감사는 정확한 `ica-se-claude/claude-advantage-assist`로
+`7b974de` 소스를 독립적으로 읽고 실질 보고서를 작성했습니다. 승인 보고서가 아니라
+High/Medium 결함을 지적한 보고서입니다. 세 번째 privacy/export 감사는
+credential-rotator 실패로 실질 보고서가 없어 여전히 **BLOCKED**입니다. 기존 실패
+시도와 뒤이은 두 실질 감사를 구분하며, 모델·인증·라우팅을 대체하지 않았습니다.
+
+후속 로컬 수정:
+
+- `0fa6b09`: EXEMPT의 PATH/URL 및 ANY routing 부분은 모든 routing view를 충족해야
+  합니다. URL 규칙도 실제 service와 dot/matrix/encoded alias를 봅니다. Native target은
+  별도 transient 필드로 그대로 보존하며 non-origin/control 경로는 불완전 경로로
+  처리합니다. 제한 범위/건강 probe/경로 EXEMPT를 증명하지 못하되 명시적 전체 경로는
+  검사할 수 있습니다. 이는 구현 작업이며 독립 감사/승인이 아닙니다.
+- `e77dd60`: 논리 timeout 뒤에도 bounded masked ticket을 실제 응답까지 보관하여
+  늦은 heavy/일반5xx scalar를 관찰합니다. 만료 half-open은 새 probe를 치유하지
+  못합니다. 실제 native permit은 timeout으로 반환하지 않습니다. `authorize`가 permit을
+  호출자에게 넘기기 전 예외가 나면 확실히 미전송인 그 permit만 닫습니다.
+- `2afd923`: watcher도 빈/non-`/` 첫 view와 raw control/DEL/C1/lone surrogate를
+  받아들이며 **최대9 view·각16384 code unit**을 hash 전에 검사합니다. Lone surrogate를
+  `?`로 바꾸는 charset 충돌 없이 정확한 UTF-16 code unit을 HMAC에 넣습니다.
+  `healthProbe`의 `allMatch(probe.path()::equals)`는 바꾸지 않았습니다.
+
+새 isolated clean Java 검사: **1302 PASS**, failures/errors/skips0.
+이 중 watcher routing interop18개, late scalar/permit 회귀7개입니다.
+같은 frozen source에서 Python helper의 **offline unit31개**와 local template18개도
+통과했습니다(실제 upstream은 SKIP). 현재 tracked build/source 입력113개와 byte 일치를
+확인했고 production 강제 재빌드에서도 같은 JAR hash를 확인했습니다.
+새 로컬 자동검사용 JAR SHA256:
+`c61b7d1f869ec926c30f0e0fcc9cd188396f7fd694e9fc2cfac542a6d191f491`.
+**이 새 JAR의 native Burp/Swing 재검증·전체 수용·업데이트된 소스의 최종 독립 검토는
+아직 하지 않았습니다.** 아래956bcf…의 native/내보내기/desktop 성공으로 대신하지 않습니다.
+
+나머지 queue/fanout/optional-capture 분류 등의 감사 지적도 아직 전체 adjudication/
+검증이 끝난 것이 아닙니다. 일부 수정이나1302개 통과만으로 전체 결함 해결을 주장하지
+않습니다. Push/tag/release/사용자 설치는 계속 보류합니다.
 
 ## 미지원 옵션의 안전한 정리
 
@@ -25,9 +64,9 @@
 - 실제 native 전체 정책 편집에서도 새 nonempty 목록의 저장을 거절했고, 읽어 온 정책은
   빈 목록/같은 revision을 유지했습니다. 이는 **미지원 설정 차단** 검사이지 H 성공이 아닙니다.
 
-## 정확한 산출물과 자동 검사
+## 역사적956bcf… 산출물과 자동 검사
 
-로컬 후보 JAR SHA256:
+아래 native 검사에 사용했던 이전 로컬 후보 JAR SHA256:
 `956bcf789cd3d4dc45e0db6a8197e52961a606be074f39f6610080dd6b12063d`.
 기존437503… JAR의 native 성공을 이 hash로 이전하지 않았습니다. Main의 native 사본,
 별도 frozen source의 clean build, forced rebuild가 모두 같은 bytes였습니다.
@@ -125,7 +164,9 @@ HTTP/1.1이므로 **inbound H2→Burp→H1 origin**의 부분 검사이지 backe
 ## 남은 범위 / 정리
 
 - 요청한 정확한 `ica-se-claude/claude-advantage-assist`의 최종 독립 구현 감사3개 미완료.
-  기존10개 실제 요청은 credential rotator에서 중단됐습니다. 실질 보고서 없이 승인하지 않습니다.
+  기존10개 실패 시도 뒤 이전 소스에 대한 두 실질 cold 보고서를 받았으나 결함이
+  지적됐습니다. Privacy/export 세 번째는 여전히 blocked이고, 수정 소스의 최종 검토나
+  새 exact-JAR native 수용도 완료하지 않았습니다. 실질 보고서 없이 승인하지 않습니다.
 - Active overlay 상태의 unsafe-candidate ignore, native cross-project/ABA와 모든 포화·종료 race,
   Professional 디스크 프로젝트/재시작 migration, 전체 HTTP2, opaque CONNECT/TLS pass-through/
   WebSocket frame, CAIRN/Pi/model/report-file E2E는 이번 결과로 주장하지 않습니다.

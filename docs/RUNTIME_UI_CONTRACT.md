@@ -69,6 +69,13 @@ optional copies/slots, with explicit completeness flags. Learn new response
 secrets first, remask structured watcher values/pending flights, then observe
 scalars under the controller lock also used for watcher display/incident export.
 Never use raw getters for watcher metadata or replace text in serialized JSON.
+Logical expiry fails the lease once but retains the same bounded masked ticket
+and host/path reservations for actual late observation. Late ordinary heavy/5xx
+scalars are still processed; an expired half-open cannot heal a replacement lease.
+Status distinguishes nonexpired `watcherTickets` from `watcherLateTickets`
+(nested watcher `activeTickets` / `lateTickets`); neither is free native capacity.
+Exceptions before authorization transfers its permit close only that conclusively
+unsent permit, never another flight or a timeout-quarantined native operation.
 
 ## Pacing, approvals and availability
 

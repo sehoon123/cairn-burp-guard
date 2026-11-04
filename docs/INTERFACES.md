@@ -112,15 +112,19 @@ observed project/revision checks are not an atomic Burp project-switch guarantee
 ```java
 record RequestData(String method, String url, String host, int port,
     boolean secure, List<Header> headers, byte[] body,
-    boolean headersComplete, boolean bodyComplete)
+    boolean headersComplete, boolean bodyComplete, String nativeTarget)
 record Decision(Mode mode, String reason, List<RuleHit> hits,
     List<String> inspectionWarnings)
 ```
 
 `Header(name,value)`, `header(name)`, `bodyLength()` and defensive `body()` copies
-remain. `MAX_INSPECT_BYTES=1048576`. The original seven-argument request constructor
-sets both completeness flags true; the original three-argument decision constructor
-sets warnings empty. These are **inspection copies**, never native replacements.
+remain. `MAX_INSPECT_BYTES=1048576`. The original seven- and nine-argument request
+constructors remain; seven arguments set both completeness flags true. They leave
+`nativeTarget=null` for legacy URL-derived target handling. Native capture instead
+supplies the bounded, untouched `request.path()` as `nativeTarget`, including an
+empty/non-origin-form target. It is transient inspection data, never a Prepared or
+watcher display field. The original three-argument decision constructor sets
+warnings empty. These are **inspection copies**, never native replacements.
 `RuleHit(id,name,mode)` contains no regex captures.
 
 `RequestAttribution(intentId,runId,valid)` parses unchanged `X-Cairn-Intent` /
@@ -156,14 +160,22 @@ Expected invalid policy/mandatory-target errors become categorical BLOCK decisio
   URL-rule authority is reconstructed from the **actual destination**.
 - ALL-path scope accepts `/c/;/main.do`, `/c/%2e/main.do`, nested/encoded dot,
   matrix and separator variants **unchanged**. There is no blanket pre-scope
-  `AMBIGUOUS_PATH` sanitizer. At most8 bounded raw/decoded/conservative normalized
-  aliases are internal scope/rule/watcher views, never a forwarded target.
+  `AMBIGUOUS_PATH` sanitizer. At most9 bounded raw/decoded/conservative normalized
+  views are internal scope/rule/watcher inputs, never a forwarded target. Incomplete
+  non-origin-form targets retain the untouched first view plus a slash-rooted alias;
+  raw controls, DEL/C1 and lone surrogates likewise mark routing incomplete rather
+  than imposing an automatic path sanitizer.
 - A restricted allow entry must cover every known routing view; a matching block
   view wins. Incomplete decoding can pass explicit all-path scope with
   `PATH_INTERPRETATION_INCOMPLETE`, but cannot prove restricted scope or grant
   path-dependent EXEMPT. Unresolved destination-matching block-path constraints
   still fail closed. Common universal path expressions are recognized, not every
   arbitrary RE2 expression's mathematical universality.
+- Privileged EXEMPT PATH/URL leaves must match **every** routing view, including
+  the routing part of ANY. Ordinary BLOCK/ASK rules can match any known view. URL
+  views use the actual service authority with every routing alias and the available
+  raw/decoded query views. A candidate exact-URL BLOCK therefore also sees known
+  dot/matrix/encoded aliases; malformed optional queries cannot grant URL EXEMPT.
 - Optional inspection is demand-driven. Unsupported charset/media/encoding,
   binary/multipart, malformed JSON/percent data, incomplete optional capture or
   optional capacity limits produce warnings for affected fields, **not an
@@ -237,8 +249,14 @@ The controller learns response secrets in masked evidence **first**, synchronous
 refreshes structured watcher display with current fingerprints, then observes
 status/size under the same lock as watcher display/export. Old-project response
 tickets cannot affect the new epoch. Tickets are bounded4096 logical observations
-with deadlines, **not native permits**. Abandonment/expiry never recycles a native
-permit. `response()` itself does not own/close a RateGate permit.
+with deadlines, **not native permits**. Expiry marks logical failure once but
+retains the bounded masked endpoint and host/path reservations until actual
+observation, conclusively-unsent cancellation or epoch reset. A late ordinary
+response still contributes heavy/5xx scalars at completion time; an expired
+half-open response cannot heal or fail a replacement probe. Abandonment/expiry
+never recycles a native permit. `response()` itself does not own/close a RateGate
+permit. Exceptions before `authorize` transfers an acquired permit to its caller
+close only that conclusively-unsent permit.
 
 ## Availability, accounting and pacing APIs
 
@@ -247,8 +265,11 @@ permit. `response()` itself does not own/close a RateGate permit.
 Construct with `Limits` (public bounded clock/capacity seams also exist). Public API:
 
 - `Endpoint endpoint(RequestData,String redactedUrl,List<String> routingPaths)`.
-  Actual service + query-free routing aliases become keyed HMAC identities;
-  only already-masked display metadata is retained.
+  Actual service + at most9 query-free routing views (each at most16384 Java code
+  units) become keyed HMAC identities. Bounds/nulls are checked before hashing;
+  empty/non-slash first views, controls/C1 and lone surrogates are not rejected.
+  HMAC input uses length-framed exact UTF-16 code units, avoiding charset replacement
+  collisions. Only already-masked display metadata is retained; no raw fallback.
 - `update(Limits)` retains same-project protections/debt; `reset()` starts a new
   epoch. `check(endpoint,health)` is advisory. `commit(endpoint,health,evidenceId)`
   returns an opaque `Ticket`; evidenceId is not retained by the watcher.
@@ -293,8 +314,9 @@ or authentication. Do not assume candidates are UUIDs.
   operator pause/circuit. It still obeys lifecycle/scope/rules/ASK/heavy/fanout/
   budget/rate/capacity; its response never heals a circuit.
 - Bounds:1024 services,2048 path keys/candidate metadata,1024 protections including
-  a reserved capacity fence,4096 flights/events,8192 scalar observations,16 route
-  aliases. Active protections are never evicted to admit traffic.
+  a reserved capacity fence,4096 flights/events,8192 scalar observations,9 route
+  views. Uncompleted expired flights count toward the same4096 ceiling, not a
+  separate unbounded map. Active protections are never evicted to admit traffic.
 - Candidates use retained24-hour observations: maximum/count/lastSeen/5xx are exact
   for retained observations, p95 is a log2-histogram **upper-bound approximation**.
   Unknown byte scalars contribute zero to watcher aggregates and cannot establish
@@ -431,7 +453,11 @@ logging or policy harvesting.
 `migrationView` returns `pending`, `original`, `migrated`; no implicit write.
 Status retains old keys plus `guardState`, `pauseCause`, `operatorPaused`,
 `policyRevision`, `migrationPending`, `guardListenerPorts`, `reasonCounters`,
-`watchers`, `intents`, `listeners`, `watcherTickets`, `unguardedListenerCount`.
+`watchers`, `intents`, `listeners`, `watcherTickets`, `watcherLateTickets`,
+`unguardedListenerCount`. `watcherTickets` counts nonexpired logical tickets;
+`watcherLateTickets` counts expired tickets awaiting actual completion. Nested
+watcher `activeTickets` / `lateTickets` have the same logical split; neither
+counter reports free native permits.
 `revision` / `policyRevision` are the runtime generation, including mode changes,
 not just persisted-save counters. `paused=false` while OFF does not erase
 `operatorPaused`; ON returns to the retained pause. Lifecycle/recovery failure
