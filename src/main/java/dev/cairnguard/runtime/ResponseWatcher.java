@@ -11,7 +11,6 @@ import dev.cairnguard.model.RequestData;
 import dev.cairnguard.policy.PolicyEngine;
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
@@ -46,7 +45,7 @@ public final class ResponseWatcher {
     private static final int MAX_EVENTS = 4_096;
     private static final int MAX_OBSERVATIONS = 8_192;
     private static final int MAX_FLIGHTS = 4_096;
-    private static final int MAX_ROUTE_VIEWS = 16;
+    private static final int MAX_ROUTE_VIEWS = 9;
     private static final int MAX_URL = 16_384;
     private static final int MAX_DISPLAY = 2_048;
     private static final long DAY_MILLIS = 86_400_000L;
@@ -130,16 +129,16 @@ public final class ResponseWatcher {
         if (routingPaths == null || routingPaths.isEmpty() || routingPaths.size() > MAX_ROUTE_VIEWS)
             throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
         String service = service(request.secure() ? "https" : "http", request.host(), request.port());
-        // Traffic is not a navigated URI: malformed-percent and literal-fragment pentest paths
-        // are legal under explicit ALL-path scope. PolicyEngine supplied the untouched first view.
-        String rawPath = routingPaths.getFirst();
-        LinkedHashSet<String> hashed = new LinkedHashSet<>();
-        hashed.add(hash("path", service, rawPath));
+        // Validate every bounded view BEFORE allocating HMAC input. Traffic is not a navigated
+        // URI: the first view may be empty/non-origin-form or contain raw controls/surrogates.
+        // PolicyEngine decides scope completeness; watcher must not impose a second sanitizer.
         for (String route : routingPaths) {
             if (route == null || route.length() > MAX_URL)
                 throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
-            hashed.add(hash("path", service, route));
         }
+        String rawPath = routingPaths.getFirst();
+        LinkedHashSet<String> hashed = new LinkedHashSet<>();
+        for (String route : routingPaths) hashed.add(hash("path", service, route));
         String host = "[REDACTED]";
         String displayPath = "[REDACTED]";
         String policyUrl = "";
@@ -825,7 +824,11 @@ public final class ResponseWatcher {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(key, "HmacSHA256"));
             for (String component : components) {
-                byte[] bytes = component.getBytes(StandardCharsets.UTF_8);
+                // Encode exact Java code units, including lone surrogates, without a Charset
+                // encoder's lossy replacement. Distinct hostile targets must not share '?' keys.
+                ByteBuffer encoded = ByteBuffer.allocate(component.length() * Character.BYTES);
+                for (int i = 0; i < component.length(); i++) encoded.putChar(component.charAt(i));
+                byte[] bytes = encoded.array();
                 mac.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
                 mac.update(bytes);
             }
