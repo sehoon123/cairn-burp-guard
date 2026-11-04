@@ -242,7 +242,8 @@ metadata. Startup/clear/out-of-retention/capacity loss cannot be claimed complet
 No raw auth/cookie/grant/path reflections; no original response body in incidents.
 
 JSON/HAR uses sealed masked TrafficEntry, including actual responseBytes/warnings/
-state/outcome; stale retained selections use latest redaction. Full/selected/filtered
+state/outcome; stale retained selections use latest redaction; cleared/evicted selections
+are rejected rather than exported from a historical snapshot. Full/selected/filtered
 counts, local451 vs callback status, unknown sizes/timings and missing-response
 labels must remain honest. Exports are inspection copies, not replay/wire proof.
 

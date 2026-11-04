@@ -150,7 +150,7 @@ fabricated projects and hooks for switch/load/save failures. They cover:
   display/export lock. Changed policyUrl becomes non-actionable; old endpoints/
   aliases cannot revive a secret. No raw fallback or policy harvesting.
 - Sealed immutable TrafficEntry covers v2 fields/tampering; stale retained export
-  selections refresh to latest masking. Precise denial categories/typed causes,
+  selections refresh to latest masking, while cleared/evicted selections are rejected. Precise denial categories/typed causes,
   local vs upstream451, missing response, actual size/warnings and cumulative /
   retained/orphan counters are distinct from wire/delivery claims.
 

@@ -216,9 +216,11 @@ automatically**. At most2000 genuine store-created entries /32MiB selection esti
 An in-memory HMAC authenticity seal covers all exported fields including v2
 additions. Foreign/forged entries reject categorically. The seal is not emitted.
 For retained IDs, stale selections use latest masked rows, so old UI snapshots
-cannot undo response-time redaction. Genuine old snapshots remain exportable after
-eviction/clear with the same store; discarded IDs cannot learn additional secrets.
-Do not retain unneeded snapshots.
+cannot undo response-time redaction. A selection whose row was cleared or evicted
+**fails** (`INVALID_EVIDENCE_SELECTION`, whole selection rejected, JSON and HAR alike),
+because the historical seal no longer proves current masking. Export while rows remain
+retained; re-export from a fresh snapshot. Bookmarks do not pin rows. This does not
+retract strings or files already produced before disposal.
 
 JSON and provenance use **schemaVersion2** with masked messages, omission/truncation,
 revision/hits/bookmark/disposition, intent/run/outcome/state/overlay/responseBytes/

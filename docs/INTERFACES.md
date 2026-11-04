@@ -425,7 +425,8 @@ structured watcher values; disposed evidence returns opaque display, not raw.
 `Message(headers,body,mimeType,bodyOmitted,truncated,present)` and rendered
 `request()`/`response()` are always masked. JSON/provenance schemaVersion is2;
 HAR1.2 carries v2 additions in `_cairnGuard`. A seal rejects foreign/forged entries
-and stale retained selections refresh to latest masking. Raw data is not a field
+and stale retained selections refresh to latest masking; a selection whose ID is no longer
+retained is rejected with `INVALID_EVIDENCE_SELECTION`. Raw data is not a field
 on this serializable/exportable model.
 
 Human-local getters: `rawRequest(id)`, `rawResponse(id)`, `rawUrl(id)`,

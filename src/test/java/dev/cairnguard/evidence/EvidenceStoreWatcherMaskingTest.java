@@ -44,5 +44,40 @@ class EvidenceStoreWatcherMaskingTest {
         store.clear();
         assertEquals("[REDACTED]", store.displaySanitizer(id).apply(old.url()));
         assertNull(store.entry(id));
+        assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(old))).getMessage());
+    }
+    @Test void clearedStaleSnapshotCannotExportHar() {
+        EvidenceStore store = new EvidenceStore();
+        TrafficEntry old = staleAfterResponseSecret(store);
+        assertFalse(store.exportHar(List.of(old)).contains(SECRET));
+        store.clear();
+        assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportHar(List.of(old))).getMessage());
+    }
+    @Test void evictedStaleSnapshotCannotExportAloneOrMixedWithLiveRows() throws Exception {
+        EvidenceStore store = new EvidenceStore(1, 1024 * 1024, 1024);
+        TrafficEntry old = staleAfterResponseSecret(store);
+        assertFalse(store.exportJson(List.of(old)).contains(SECRET));
+        assertFalse(store.exportHar(List.of(old)).contains(SECRET));
+        String liveId = store.begin("p", "Synthetic", new RequestData("GET", "https://owned.test/benign", "owned.test", 443, true, List.of(), new byte[0]),
+                new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 2);
+        assertNull(store.entry(old.id()));
+        TrafficEntry live = store.entry(liveId);
+        for (List<TrafficEntry> selection : List.of(List.of(old), List.of(old, live), List.of(live, old))) {
+            assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportJson(selection)).getMessage());
+            assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportHar(selection)).getMessage());
+        }
+        assertEquals(liveId, Json.MAPPER.readTree(store.exportJson(List.of(live))).path("entries").get(0).path("id").asText());
+        assertTrue(store.exportHar(List.of(live)).contains("/benign"));
+    }
+    private static final String SECRET = "synthetic-response-only-3948";
+    /** Returns a pre-response snapshot whose URL holds a value first learned as a secret from the response. */
+    private static TrafficEntry staleAfterResponseSecret(EvidenceStore store) {
+        var request = new RequestData("GET", "https://owned.test/download/" + SECRET, "owned.test", 443, true, List.of(), new byte[0]);
+        String id = store.begin("p", "Synthetic", request, new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 1);
+        TrafficEntry old = store.entry(id);
+        assertTrue(old.url().contains(SECRET));
+        store.response(id, 200, List.of(new RequestData.Header("Content-Type", "application/json")),
+                ("{\"grant\":\"" + SECRET + "\"}").getBytes(StandardCharsets.UTF_8));
+        return old;
     }
 }

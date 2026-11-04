@@ -512,9 +512,10 @@ public final class EvidenceStore {
         for (TrafficEntry entry : copy) {
             if (estimatedBytes(entry) > MAX_TOTAL_BYTES || !MessageDigest.isEqual(signature(entry).getBytes(StandardCharsets.US_ASCII),
                     entry.provenanceSeal().getBytes(StandardCharsets.US_ASCII))) throw new IllegalArgumentException("INVALID_EVIDENCE_SELECTION");
-            // A selected stale snapshot must not undo redaction learned from a later response.
+            // A stale snapshot must not undo redaction learned later, and a disposed row can no longer prove its masking is current.
             Stored current = entries.get(entry.id());
-            TrafficEntry latest = current == null ? entry : current.entry;
+            if (current == null) throw new IllegalArgumentException("INVALID_EVIDENCE_SELECTION");
+            TrafficEntry latest = current.entry;
             bytes += estimatedBytes(latest);
             if (bytes > MAX_TOTAL_BYTES) throw new IllegalArgumentException("INVALID_EVIDENCE_SELECTION");
             result.add(latest);

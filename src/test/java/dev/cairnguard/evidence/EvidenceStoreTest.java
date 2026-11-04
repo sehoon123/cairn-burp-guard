@@ -283,20 +283,26 @@ class EvidenceStoreTest {
         assertFalse(store.exportJson(store.snapshot()).contains("provenanceSeal"));
     }
 
-    @Test void exportRejectsForeignOrForgedRecordsButOldSnapshotsRemainExportableAfterEviction() {
+    @Test void exportRejectsForeignForgedAndEvictedRecordsButRetainedSnapshotsExport() {
         EvidenceStore store = new EvidenceStore(1, 100_000, 1024);
         store.begin("p", "p", empty(), ALLOW, 1);
         List<TrafficEntry> old = store.snapshot();
-        store.begin("p", "p", empty(), ALLOW, 2);
+        TrafficEntry e = old.getFirst();
+        // Forgery and foreign-store checks run while the row is still retained, so row disposal cannot mask a broken seal check.
         assertDoesNotThrow(() -> store.exportJson(old));
         assertDoesNotThrow(() -> store.exportHar(old));
-        TrafficEntry e = old.getFirst();
         TrafficEntry forged = new TrafficEntry(e.id(), e.projectId(), "raw-secret-must-not-export", e.timestamp(), e.method(), e.url(), e.mode(),
                 e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), e.provenanceSeal());
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(forged)));
         assertEquals("INVALID_EVIDENCE_SELECTION", failure.getMessage());
         assertThrows(IllegalArgumentException.class, () -> store.exportHar(List.of(forged)));
-        assertThrows(IllegalArgumentException.class, () -> new EvidenceStore().exportJson(old));
+        EvidenceStore foreign = new EvidenceStore(1, 100_000, 1024);
+        foreign.begin("p", "p", empty(), ALLOW, 1);
+        assertThrows(IllegalArgumentException.class, () -> foreign.exportJson(old));
+        // Eviction disposes the only masked row; the historical seal alone no longer authorizes export.
+        store.begin("p", "p", empty(), ALLOW, 2);
+        assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportJson(old)).getMessage());
+        assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportHar(old)).getMessage());
     }
 
     @Test void concurrentCallbacksAndExportsHaveNoMutableAliasesOrRaces() throws Exception {

@@ -689,6 +689,29 @@ class GuardPanelTest {
         }
     }
 
+    @Test void exportOfRowsClearedFromRealStoreBeforeSerializationFailsCategoricallyWithoutWriting() throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        store.begin("project-one", "Synthetic", new RequestData("GET", "https://example.test/?token=" + SECRET, "example.test", 443, true,
+                List.of(), new byte[0]), new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 7);
+        access.rows = store.snapshot(); access.exportStore = store; access.blockExport = true; open();
+        // The panel freezes its rows at click time; the store is cleared before the worker serializes them.
+        dialogs.target = temp.resolve("blocked.json");
+        edt(() -> { click("traffic.export"); return null; }); assertTrue(access.serializeStarted.await(5, TimeUnit.SECONDS));
+        store.clear(); access.serializeRelease.countDown(); awaitExport();
+        assertFalse(Files.exists(dialogs.target)); assertEquals(UiText.error("EXPORT_FAILED"), dialogs.errors.getLast());
+        for (boolean har : List.of(false, true)) for (boolean existing : List.of(false, true)) {
+            dialogs.target = temp.resolve("cleared-" + har + "-" + existing + (har ? ".har" : ".json"));
+            if (existing) Files.writeString(dialogs.target, "keep");
+            dialogs.errors.clear();
+            edt(() -> { get("traffic.exportFormat", JComboBox.class).setSelectedIndex(har ? 1 : 0); click("traffic.export"); return null; });
+            awaitExport();
+            assertEquals(List.of(UiText.error("EXPORT_FAILED")), dialogs.errors);
+            if (existing) assertEquals("keep", Files.readString(dialogs.target)); else assertFalse(Files.exists(dialogs.target));
+        }
+        assertFalse(dialogs.errors.toString().contains(SECRET));
+        try (var files = Files.list(temp)) { assertTrue(files.noneMatch(f -> f.getFileName().toString().endsWith(".tmp"))); }
+    }
+
     @Test void exportRequiresRowsChooserAndExplicitOverwriteConsent() throws Exception {
         open(); edt(() -> { click("traffic.export"); return null; });
         assertEquals(0, access.exportCalls); assertTrue(dialogs.chosenExtensions.isEmpty());

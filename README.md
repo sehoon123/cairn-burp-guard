@@ -21,6 +21,8 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 | 구 로컬 후보 | `82ec781` / `217730…` bundle은 H 실패와 HEX export 결함이 있는 과거 후보. 재현됐어도 공개하면 안 됨 |
 | 남은 수용 조건 | 새 exact-JAR native 수용과 수정 소스의 최종 독립 감사3개 미완료. 지정 모델의 이전 소스 cold 보고서2개는 결함 지적이지 승인서가 아니며 privacy/export 세 번째는 blocked. Queue/fanout/불완전 capture 분류 등 지적의 전체 판정도 미완료. **프리릴리즈 공개는 수용/정식 승인과 별개**, H는 gate도 PASS도 아님 |
 
+> 후속 소스(`2096d50` 이후, 폐기된 증거 선택의 내보내기 차단)와 그 JAR hash/테스트 수는 [VERIFICATION.md의 해당 절](docs/VERIFICATION.md#follow-up-source-disposed-evidence-selections-no-longer-export-automated-only)에 따로 기록합니다. 위 표의 `c61b7d…` 프리릴리즈 hash·테스트 이력과 혼동하지 마세요(native 미실행).
+
 이번 공개 체크포인트의 빌드/남은 지적은 [프리릴리즈 기록](docs/PRERELEASE_2026-11-04_V2_CHECKPOINT.md)에, 이전 후보별 hash/검토 시도는 [VERIFICATION.md](docs/VERIFICATION.md)에 구분합니다. 과거 examples JAR(`c071…`)의13 native 시나리오 및 더 오래된12/54 결과를 v2에 이전하거나 합산하지 않습니다. 이전의 설계 제안/검토 문서는 역사적 자료이며 현재 구현 완료·승인 증거가 아닙니다.
 
 ## 역할과 제외 범위

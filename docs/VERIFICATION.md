@@ -27,6 +27,43 @@ optional-capture findings remain incomplete. Publication does not waive those ga
 or install into the user's Burp. See the [checkpoint record](PRERELEASE_2026-11-04_V2_CHECKPOINT.md)
 and [current scope/results](ALL_LISTENERS_ACCEPTANCE.md).
 
+### Follow-up source: disposed evidence selections no longer export (automated only)
+
+Baseline `2096d50`. A pre-response snapshot of a row that later learned a response-only
+secret used to export from its historical seal once the masked row was cleared or evicted.
+`EvidenceStore` now rejects any selection containing a row that is not currently retained
+(`INVALID_EVIDENCE_SELECTION`, whole selection, JSON and HAR); retained stale selections
+still use the latest masked row. Expiry follows actual masked-row retention, not project
+epoch (raw UI state is cleared by epoch changes; masked evidence may be retained).
+Already-returned strings and files are not retroactively sanitized.
+
+- Regression-before-fix: the focused 207-test run on unchanged production source had
+  **5 expected failures** (clear JSON/HAR, eviction, the revised retention contract and
+  UI cleared-export); all 207 passed with the fix. Mixed-selection ordering and both
+  formats also pass in the green eviction regression.
+- Isolated Java 21.0.11 container, no network after a dependency-cache warm-up of the
+  locked/verified dependencies: **1305 JUnit PASS** (baseline 1302 + 3), desktop
+  Swing 27 PASS at scale 1 and 27 at scale 2 on an isolated Xvfb display, Python helper
+  unit 31 PASS, local template 18 PASS (upstream SKIP).
+- Two clean `clean test jar` builds of the working tree gave identical bytes: SHA256
+  `b921f62e959e47b1a51679a65d5a35c054f8b0efa85f8c14beaccc565a856048`. The JAR is of
+  uncommitted source at build time; associate it with the commit that contains exactly
+  these `src/` changes.
+- Parent checked the XML totals and byte equality of **114 source/test/build/legal inputs**
+  against both clean builds and both desktop workspaces, and rechecked both JAR hashes.
+  Independent read-only reviews by `openai/gpt-6.1-sol` and
+  `ica-se-claude/claude-advantage-assist` found no blocking issue in this narrow diff;
+  neither reviewer independently ran the tests. These are not the three outstanding
+  whole-v2 implementation audits and do not replace their model bindings or gates.
+- **Native Burp: BLOCKED / NOT RUN for this JAR.** The official, checksum-verified
+  generic Burp 2026.10.1 (build 54773) reached its first EULA screen in a fresh
+  network-disabled container with an owned authenticated Xvfb display. No terms were
+  accepted, edition selected, extension loaded or fixture traffic sent; explicit user
+  consent is pending; the disposable instance was exited without accepting terms.
+  Existing Burp, profiles, activation and global proxy/trust settings were untouched.
+  Swing/loopback/harness results are not native results, and earlier
+  artifact results do not transfer. All other release gates are unchanged.
+
 ### Historical956bcf… observations — not the published checkpoint's native result
 
 That prior source was Java1235/Python31 PASS; clean/forced repeat builds matched
