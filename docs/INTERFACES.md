@@ -310,6 +310,28 @@ or authentication. Do not assume candidates are UUIDs.
 - Fanout counts query-free route identity within its window; BLOCK is service-local,
   PAUSE is an automatic global overlay, WARN is a diagnostic episode. These are
   not operator pause and do not persist policy.
+- Fanout history: one indexed route-identity budget equal to the path-key capacity
+  (2048), shared by every service and action. WARN admissions pin paths only while
+  physically in flight; BLOCK/PAUSE admissions keep window retention. When the
+  budget is full, a WARN admission with a NEW identity is still admitted but its
+  history is omitted (saturating `fanoutHistoryOmitted`), so fanout counts are
+  retained-history lower bounds. Omission debt lasts until the latest omitted
+  original window ends (monotonic clock; same-project save/OFF/detector disable/
+  `clearEvidence`/`releaseAll` keep it, `reset()` clears it). Later cancellation of
+  an unsent logical admission can conservatively leave its omission count/deadline;
+  these are not exact sent-request counts, and there is no per-ticket refund ledger.
+  While BLOCK/PAUSE is configured, active debt, or a new identity without a free history slot, denies
+  `RESPONSE_WATCHER_CAPACITY`/`CAPACITY` before half-open claim or intent spend,
+  for health/EXEMPT too. Entering BLOCK/PAUSE ends only stale WARN latches; it
+  keeps history, debt, and every enforcing protection. Detached history held by
+  unresolved flights is bounded by the 4096-flight ceiling and never reinserted.
+- `snapshot()` adds `fanoutHistoryIndexed`, `fanoutHistoryCapacity`,
+  `fanoutHistoryOmitted` (epoch cumulative), `fanoutHistoryIncomplete` (active
+  debt) and diagnostic-only wall-clock `fanoutHistoryIncompleteUntil` (0 when
+  inactive). These are separate from `candidatesIncomplete`. `incidentJson` adds
+  `fanoutHistoryComplete` and `retention.fanoutHistoryOmitted`; any omission in the
+  epoch makes `complete=false`/`truncated=true` for every window (conservative,
+  not attributed to the selected window).
 - An exact configured, bodyless, queryless **GET** health exception bypasses only
   operator pause/circuit. It still obeys lifecycle/scope/rules/ASK/heavy/fanout/
   budget/rate/capacity; its response never heals a circuit.

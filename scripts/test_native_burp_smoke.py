@@ -325,13 +325,28 @@ class IncidentSchemaTest(unittest.TestCase):
             "events": [{"kind": "HEAVY_ENDPOINT_AUTO_BLOCKED", "path": "/large", "bytes": LARGE_BYTES, "ts": 1500}],
             "top5xx": [], "topBytes": [{"id": "ab" * 32, "host": "127.0.0.1", "path": "/large",
                 "policyUrl": "http://127.0.0.1/large", "maxBytes": LARGE_BYTES, "p95Bytes": 8388608, "count": 1, "lastSeen": 1500, "count5xx": 0}],
-            "complete": True, "truncated": False, "approximate": True,
+            "complete": True, "truncated": False, "fanoutHistoryComplete": True, "approximate": True,
             "approximation": {"p95Bytes": "log2_histogram_upper_bound", "countMaxBytesLastSeen5xx": "exact_retained_window"},
             "retention": {"maxMillis": 86400000, "startedAt": 1000, "eventsComplete": True, "observationsComplete": True,
-                "eventsDropped": False, "observationsDropped": False, "clockRegressed": False}}
+                "eventsDropped": False, "observationsDropped": False, "clockRegressed": False, "fanoutHistoryOmitted": 0}}
 
     def test_valid_redacted_bounded_retained_schema(self):
         self.assertEqual({"events": 1, "top5xx": 0, "topBytes": 1}, validate_incident(self.document))
+
+    def test_fanout_history_omission_is_sticky_incomplete_and_consistent(self):
+        item = copy.deepcopy(self.document)
+        item.update({"complete": False, "truncated": True, "fanoutHistoryComplete": False})
+        item["retention"]["fanoutHistoryOmitted"] = 3
+        self.assertEqual({"events": 1, "top5xx": 0, "topBytes": 1}, validate_incident(item))
+        for complete, history, omitted in ((True, False, 3), (False, True, 3), (False, False, 0), (False, False, -1), (False, False, True)):
+            bad = copy.deepcopy(item)
+            bad.update({"complete": complete, "truncated": not complete, "fanoutHistoryComplete": history})
+            bad["retention"]["fanoutHistoryOmitted"] = omitted
+            with self.subTest(complete=complete, history=history, omitted=omitted), self.assertRaises(AssertionError):
+                validate_incident(bad)
+        bad = copy.deepcopy(self.document); del bad["fanoutHistoryComplete"]
+        with self.assertRaises(KeyError):
+            validate_incident(bad)
 
     def test_keyed_candidate_ids_work_in_both_top_lists_without_uuid_conflation(self):
         item = copy.deepcopy(self.document)

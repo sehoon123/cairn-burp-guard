@@ -99,6 +99,11 @@ unsent permit, never another flight or a timeout-quarantined native operation.
   5xx/unknown/missing response reopens. Logical timeout cannot recycle native work.
 - Fanout BLOCK is service-local, PAUSE a separate automatic global overlay, WARN
   diagnostic-only. Disabling a detector does not erase an existing episode.
+- Saturated WARN history keeps admitting traffic but omits new identities; the
+  dashboard diagnosis shows indexed/capacity/omitted counts and the warning area
+  shows the incomplete-history notice in addition to any other warning, also after
+  active debt ends. Active debt denies BLOCK/PAUSE fanout traffic with
+  `RESPONSE_WATCHER_CAPACITY` until the latest omitted original window ends.
 - Intent labels are untrusted, unchanged `X-Cairn-Intent`/`X-Cairn-Run`. Final
   protected handoffs include EXEMPT/health/half-open; limit20 denies21st. Enabled
   accounting rejects invalid/duplicate/incomplete tag metadata. Absent intent is

@@ -590,6 +590,11 @@ def validate_incident(document):
     assert retention["maxMillis"] == 86_400_000 and type(retention["startedAt"]) is int
     for flag in ("eventsComplete", "observationsComplete", "eventsDropped", "observationsDropped", "clockRegressed"):
         assert type(retention[flag]) is bool
+    # Epoch-wide conservative fan-out history disclosure: any omission makes the incident incomplete.
+    omitted = retention["fanoutHistoryOmitted"]
+    assert type(omitted) is int and omitted >= 0
+    assert type(document["fanoutHistoryComplete"]) is bool and document["fanoutHistoryComplete"] is (omitted == 0)
+    assert document["fanoutHistoryComplete"] or not document["complete"]
     encoded = json.dumps(document)
     for secret in (SYNTHETIC_AUTH, SYNTHETIC_COOKIE, "synthetic-native-password", "synthetic-native-response"):
         assert secret not in encoded, "Synthetic secret must not be in exported incident"

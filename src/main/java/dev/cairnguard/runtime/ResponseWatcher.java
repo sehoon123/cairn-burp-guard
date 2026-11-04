@@ -92,6 +92,12 @@ public final class ResponseWatcher {
     private long timedOut;
     private long candidateEvictions;
     private long abandoned;
+    // Bounded scalars, not a per-ticket ledger: WARN admissions whose NEW identity had no indexed
+    // Seen slot. Active debt keeps BLOCK/PAUSE fail-closed until every omitted original window ends.
+    private long fanoutOmitted;
+    private boolean omissionActive;
+    private long omissionUntil;
+    private long omissionExpiresAt; // Wall-clock diagnostic only; omissionUntil (monotonic) is authority.
 
     public ResponseWatcher(Limits limits) {
         this(limits, System::nanoTime, System::currentTimeMillis, MAX_HOSTS, MAX_PATHS,
@@ -167,6 +173,13 @@ public final class ResponseWatcher {
         sweep(now);
         limits = replacement;
         compilePathLimits();
+        Fanout fanout = replacement.fanout();
+        // A WARN latch is not a protection; it must not suppress enforcing detection. History stays.
+        if (fanout != null && fanout.action() != FanoutAction.WARN) {
+            for (Host host : hosts.values()) {
+                if (host.episode != null && host.episode.action == FanoutAction.WARN) host.episode = null;
+            }
+        }
     }
 
     /** Actual project epoch change/explicit reset only. Old tickets/endpoints/releases cannot act. */
@@ -185,6 +198,8 @@ public final class ResponseWatcher {
         observations.clear();
         capacityProtection = null;
         admitted = rejected = timedOut = candidateEvictions = abandoned = 0;
+        fanoutOmitted = omissionUntil = omissionExpiresAt = 0;
+        omissionActive = false;
         epoch++;
         new SecureRandom().nextBytes(key);
         startedAt = lastMillis = milliTime.getAsLong();
@@ -211,15 +226,19 @@ public final class ResponseWatcher {
         Host host = hosts.get(endpoint.hostKey());
         if (host == null) { host = new Host(endpoint.host()); hosts.put(endpoint.hostKey(), host); }
         Fanout fanout = limits.fanout();
+        boolean omitted = false;
         if (fanout != null) {
             pruneSeen(host, now);
             String pathKey = endpoint.pathKeys().getLast();
-            int projected = host.seen.size() + (host.seen.containsKey(pathKey) ? 0 : 1);
+            boolean known = host.seen.containsKey(pathKey);
+            int projected = host.seen.size() + (known ? 0 : 1);
             if (host.episode == null && projected >= fanout.distinctPaths()) {
                 Protection episode = fanout(host, endpoint, fanout, projected, now);
                 if (fanout.action() != FanoutAction.WARN || episode == capacityProtection)
                     throw reject(gate(endpoint, healthProbe, now));
             }
+            // Only reachable for WARN: gate() already rejected an enforcing identity without a slot.
+            omitted = !known && indexedSeen() >= pathCapacity;
         }
         // All potentially rejecting work precedes the claim. check() never reserves a probe.
         Protection circuit = host.circuit;
@@ -233,11 +252,20 @@ public final class ResponseWatcher {
         for (String pathKey : endpoint.pathKeys()) {
             PathState state = paths.computeIfAbsent(pathKey, ignored -> new PathState());
             state.inFlight++;
-            if (fanout != null) retain(state, now.nano, fanout.windowMillis());
+            // WARN history is bounded by the indexed Seen budget, not by pinning completed paths.
+            if (fanout != null && fanout.action() != FanoutAction.WARN) retain(state, now.nano, fanout.windowMillis());
         }
         Seen seen = null;
         Mark mark = null;
-        if (fanout != null) {
+        if (omitted) {
+            fanoutOmitted = increment(fanoutOmitted);
+            long until = now.nano + millis(fanout.windowMillis());
+            if (!omissionActive || remaining(until, now.nano) > remaining(omissionUntil, now.nano)) {
+                omissionUntil = until;
+                omissionExpiresAt = add(now.millis, fanout.windowMillis());
+            }
+            omissionActive = true;
+        } else if (fanout != null) {
             seen = host.seen.computeIfAbsent(endpoint.pathKeys().getLast(), ignored -> new Seen());
             mark = new Mark(now.nano, millis(fanout.windowMillis()));
             seen.pending.put(ticket, mark);
@@ -454,6 +482,12 @@ public final class ResponseWatcher {
         out.put("circuits", hosts.values().stream().filter(h -> h.circuit != null).count());
         out.put("halfOpen", hosts.values().stream().filter(h -> h.circuit != null && h.circuit.probe != null).count());
         out.put("fanoutWarnings", hosts.values().stream().filter(h -> h.episode != null).count());
+        // Fan-out counts describe INDEXED history only and are lower bounds once anything is omitted.
+        out.put("fanoutHistoryIndexed", indexedSeen());
+        out.put("fanoutHistoryCapacity", pathCapacity);
+        out.put("fanoutHistoryOmitted", fanoutOmitted);
+        out.put("fanoutHistoryIncomplete", omissionActive);
+        out.put("fanoutHistoryIncompleteUntil", omissionActive ? omissionExpiresAt : 0L);
         out.put("automaticPause", protections.values().stream().anyMatch(p -> p.global));
         out.put("capacityBlocked", capacityProtection != null);
         out.put("admitted", admitted);
@@ -484,6 +518,8 @@ public final class ResponseWatcher {
                 .map(Aggregate::candidate).toList();
         boolean eventComplete = complete(events, fromMillis, toMillis, now);
         boolean observationComplete = complete(observations, fromMillis, toMillis, now);
+        // Epoch-wide and conservative: omissions are not attributed to a specific incident window.
+        boolean fanoutComplete = fanoutOmitted == 0;
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("window", Map.of("from", fromMillis, "to", toMillis));
         out.put("events", selectedEvents);
@@ -491,15 +527,16 @@ public final class ResponseWatcher {
                 .sorted(Comparator.comparingLong(Candidate::count5xx).reversed().thenComparing(Candidate::id))
                 .limit(20).toList());
         out.put("topBytes", stats.stream().sorted(CANDIDATE_ORDER).limit(20).toList());
-        out.put("complete", eventComplete && observationComplete);
-        out.put("truncated", !eventComplete || !observationComplete);
+        out.put("complete", eventComplete && observationComplete && fanoutComplete);
+        out.put("truncated", !eventComplete || !observationComplete || !fanoutComplete);
+        out.put("fanoutHistoryComplete", fanoutComplete);
         out.put("approximate", true);
         out.put("approximation", Map.of("p95Bytes", "log2_histogram_upper_bound",
                 "countMaxBytesLastSeen5xx", "exact_retained_window"));
         out.put("retention", Map.of("maxMillis", DAY_MILLIS, "startedAt", startedAt,
                 "eventsComplete", eventComplete, "observationsComplete", observationComplete,
                 "eventsDropped", events.dropped, "observationsDropped", observations.dropped,
-                "clockRegressed", clockRegressed));
+                "clockRegressed", clockRegressed, "fanoutHistoryOmitted", fanoutOmitted));
         return Json.write(out);
     }
 
@@ -594,6 +631,10 @@ public final class ResponseWatcher {
         int additional = 0;
         for (String path : endpoint.pathKeys()) if (!paths.containsKey(path)) additional++;
         if (paths.size() + additional > pathCapacity)
+            return new Gate(false, CAPACITY, GuardState.CAPACITY, "");
+        Fanout fanout = limits.fanout();
+        if (fanout != null && fanout.action() != FanoutAction.WARN && (omissionActive
+                || (host == null || !host.seen.containsKey(endpoint.pathKeys().getLast())) && indexedSeen() >= pathCapacity))
             return new Gate(false, CAPACITY, GuardState.CAPACITY, "");
         return ALLOWED;
     }
@@ -704,6 +745,7 @@ public final class ResponseWatcher {
             if (!protection.reason.equals(CIRCUIT) && reached(now.nano, protection.until)) remove(protection);
         }
         if (capacityProtection != null && reached(now.nano, capacityProtection.until)) capacityProtection = null;
+        if (omissionActive && reached(now.nano, omissionUntil)) omissionActive = false;
         for (Host host : hosts.values()) {
             pruneSeen(host, now);
             while (!host.failures.isEmpty() && now.nano - host.failures.peekFirst() > host.failureRetention)
@@ -745,6 +787,12 @@ public final class ResponseWatcher {
             if (accepted) seen.confirm(flight.mark, now.nano);
             if (!seen.active(now.nano)) flight.host.seen.remove(flight.endpoint.pathKeys().getLast(), seen);
         }
+    }
+
+    private int indexedSeen() {
+        int count = 0;
+        for (Host host : hosts.values()) count += host.seen.size();
+        return count;
     }
 
     private static void pruneSeen(Host host, Time now) {

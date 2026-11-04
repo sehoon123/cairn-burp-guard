@@ -1,8 +1,8 @@
-# Verification status — v2 development checkpoints, 2026-11-04
+# Verification status — v2 development checkpoints, 2026-11-05
 
 **An explicitly requested development prerelease is NOT full acceptance, final
 independent audit, installation or production approval. Native observations below
-are artifact-specific historical results.** This is an independent development preview project, not a
+are artifact-specific results; later evidence does not upgrade older artifacts.** This is an independent development preview project, not a
 certified safety boundary. Source, frozen snapshots, automated checks, disposable
 Swing, exact JAR/native observations and independent review are separate evidence.
 Historical counts/hashes never transfer to a new candidate.
@@ -14,9 +14,109 @@ Current acceptance is A–G plus OFF/lifecycle/raw-history, with all Proxy liste
 H is NOT a current gate or a claimed PASS. UI/JSON cannot create new unsupported restrictions;
 old data is preserved until explicit confirmed clearing.
 
-The user explicitly requested committing/pushing the current work and publishing a
+### Latest narrow follow-up — bounded WARN history, 2026-11-05
+
+Baseline source `183e106` retained completed WARN paths until the fanout window ended.
+A real isolated Burp run reproduced the availability defect: 2048 sequential distinct
+paths arrived, then request2049 returned typed local `RESPONSE_WATCHER_CAPACITY` with
+zero additional fixture arrivals. This is a reproduced baseline defect, not a PASS.
+
+The correction stops adding completed-path retention for WARN and independently bounds
+indexed fanout history to the existing global 2048-path capacity. New WARN identities
+that cannot fit are omitted without denying traffic. Aggregate omission counts and
+incomplete-history warnings remain visible. BLOCK/PAUSE fails closed until the latest
+outstanding omission deadline (each from its original window); saves, OFF/ON, detector disabling and evidence/
+overlay clearing do not erase that debt. Entering enforcing mode ends only stale WARN
+latches, not history or enforcing protections. Cancellation can conservatively leave
+an omission until its deadline. Separate host, physical-flight, path and overlay limits
+still apply; this is not unlimited concurrency or cross-service scanning.
+
+Exact corrected JAR SHA256:
+`6133f1edc2f9ff0bfc2a97c018285f54b88c604f1c82b0abaad5da44ec90aff9`.
+It was built before commit; the containing commit's production/build/lock/legal inputs
+must match this artifact. No dependencies, handler continuation, native permits, listener
+selection, authentication or worker APIs changed.
+
+| Layer | Observed result / boundary |
+|---|---|
+| Red-before-fix | 76 focused tests on unchanged production, **3 expected failures**: WARN churn (watcher/controller) and live WARN-to-enforcing latch |
+| Full Java | **1321 PASS /45 suites**, failures/errors/skips0 (baseline1305 +16). Worker and parent independently ran clean isolated builds/tests |
+| Isolated Swing | **27 PASS each at scales1/2**, failures/errors/skips0; separate forced worker runs on owned Xvfb/WM, not native Burp or all-platform certification |
+| Python / templates | **32 helper unit +18 local-template PASS**; parent repeated both (LinuxPython3.11 template fixtures). Actual upstream SKIP; offline fixture output is not native evidence |
+| Reproducibility | Three clean worker builds and a separate parent clean build all produced the full6133f1e… hash above; parent verified XML totals and artifact byte hashes |
+| Narrow independent review | `openai/gpt-6.1-sol` and `ica-se-claude/claude-advantage-assist` read the frozen diff and connected code, no blocking finding. They did not run tests/native; these are not the outstanding whole-v2 audits |
+
+**Exact-artifact native observations:** the parent legitimately accepted the temporary
+instance's terms and selected Community2026.10.1/build54773 under renewed user authorization.
+Network-disabled container, independent temporary project/HOME/preferences/display,
+Temurin21.0.11+10, owned numeric-loopback fixtures, HTTP/1.1 only. Loading/configuration/
+OFF/release/export used the human GUI, not a Burp control API; existing user Burp,
+activation, profiles and global proxy/trust settings were untouched. Load and final
+extension Errors UI were empty.
+
+- **WARN A/B:** identical human settings (50 global/per-host RPS, maxConcurrent5,
+  heavy/circuit off, WARN1000/window3600sec) and bounded streaming fixture. Corrected
+  JAR: **2200/2200 arrivals**, no local capacity denial, tested method/target/synthetic
+  auth+cookie/empty body/response mismatches0. UI showed **2048 indexed /152 omitted**
+  and both episode and incomplete-history warnings. Fixture retained only3 samples;
+  bundled500-event fixture was not used for saturation. Timing is not a performance benchmark.
+- **Saturated enforcement:** BLOCK and PAUSE each denied an indexed path, new path and
+  separately allowed second actual service: typed local capacity451, **0 arrivals**.
+  OFF allowed three owned requests; same-project save did not re-enable protection.
+  ON restored all three capacity denials. Disabling the detector allowed the three;
+  re-enabling BLOCK restored all three denials. No debt expiry was simulated.
+- **Clean transitions:** after genuine extension reloads with all prior work completed,
+  UI history/omissions reset to0. WARN-to-BLOCK enforced on the previously seen path,
+  blocked both first-service probes and left the second service available. Separate
+  clean WARN-to-PAUSE blocked all three. Active PAUSE survived detector disabling;
+  explicit confirmed human release restored availability. These are not expiry tests.
+- **Baseline regressions repeated on corrected bytes:** empty allowlist1, exact scope6,
+  raw-target/optional-payload21 named cases passed, plus a response-only-grant fixture.
+  Both owned inbound listeners blocked DELETE and allowed unchanged GET (four cases).
+  The14 raw target spellings and6 payload types arrived unchanged in tested fields;
+  fuzzed Host did not change the actual service or authorize the outside service.
+- **True native work:** concurrent1/queued1/queue-timeout1sec, six held clients gave
+  one fixture arrival/peak1, four `QUEUE_FULL` and one `QUEUE_TIMEOUT`; next request
+  arrived after real completion. A separate500ms missing-response threshold gave
+  `IN_FLIGHT_TIMEOUT` while the genuine1.5sec response remained held; its200 and later
+  successful request established completion-based recovery, not permit recycling.
+- **Representative existing protections:** first6291456-byte response matched exactly,
+  next same path heavy-blocked without new arrival, unrelated path available. Five
+  actual503 responses opened a circuit; one held half-open lease excluded a concurrent
+  attempt, then success closed it (explicit1sec test open period).
+- **Privacy/export:** GUI JSON30/HAR30 records were owner-only native-local files and
+  parsed successfully; known synthetic secrets and tested hex/base64/percent variants
+  absent. A response-only JSON grant remasked the earlier request URL in both formats.
+  Human raw inspection remained separate. Saturation incident validated offline with
+  `fanoutHistoryComplete=false`, `complete=false`, `truncated=true`, omitted152.
+  Initial Docker/macOS bind-mount atomic export failed safely with no output; native
+  local filesystem export succeeded. No unsafe fallback was added; export portability
+  across filesystems is not established.
+
+A supplemental macOS-host Python3.9.6 template CLI run passed all18 unit checks,
+then its unchanged fixture-only setup failed with `TypeError` (NoneType path).
+Repeating in isolated LinuxPython3.11 passed both fixture loaders and skipped actual
+upstream as intended; the host setup issue was not patched or counted as success.
+The disposable Burp then exited normally through its GUI (container exit0); native
+active/queued/approval counts were0 before exit. Private state and rollback JARs retained.
+
+The earlier `b921f6…` JAR was also actually loaded and passed the same empty/exact/
+rawpaths/privacy-export checks before its WARN defect reproduction. Its initial EULA
+stop below is historical, superseded by this newly authorized run.
+
+**Not claimed:** full A–G acceptance, whole-v2 audit approval, H support, native4096-flight
+ceiling, hour-long debt expiry, every cancellation/late/shutdown/cross-project race,
+HTTP2/TLS or macOS/Windows native coverage, Professional/disk persistence, live upstream
+or CAIRN/model/report E2E. Counter upper bounds, alias/multi-host, deadline/wrap,
+health/EXEMPT/intent/probe competition and late-ticket cases also have deterministic
+regressions; cases not actually observed above remain synthetic-only. Private original
+logs/screenshots/exports/profiles stay outside Git. No new release or user installation.
+
+### Historical published c61b7d… checkpoint
+
+The user explicitly requested committing/pushing that checkpoint and publishing a
 **development-only prerelease**, `dev-2026-11-04-v2-all-listeners-checkpoint`.
-Current isolated Java is **1302 PASS**, Python helper offline unit31 and local
+At that checkpoint isolated Java was **1302 PASS**, Python helper offline unit31 and local
 template18 PASS (actual upstream SKIP). Clean/forced production builds reproduce
 JAR `c61b7d1f869ec926c30f0e0fcc9cd188396f7fd694e9fc2cfac542a6d191f491`.
 **That new JAR has NOT been run in native Burp or real Swing.** Prior native/desktop
@@ -27,7 +127,7 @@ optional-capture findings remain incomplete. Publication does not waive those ga
 or install into the user's Burp. See the [checkpoint record](PRERELEASE_2026-11-04_V2_CHECKPOINT.md)
 and [current scope/results](ALL_LISTENERS_ACCEPTANCE.md).
 
-### Follow-up source: disposed evidence selections no longer export (automated only)
+### Earlier follow-up: disposed evidence selections no longer export (183e106)
 
 Baseline `2096d50`. A pre-response snapshot of a row that later learned a response-only
 secret used to export from its historical seal once the masked row was cleared or evicted.
@@ -55,11 +155,12 @@ Already-returned strings and files are not retroactively sanitized.
   `ica-se-claude/claude-advantage-assist` found no blocking issue in this narrow diff;
   neither reviewer independently ran the tests. These are not the three outstanding
   whole-v2 implementation audits and do not replace their model bindings or gates.
-- **Native Burp: BLOCKED / NOT RUN for this JAR.** The official, checksum-verified
+- **Initial native attempt: BLOCKED / NOT RUN (historical).** The official, checksum-verified
   generic Burp 2026.10.1 (build 54773) reached its first EULA screen in a fresh
-  network-disabled container with an owned authenticated Xvfb display. No terms were
-  accepted, edition selected, extension loaded or fixture traffic sent; explicit user
-  consent is pending; the disposable instance was exited without accepting terms.
+  network-disabled container with an owned authenticated Xvfb display. At that attempt,
+  no terms were accepted, edition selected, extension loaded or fixture traffic sent;
+  explicit user consent was pending and the instance exited without accepting terms.
+  The newly authorized native results above supersede that initial stop.
   Existing Burp, profiles, activation and global proxy/trust settings were untouched.
   Swing/loopback/harness results are not native results, and earlier
   artifact results do not transfer. All other release gates are unchanged.

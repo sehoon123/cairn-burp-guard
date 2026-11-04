@@ -411,6 +411,277 @@ class ResponseWatcherTest {
         assertEquals(2, json(watcher.incidentJson(clock.wall - 1_000, clock.wall + 1)).get("events").size());
     }
 
+    @Test void completedWarnFanoutPathsDoNotExhaustPathCapacity() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 2, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 2, 4, 8, 8);
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        respond(watcher, endpoint(watcher, "/b"), 200);
+        Ticket third = watcher.commit(endpoint(watcher, "/c"), false, "");
+        watcher.observe(third, 200, 0);
+        for (int i = 0; i < 20; i++) respond(watcher, endpoint(watcher, "/churn-" + i), 200);
+        assertTrue(watcher.overlays().isEmpty());
+    }
+
+    @Test void liveWarnEpisodeDoesNotSuppressLaterBlockOrPauseDetection() throws Exception {
+        for (FanoutAction action : List.of(FanoutAction.BLOCK, FanoutAction.PAUSE)) {
+            Clock clock = new Clock();
+            ResponseWatcher watcher = watcher(limits(0, null, new Fanout(60_000, 2, FanoutAction.WARN)), clock);
+            respond(watcher, endpoint(watcher, "/a"), 200);
+            respond(watcher, endpoint(watcher, "/b"), 200);
+            assertEquals(1, number(watcher, "fanoutWarnings"));
+            watcher.update(limits(0, null, new Fanout(60_000, 2, action)));
+            ResponseWatcher.Rejected rejected = assertThrows(ResponseWatcher.Rejected.class,
+                    () -> watcher.commit(endpoint(watcher, "/c"), false, ""), action.name());
+            assertEquals("FANOUT_SUSPECTED", rejected.reason());
+            assertEquals(1, watcher.overlays().size());
+            Endpoint other = endpoint(watcher, "GET", "other.test", 443, true, "/ok", "https://other.test/ok", List.of("/ok"));
+            assertEquals(action == FanoutAction.BLOCK, watcher.check(other, false).allowed(), "BLOCK is service-local, PAUSE global");
+            assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+            assertEquals(true, json(watcher.incidentJson(clock.wall, clock.wall + 1)).get("fanoutHistoryComplete").asBoolean());
+        }
+    }
+
+    @Test void warnChurnBeyondCapacityKeepsIndexedHistoryBoundedAndReportsStickyOmissions() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 2, 4, 8, 8);
+        long start = clock.wall;
+        for (int i = 0; i < 22; i++) respond(watcher, endpoint(watcher, "/p" + i), 200);
+        assertEquals(2, number(watcher, "fanoutHistoryIndexed"));
+        assertEquals(2, number(watcher, "fanoutHistoryCapacity"));
+        assertEquals(20, number(watcher, "fanoutHistoryOmitted"));
+        assertEquals(true, watcher.snapshot().get("fanoutHistoryIncomplete"));
+        assertEquals(start + 60_000, number(watcher, "fanoutHistoryIncompleteUntil"));
+        assertEquals(0, number(watcher, "paths"), "completed WARN paths are not pinned");
+        // Indexed identity and a routing alias of it receive marks without omission.
+        respond(watcher, endpoint(watcher, "/p0"), 200);
+        respond(watcher, endpoint(watcher, "GET", "example.test", 443, true, "/%70%30", "https://example.test/%70%30",
+                List.of("/%70%30", "/p0")), 200);
+        assertEquals(20, number(watcher, "fanoutHistoryOmitted"));
+        JsonNode incident = json(watcher.incidentJson(start, clock.wall + 1));
+        assertFalse(incident.get("fanoutHistoryComplete").asBoolean());
+        assertFalse(incident.get("complete").asBoolean());
+        assertTrue(incident.get("truncated").asBoolean());
+        assertEquals(20, incident.at("/retention/fanoutHistoryOmitted").asLong());
+        assertTrue(incident.at("/retention/eventsComplete").asBoolean(), "distinct from ring truncation");
+        clock.advance(60_000);
+        assertEquals(false, watcher.snapshot().get("fanoutHistoryIncomplete"));
+        assertEquals(0, number(watcher, "fanoutHistoryIncompleteUntil"));
+        assertEquals(0, number(watcher, "fanoutHistoryIndexed"));
+        respond(watcher, endpoint(watcher, "/later"), 200);
+        JsonNode later = json(watcher.incidentJson(clock.wall, clock.wall + 1));
+        assertFalse(later.get("fanoutHistoryComplete").asBoolean(), "historical omission stays disclosed after debt expiry");
+        assertFalse(later.get("complete").asBoolean());
+        assertTrue(later.get("truncated").asBoolean());
+        assertFalse(watcher.snapshot().toString().contains("/p1"));
+    }
+
+    @Test void indexedHistoryBudgetIsSharedAcrossActualServices() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 2, 4, 8, 8);
+        respond(watcher, endpoint(watcher, "/same"), 200);
+        respond(watcher, endpoint(watcher, "GET", "example.test", 8443, true, "/same", "https://example.test:8443/same",
+                List.of("/same")), 200);
+        assertEquals(2, number(watcher, "fanoutHistoryIndexed"));
+        assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+        respond(watcher, endpoint(watcher, "GET", "example.test", 80, false, "/same", "http://example.test/same",
+                List.of("/same")), 200);
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"), "another actual service is another identity");
+        respond(watcher, endpoint(watcher, "/same"), 200);
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+        assertEquals(2, number(watcher, "fanoutHistoryIndexed"));
+    }
+
+    @Test void warnStillPinsGenuineInFlightPathsAndTimeoutOrAbandonNeverFreesThem() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 2, 4, 8, 8);
+        Ticket first = watcher.commit(endpoint(watcher, "/a"), false, "");
+        Ticket second = watcher.commit(endpoint(watcher, "/b"), false, "");
+        assertEquals(GuardState.CAPACITY, watcher.check(endpoint(watcher, "/c"), false).guardState());
+        watcher.abandon(first);
+        clock.advance(1_000);
+        assertEquals(1, number(watcher, "timedOut"));
+        assertEquals(GuardState.CAPACITY, watcher.check(endpoint(watcher, "/c"), false).guardState());
+        watcher.observe(first, 200, 0);
+        respond(watcher, endpoint(watcher, "/c"), 200);
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+        watcher.cancel(second);
+        assertEquals(0, number(watcher, "paths"));
+    }
+
+    @Test void omissionDebtFailsEveryEnforcingTransitionClosedUntilOriginalWindowEnds() throws Exception {
+        for (String route : List.of("BLOCK", "PAUSE", "NULL_BLOCK", "NULL_PAUSE")) {
+            Clock clock = new Clock();
+            ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                    clock::nano, clock::wall, 4, 2, 4, 8, 8);
+            for (String path : List.of("/a", "/b", "/c")) respond(watcher, endpoint(watcher, path), 200);
+            assertEquals(1, number(watcher, "fanoutHistoryOmitted"), route);
+            if (route.startsWith("NULL")) {
+                watcher.update(limits(0, null, null));
+                assertTrue(watcher.check(endpoint(watcher, "/a"), false).allowed(), "no enforcing detector, no gate");
+            }
+            Limits enforcing = limits(0, null, new Fanout(60_000, 10, FanoutAction.valueOf(route.replace("NULL_", ""))));
+            watcher.update(enforcing);
+            Endpoint existing = endpoint(watcher, "/a");
+            Endpoint other = endpoint(watcher, "GET", "other.test", 443, true, "/ok", "https://other.test/ok", List.of("/ok"));
+            for (Endpoint endpoint : List.of(existing, endpoint(watcher, "/new"), other)) {
+                for (boolean health : List.of(false, true)) {
+                    ResponseWatcher.Gate gate = watcher.check(endpoint, health);
+                    assertEquals("RESPONSE_WATCHER_CAPACITY", gate.reason(), route);
+                    assertEquals(GuardState.CAPACITY, gate.guardState());
+                }
+            }
+            ResponseWatcher.Rejected rejected = assertThrows(ResponseWatcher.Rejected.class,
+                    () -> watcher.commit(existing, false, ""));
+            assertEquals("RESPONSE_WATCHER_CAPACITY", rejected.reason());
+            assertEquals(GuardState.CAPACITY, rejected.guardState());
+            assertEquals(1, number(watcher, "fanoutHistoryOmitted"), "advisory/rejected admissions record nothing");
+            watcher.update(enforcing);
+            watcher.clearEvidence();
+            assertEquals(0, watcher.releaseAll());
+            clock.advance(59_999);
+            assertFalse(watcher.check(existing, false).allowed(), "save/clear/release cannot shorten debt");
+            clock.advance(1);
+            assertTrue(watcher.check(existing, false).allowed(), route);
+            assertTrue(watcher.check(other, false).allowed());
+            assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+            watcher.observe(watcher.commit(existing, false, ""), 200, 0);
+        }
+    }
+
+    @Test void enforcingRejectsNewIdentityWithoutHistorySlotButKeepsIndexedIdentities() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 4, 4, 8, 8);
+        for (String path : List.of("/a", "/b", "/c", "/d")) respond(watcher, endpoint(watcher, path), 200);
+        assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+        watcher.update(limits(0, null, new Fanout(60_000, 10, FanoutAction.BLOCK)));
+        assertEquals("RESPONSE_WATCHER_CAPACITY", watcher.check(endpoint(watcher, "/e"), false).reason());
+        Endpoint other = endpoint(watcher, "GET", "other.test", 443, true, "/ok", "https://other.test/ok", List.of("/ok"));
+        assertEquals("RESPONSE_WATCHER_CAPACITY", watcher.check(other, true).reason());
+        assertTrue(watcher.check(endpoint(watcher, "/a"), false).allowed());
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+    }
+
+    @Test void historyCapacityRejectionDoesNotClaimHalfOpenProbe() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, new Circuit5xx(1_000, 1, 1_000, 1),
+                new Fanout(60_000, 10, FanoutAction.WARN)), clock::nano, clock::wall, 4, 2, 4, 8, 8);
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        respond(watcher, endpoint(watcher, "/b"), 200);
+        respond(watcher, endpoint(watcher, "/c"), 503);
+        assertEquals(1, number(watcher, "circuits"));
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+        watcher.update(limits(0, new Circuit5xx(1_000, 1, 1_000, 1), new Fanout(60_000, 10, FanoutAction.BLOCK)));
+        Endpoint probe = endpoint(watcher, "/a");
+        assertEquals("CIRCUIT_OPEN", watcher.check(probe, false).reason(), "existing circuit precedence");
+        clock.advance(1_000);
+        assertThrows(ResponseWatcher.Rejected.class, () -> watcher.commit(probe, false, ""));
+        assertEquals(0, number(watcher, "halfOpen"));
+        clock.advance(59_000);
+        Ticket ticket = watcher.commit(probe, false, "");
+        assertTrue(ticket.halfOpen(), "cadence was not spent by the capacity rejection");
+        watcher.observe(ticket, 200, 0);
+        assertEquals(0, number(watcher, "circuits"));
+    }
+
+    @Test void omissionDeadlineUsesLargestOriginalWindowAcrossMonotonicWrap() throws Exception {
+        Clock clock = new Clock();
+        clock.nanos = Long.MAX_VALUE - 5_000_000_000L;
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(10_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 1, 4, 8, 8);
+        long start = clock.wall;
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        respond(watcher, endpoint(watcher, "/b"), 200);
+        watcher.update(limits(0, null, new Fanout(1_000, 10, FanoutAction.WARN)));
+        clock.advance(1);
+        respond(watcher, endpoint(watcher, "/c"), 200);
+        assertEquals(2, number(watcher, "fanoutHistoryOmitted"));
+        assertEquals(start + 10_000, number(watcher, "fanoutHistoryIncompleteUntil"), "a shorter window cannot shorten debt");
+        watcher.update(limits(0, null, new Fanout(1_000, 10, FanoutAction.PAUSE)));
+        clock.advance(9_998); // crosses the nano wrap
+        assertEquals("RESPONSE_WATCHER_CAPACITY", watcher.check(endpoint(watcher, "/a"), false).reason());
+        clock.advance(1);
+        assertTrue(watcher.check(endpoint(watcher, "/a"), false).allowed(), "exact original deadline");
+        assertEquals(false, watcher.snapshot().get("fanoutHistoryIncomplete"));
+    }
+
+    @Test void pendingDuplicatesOutOfOrderCallbacksAndDetachedHistoryStayBounded() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(1_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 3, 4, 8, 8);
+        Endpoint a = endpoint(watcher, "/a");
+        Ticket first = watcher.commit(a, false, "");
+        Ticket duplicate = watcher.commit(a, false, "");
+        assertEquals(1, number(watcher, "fanoutHistoryIndexed"));
+        watcher.releaseAll(); // detaches pending history; late callbacks must not reinsert it
+        assertEquals(0, number(watcher, "fanoutHistoryIndexed"));
+        Ticket b = watcher.commit(endpoint(watcher, "/b"), false, "");
+        Ticket c = watcher.commit(endpoint(watcher, "/c"), false, "");
+        watcher.observe(duplicate, 200, 0);
+        watcher.cancel(first);
+        watcher.observe(duplicate, 200, 0);
+        assertEquals(2, number(watcher, "fanoutHistoryIndexed"));
+        clock.advance(1_000); // logical timeout of b/c; history window also ends
+        watcher.abandon(b);
+        assertEquals(0, number(watcher, "fanoutHistoryIndexed"));
+        watcher.observe(b, 200, 0);
+        watcher.cancel(c);
+        watcher.observe(c, 200, 0);
+        assertEquals(0, number(watcher, "fanoutHistoryIndexed"));
+        assertEquals(0, number(watcher, "activeTickets") + number(watcher, "lateTickets"));
+        assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+        respond(watcher, endpoint(watcher, "/d"), 200);
+        respond(watcher, endpoint(watcher, "/e"), 200);
+        respond(watcher, endpoint(watcher, "/f"), 200);
+        respond(watcher, endpoint(watcher, "/g"), 200);
+        assertEquals(3, number(watcher, "fanoutHistoryIndexed"));
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+    }
+
+    @Test void resetClearsOmissionDebtButClearEvidenceAndReleaseDoNot() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN)),
+                clock::nano, clock::wall, 4, 1, 4, 8, 8);
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        respond(watcher, endpoint(watcher, "/b"), 200);
+        watcher.clearEvidence();
+        watcher.releaseAll();
+        assertEquals(1, number(watcher, "fanoutHistoryOmitted"));
+        assertEquals(true, watcher.snapshot().get("fanoutHistoryIncomplete"));
+        watcher.reset();
+        assertEquals(0, number(watcher, "fanoutHistoryOmitted"));
+        assertEquals(false, watcher.snapshot().get("fanoutHistoryIncomplete"));
+        watcher.update(limits(0, null, new Fanout(60_000, 10, FanoutAction.BLOCK)));
+        assertTrue(watcher.check(endpoint(watcher, "/a"), false).allowed());
+        assertTrue(json(watcher.incidentJson(clock.wall, clock.wall + 1)).get("fanoutHistoryComplete").asBoolean());
+    }
+
+    @Test void warnReclamationKeepsEarlierEnforcingRetentionHeavyAndActiveBlock() throws Exception {
+        Clock clock = new Clock();
+        ResponseWatcher watcher = new ResponseWatcher(limits(1, null, new Fanout(60_000, 10, FanoutAction.BLOCK)),
+                clock::nano, clock::wall, 4, 3, 4, 8, 8);
+        respond(watcher, endpoint(watcher, "/a"), 200);
+        watcherHeavy(watcher, endpoint(watcher, "/heavy"));
+        watcher.update(limits(1, null, new Fanout(60_000, 10, FanoutAction.WARN)));
+        respond(watcher, endpoint(watcher, "/b"), 200);
+        assertEquals(2, number(watcher, "paths"), "enforcing-era /a and heavy remain pinned, WARN /b is not");
+        assertFalse(watcher.check(endpoint(watcher, "/heavy"), true).allowed());
+        ResponseWatcher blocked = watcher(limits(0, null, new Fanout(60_000, 2, FanoutAction.BLOCK)), clock);
+        respond(blocked, endpoint(blocked, "/one"), 200);
+        assertThrows(ResponseWatcher.Rejected.class, () -> blocked.commit(endpoint(blocked, "/two"), false, ""));
+        blocked.update(limits(0, null, new Fanout(60_000, 2, FanoutAction.WARN)));
+        assertEquals("FANOUT_SUSPECTED", blocked.check(endpoint(blocked, "/three"), false).reason());
+        blocked.update(limits(0, null, new Fanout(60_000, 2, FanoutAction.BLOCK)));
+        assertEquals("FANOUT_SUSPECTED", blocked.check(endpoint(blocked, "/three"), false).reason(),
+                "entering enforcing mode ends only WARN latches");
+        assertEquals(1, blocked.overlays().size());
+    }
+
     @Test void candidateStatsAndIncidentTopListsUseIndependentRetainedWindow() throws Exception {
         Clock clock = new Clock();
         ResponseWatcher watcher = watcher(limits(0, null, null), clock);

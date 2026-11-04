@@ -1,4 +1,4 @@
-# 전체 Proxy 보호 기준 검증 기록 — 2026-11-04
+# 전체 Proxy 보호 기준 검증 기록 — 2026-11-05
 
 ## 사용자가 확정한 범위와 현재 판정
 
@@ -6,8 +6,9 @@
 현재 범위는 **A–G + 기존 보호 OFF/일시중지/진행 요청/원문 분리 요구사항**이며,
 `guardListenerPorts=[]`로 모든 Proxy 리스너를 보호합니다. H는 현재 완료 조건도 성공 기능도
 아닙니다. 이전 artifact의 H 실패·HEX 수정은 [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md)의
-역사적 관찰입니다. 아래의 native 표는 **956bcf… exact JAR에서 직접 실행한 개별 검사**이며,
-뒤이은 소스 수정/새 artifact에 그 성공을 이전하지 않습니다.
+역사적 관찰입니다. 아래 ‘실제 Burp 환경과 개별 결과’ 표는 **956bcf… exact JAR에서
+직접 실행한 개별 검사**이며 새 artifact에 성공을 이전하지 않습니다. 최신 후속 검증은
+별도 절로 구분합니다.
 
 정의된 자동/native 시나리오를 아래처럼 확인했지만, **요청한 독립 구현 감사3개는 미완료**입니다.
 이를 전체 수용·독립 검토·정식 배포 승인으로 합치지 않습니다. 아래 native 검증 당시에는
@@ -16,7 +17,47 @@
 [개발 체크포인트 기록](PRERELEASE_2026-11-04_V2_CHECKPOINT.md)에 구분하며, 이는
 새 exact-JAR 수용/감사 완료나 사용자 설치 완료가 아닙니다.
 
-## 감사 이후 소스 수정 — native 수용 미완료
+## 2026-11-05 제한된 후속 검증 — WARN 경로 용량
+
+기준 `183e106`의 JAR `b921f62e…`를 실제 Community2026.10.1에서 로드하여 WARN의
+가용성 결함을 재현했습니다. 같은 실제 서비스에서 순차 완료한 경로2048개는 도착했으나
+2049번째는 typed `RESPONSE_WATCHER_CAPACITY`/`CAPACITY` 로컬451이고 추가 도착0이었습니다.
+이를 성공이나 우회 취약점으로 분류하지 않습니다.
+
+수정 JAR SHA256:
+`6133f1edc2f9ff0bfc2a97c018285f54b88c604f1c82b0abaad5da44ec90aff9`.
+WARN의 완료 경로 보존 대신 전역2048개 색인 이력 상한과 고정 크기 누락 상태를 둡니다.
+누락 이력의 원래 창이 유효한 동안 BLOCK/PAUSE는 안전 거절합니다. 저장/OFF/감지 끄기로
+이를 지우지 않습니다. 이력이 온전하면 강제 모드 진입 시 WARN latch만 끝내 감지를 복구합니다.
+
+| 이번 exact-JAR 검사 | 직접 관찰 / 한계 |
+|---|---|
+| 자동 검사 | Headless Java1321, Python32, template18 PASS(upstream SKIP). 별도 Swing scale1/2 각27 PASS. 부모도 clean Java/Python/template 재실행 및 XML 확인 |
+| 재현 빌드 | 작성자 clean3회와 부모 별도 clean1회 모두 위 full hash. Narrow Sol/Advantage 독립 리뷰 차단 지적 없음; 전체 v2 감사3개를 대체하지 않음 |
+| 실제 격리 환경 | 사용자 추가 승인 후 정상 약관 동의/Community 선택. Burp2026.10.1/build54773, Temurin21.0.11+10, network=none, 별도 프로젝트/HOME/표시 장치, 소유 loopback HTTP/1.1. 로드/최종 Errors UI 비어 있음 |
+| WARN 포화 A/B | 같은 설정의 수정본2200/2200 도착, 비교한 method/target/합성 헤더/빈 본문/응답 불일치0. UI 색인2048·누락152 및 두 경고 동시 표시. Fixture는 누적 수치와 최대3 sample만 보관;500-event helper로 포화를 주장하지 않음 |
+| 누락 뒤 강제 모드 | BLOCK과 PAUSE 각각 기존 path/새 path/별도 허용 실제 서비스3건 모두 typed capacity451·도착0. OFF3건 도착 및 저장 후 OFF 유지, ON 후3건 거절. 감지 끄기3건 도착, BLOCK 재설정 후3건 거절 |
+| 온전한 이력 전환 | 이전 실제 응답 완료 후 새 확장 epoch에서 누락0 확인. WARN→BLOCK은 첫 서비스2건 거절·다른 서비스1건 허용. 별도 WARN→PAUSE는3건 거절. 감지를 꺼도 실제 PAUSE overlay 유지·사람의 명시 해제까지 거절 |
+| 범위/비변경 재검사 | empty1/exact6/rawpaths21 논리 검사 및 응답 전용 grant fixture.14 raw target와6 optional payload, 실제 목적지/다른 Host 비교 성공. 두 실제 inbound 모두 DELETE 거절·GET 허용(4건); H 성공이 아님 |
+| 실제 진행 요청 | 동시1/대기1/queue1초에서 held client6개: 도착1·peak1, QUEUE_FULL4·QUEUE_TIMEOUT1. 실제 완료 후 다음 도착. 별도500ms 미응답 격리는 실제1.5초 응답까지 slot을 재사용하지 않고 IN_FLIGHT_TIMEOUT, 응답 후 복구 |
+| Heavy/circuit 대표 검사 | 첫6MiB 응답 bytes 일치·다음 같은 path 미도착 heavy 차단·다른 path 도착. 실제503 다섯 번 후 회로, held half-open1건·동시 거절·성공 후 닫힘(시험 open1초) |
+| 내보내기 | 실제 GUI JSON30/HAR30 파일 파싱 및 합성 비밀/시험한 인코딩 부재. 응답 전용 grant가 이전 URL까지 마스킹. 포화 incident는 fanoutHistoryComplete/complete=false, truncated=true, omitted152로 offline 검증 |
+
+파일은 native-local 파일시스템에서0600으로 생성했습니다. Docker/macOS bind mount의
+최초 atomic export는 출력 없이 안전 실패했으며 원인은 확정하지 않았습니다. 안전 장치를
+완화하지 않았고 파일시스템 간 호환성을 성공으로 세지 않습니다. 원본 로그/스크린샷/
+내보내기/프로필은 비공개로 유지하고 사용자 기존 Burp·활성화·전역 설정은 바꾸지 않았습니다.
+
+한 시간 누락 창의 실제 만료, native4096-flight 상한, 모든 늦은 callback/종료/프로젝트
+race, HTTPS/HTTP2·다른 OS/Professional·upstream/model/report E2E는 이번 native 결과가
+아닙니다. 별도 host/실제 동시 요청/overlay 상한은 여전히 적용됩니다. 취소된 논리 admission도
+누락 수치/대기에 보수적으로 남을 수 있습니다. 전체 A–G 수용·전체 감사·정식 릴리스·사용자
+설치 완료가 아닙니다. 상세 자동/실제/미검증 구분은 [VERIFICATION.md](VERIFICATION.md)를 봅니다.
+
+**이하 소스 수정과956bcf… 기록은 당시의 역사적 상태입니다. 위의 제한된 후속 성공으로
+이전 artifact나 미완료 전체 감사의 판정을 바꾸지 않습니다.**
+
+## 이전 감사 이후 소스 수정 — 당시 native 수용 미완료
 
 두 개의 cold 감사는 정확한 `ica-se-claude/claude-advantage-assist`로
 `7b974de` 소스를 독립적으로 읽고 실질 보고서를 작성했습니다. 승인 보고서가 아니라

@@ -169,6 +169,13 @@ Overlay list retains cause/created/expiry, selected/all release confirmations an
 reopen-on-new-detection. No persistent policy edit: compare a reviewed local policy
 export/hash before/after; no native console/control endpoint or profile/log export.
 Disabling a detector/same-project save/OFF does not erase active protection/debt.
+WARN saturation: more sequentially completed distinct paths than the history
+capacity on one service must keep arriving at the fixture; the path/history budget
+alone must not deny them. Separate host, physical-flight and enforcing-protection
+limits still apply. The dashboard shows omitted history; switching that WARN to BLOCK/PAUSE must
+deny locally with `RESPONSE_WATCHER_CAPACITY` (zero new fixture arrivals) until
+the omitted window ends, and exported incidents report `fanoutHistoryComplete:false`.
+Use a bounded streaming fixture; the bundled 500-event fixture cannot prove this.
 Capacity fence/no-active-eviction and all worst-case races may remain synthetic;
 label anything not run natively instead of extrapolating.
 

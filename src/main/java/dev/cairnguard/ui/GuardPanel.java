@@ -955,11 +955,20 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n로컬 451은 source=cairn-proxy-guard / local=true인 확장 거절이며 대상 서버의 5xx와 다릅니다. 대상 응답이 없다는 사실만으로 장애를 단정하지 마세요."
                 + "\n응답 감지: 자동 차단 " + count(watcher, "overlays") + " / 회로 " + count(watcher, "circuits")
                 + " / 확산 에피소드 " + count(watcher, "fanoutWarnings") + " · 태그 사용 " + count(intents, "consumed") + " / 거절 " + count(intents, "rejected")
+                + "\n확산 기록 (보관 기록 기준, 누락 시 개수는 하한): 색인 " + count(watcher, "fanoutHistoryIndexed") + " / " + count(watcher, "fanoutHistoryCapacity")
+                + " · 누락 " + count(watcher, "fanoutHistoryOmitted") + "건"
                 + "\n보호 리스너: " + (config.guardListenerPorts().isEmpty() ? "모든 Proxy 리스너" : config.guardListenerPorts() + " (이전 제한 남음 · 직접 비워 전체 보호 전환 필요 · 모두 LISTENER_UNVERIFIED)"));
-        setDetail(warnings, Boolean.TRUE.equals(watcher.get("automaticPause")) ? "경고: 확산으로 전체 자동 차단 중입니다. 운영자 일시중지와 별개이며 ‘자동 차단’에서 확인·해제하세요."
+        String alert = Boolean.TRUE.equals(watcher.get("automaticPause")) ? "경고: 확산으로 전체 자동 차단 중입니다. 운영자 일시중지와 별개이며 ‘자동 차단’에서 확인·해제하세요."
                 : count(watcher, "fanoutWarnings") > 0 ? "경고: 경로 확산 감지 에피소드가 있습니다. 요청 발생을 검토하고 ‘자동 차단’ 및 사건을 확인하세요."
                 : count(watcher, "overlays") > 0 || count(watcher, "circuits") > 0 ? "경고: 자동 차단/회로가 열려 있습니다. 범위와 규칙을 바꿔도 자동 해제되지 않습니다."
-                : "자동 안전 경고 없음 (보관·감지 범위에 한함)");
+                : "";
+        // Shown alongside any other warning: incomplete fan-out history must never be hidden.
+        String history = Boolean.TRUE.equals(watcher.get("fanoutHistoryIncomplete"))
+                ? "경고: 확산 기록 용량 초과로 일부 경로가 기록되지 않았습니다 (확산 개수는 하한). 누락 창이 끝날 때까지 확산 BLOCK/PAUSE 모드의 새 요청은 RESPONSE_WATCHER_CAPACITY로 거절됩니다."
+                : count(watcher, "fanoutHistoryOmitted") > 0 ? "참고: 이 프로젝트 세션에서 확산 기록 누락 " + count(watcher, "fanoutHistoryOmitted") + "건이 있었습니다. 확산 개수와 사건 보고서는 불완전합니다."
+                : "";
+        setDetail(warnings, alert.isEmpty() && history.isEmpty() ? "자동 안전 경고 없음 (보관·감지 범위에 한함)"
+                : alert + (alert.isEmpty() || history.isEmpty() ? "" : "\n") + history);
         Object reasons = status.get("reasonCounters");
         setDetail(reasonCounters, "이유별 누적 (로컬 범주): " + boundedText(Json.write(reasons instanceof Map<?,?> ? reasons : Map.of())));
         if (off) {

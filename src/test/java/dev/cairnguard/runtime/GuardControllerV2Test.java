@@ -149,6 +149,66 @@ class GuardControllerV2Test {
         assertEquals(0, projects.saves.get());
     }
 
+    @Test void completedWarnFanoutChurnDoesNotExhaustWatcherPathCapacity() {
+        GuardConfig config = policy(limits(0, null, new Fanout(60_000, 2, FanoutAction.WARN), 20, false), List.of());
+        projects.document = PolicyCodec.encode(config);
+        openStored(config.limits(), 4096, 2, 4096);
+        for (String path : List.of("/a", "/b", "/c", "/d")) {
+            Prepared p = prepare("GET", path, "one");
+            handoff(p);
+            controller.response(p.evidenceId(), 200, List.of(), new byte[0], 0);
+        }
+        assertEquals(4, metric("intents", "consumed"));
+        assertEquals(2, metric("watchers", "fanoutHistoryOmitted"));
+    }
+
+    @Test void warnOmissionDebtFailsEnforcingClosedAcrossSaveAndOffWithoutIntentSpendUntilEpochReset() {
+        List<Rule> rules = List.of(rule("exempt", Mode.EXEMPT, "/exempt"));
+        GuardConfig warn = policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN), 20, true), rules);
+        projects.document = PolicyCodec.encode(warn);
+        openStored(warn.limits(), 4096, 2, 4096);
+        for (String path : List.of("/a", "/b", "/c")) {
+            Prepared p = prepare("GET", path, "one");
+            handoff(p);
+            controller.response(p.evidenceId(), 200, List.of(), new byte[0], 0);
+        }
+        assertEquals(1, metric("watchers", "fanoutHistoryOmitted"));
+        save(policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.BLOCK), 20, true), rules));
+        controller.passthrough(true, "a", revision());
+        controller.passthrough(false, "a", revision());
+        for (String path : List.of("/a", "/new", "/exempt", "/health")) {
+            Admission admission = controller.authorize(prepare("GET", path, "one"));
+            assertFalse(admission.allowed(), path);
+            assertEquals("RESPONSE_WATCHER_CAPACITY", admission.reason(), path);
+        }
+        assertEquals(3, metric("intents", "consumed"));
+        assertEquals(1, metric("watchers", "fanoutHistoryOmitted"));
+        projects.id = "b";
+        controller.refreshProject();
+        assertEquals(0, metric("watchers", "fanoutHistoryOmitted"));
+        handoff(prepare("GET", "/a", "one"));
+    }
+
+    @Test void finalCommitRejectsEnforcingIdentityWithoutHistorySlotBeforeIntentSpend() {
+        GuardConfig warn = policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN), 20, false), List.of());
+        projects.document = PolicyCodec.encode(warn);
+        openStored(warn.limits(), 4096, 2, 4096);
+        Prepared indexed = prepare("GET", "/a", "one");
+        handoff(indexed);
+        controller.response(indexed.evidenceId(), 200, List.of(), new byte[0], 0);
+        save(policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.BLOCK), 20, false), List.of()));
+        Prepared first = prepare("GET", "/b", "one");
+        Prepared second = prepare("GET", "/c", "one");
+        authorize(first);
+        authorize(second);
+        assertTrue(controller.commitDetailed(first).allowed());
+        CommitResult result = controller.commitDetailed(second);
+        assertFalse(result.allowed());
+        assertEquals("RESPONSE_WATCHER_CAPACITY", result.reason());
+        assertEquals(2, metric("intents", "consumed"));
+        assertEquals(0, metric("watchers", "fanoutHistoryOmitted"));
+    }
+
     @Test void policyGenerationAndLocalQueueRejectionsNeverConsumeBudgetOrRecycleNativePermit() {
         Limits limits = new Limits(1000, 1000, Map.of(), 1, 0, 1000, 1000, 1000,
                 0, 1000, null, null, 20, false, List.of(), List.of());

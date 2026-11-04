@@ -242,6 +242,20 @@ class GuardPanelV2Test {
         dialogs.onConfirm=()->access.revision++;edt(()->{click("dashboard.resetIntent");return null;});assertEquals(1,access.runtimeCalls);
     }
 
+    @Test void fanoutHistoryOmissionIsDisclosedAlongsideOtherWarningsAndAfterDebtExpiry() throws Exception {
+        access.watcher=Map.of("automaticPause",true,"overlays",1,"fanoutHistoryIndexed",2,"fanoutHistoryCapacity",2,"fanoutHistoryOmitted",3L,"fanoutHistoryIncomplete",true);access.guard="OVERLAY_BLOCK";open();
+        edt(()->{
+            String warning=get("dashboard.warning",JTextArea.class).getText();
+            assertTrue(warning.contains("전체 자동 차단"));assertTrue(warning.contains("확산 기록 용량 초과"));assertTrue(warning.contains("RESPONSE_WATCHER_CAPACITY"));
+            assertTrue(get("dashboard.diagnosis",JTextArea.class).getText().contains("색인 2 / 2 · 누락 3건"));
+            access.watcher=Map.of("fanoutHistoryOmitted",3L,"fanoutHistoryIncomplete",false);panel.refreshNow();
+            warning=get("dashboard.warning",JTextArea.class).getText();
+            assertTrue(warning.contains("누락 3건"));assertFalse(warning.contains("자동 안전 경고 없음"));
+            access.watcher=Map.of();panel.refreshNow();
+            assertTrue(get("dashboard.warning",JTextArea.class).getText().startsWith("자동 안전 경고 없음"));return null;
+        });
+    }
+
     @Test void offWarningPreservesOperatorPauseAndNoNewScreenCaptureIsRequested() throws Exception {
         access.paused=true;open();
         edt(()->{
