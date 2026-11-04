@@ -60,19 +60,24 @@ class MessagePaneTest {
 
     @Test void actionRowsGrowTheirPreferredHeightWhenTheWindowNarrowsOrFontsGrow() throws Exception {
         onEdt(() -> {
-            JPanel parent = new JPanel(); parent.setSize(360, 500);
+            JPanel parent = new JPanel();
             JPanel buttons = new JPanel(new WrappingFlowLayout(FlowLayout.LEADING, 6, 3));
             for (int i = 0; i < 4; i++) buttons.add(new JButton("조작 버튼 " + i));
             parent.add(buttons);
+            int widest = 0;
+            for (Component child : buttons.getComponents()) widest = Math.max(widest, child.getPreferredSize().width);
+            // Fit two, not all four, regardless of installed CJK fonts or fallback-glyph metrics.
+            int width = widest * 2 + 6 * 3;
+            parent.setSize(width, 500);
             buttons.setSize(900, 50); // Stale width from before the window shrank.
             Dimension small = buttons.getPreferredSize();
             assertTrue(small.height > buttons.getComponent(0).getPreferredSize().height + 6);
-            buttons.setSize(350, small.height); buttons.doLayout();
+            buttons.setSize(width, small.height); buttons.doLayout();
             for (Component child : buttons.getComponents()) assertTrue(child.getY() + child.getHeight() <= buttons.getHeight());
             setFonts(buttons, new Font(Font.DIALOG, Font.PLAIN, 28));
             Dimension largeFont = buttons.getPreferredSize();
             assertTrue(largeFont.height > small.height);
-            buttons.setSize(350, largeFont.height); buttons.doLayout();
+            buttons.setSize(width, largeFont.height); buttons.doLayout();
             for (Component child : buttons.getComponents()) assertTrue(child.getY() + child.getHeight() <= buttons.getHeight());
         });
     }
