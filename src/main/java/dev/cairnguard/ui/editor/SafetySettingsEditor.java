@@ -15,7 +15,6 @@ import java.awt.FlowLayout;
 import java.awt.GridLayout;
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 
 /** Bounded human-only v2 settings draft. No writes; the enclosing UI confirms and CAS-saves it. */
@@ -36,13 +35,14 @@ final class SafetySettingsEditor {
     private final JTextField intent;
     private final JCheckBox probes;
     private final JTextField listeners;
+    private final List<Integer> originalListeners;
     private final RouteTable probeRoutes;
     private final RouteTable byteRoutes;
     SafetySettingsEditor(GuardConfig config) {
         Limits initial = config.limits();
         panel.setName("settings.safety");
         panel.setLayout(new BoxLayout(panel, BoxLayout.PAGE_AXIS));
-        panel.setBorder(BorderFactory.createTitledBorder("자동 안전 제어 · 태그 예산 · 보호 리스너 (저장 전 초안)"));
+        panel.setBorder(BorderFactory.createTitledBorder("자동 안전 제어 · 태그 예산 (저장 전 초안)"));
         heavy = field("settings.heavyMiB", mib(initial.perPathMaxResponseBytes()));
         ttl = field("settings.autoBlockSeconds", seconds(initial.autoBlockMillis()));
         circuit = check("settings.circuit.enabled", "5xx 회로 차단 사용", initial.circuit5xx() != null);
@@ -65,7 +65,9 @@ final class SafetySettingsEditor {
         fanoutAction.setSelectedItem(f.action());
         intent = field("settings.intent.maxRequests", Integer.toString(initial.perIntentMaxRequests()));
         probes = check("settings.probes.enabled", "명시한 GET 상태 확인 경로만 운영자 일시중지·회로 차단 통과", initial.healthProbePassthrough());
-        listeners = field("settings.listenerPorts", String.join(", ", config.guardListenerPorts().stream().map(Object::toString).toList()));
+        originalListeners = config.guardListenerPorts();
+        listeners = field("settings.listenerPorts", listenerText());
+        listeners.setEditable(!originalListeners.isEmpty());
         probeRoutes = new RouteTable("settings.probes", false, initial.healthProbePaths().stream()
                 .map(p -> List.of(p.scheme(), p.host(), Integer.toString(p.port()), p.path())).toList());
         byteRoutes = new RouteTable("settings.pathLimits", true, initial.heavyPathLimits().stream()
@@ -88,11 +90,11 @@ final class SafetySettingsEditor {
         row(fg, "서로 다른 경로 (2~1000)", fanoutPaths);
         row(fg, "감지 시 동작", fanoutAction);
         panel.add(fg);
-        JPanel tags = grid("클라이언트 태그 예산 · 실제 인바운드 리스너");
+        JPanel tags = grid("클라이언트 태그 예산 · 전체 Proxy 보호");
         row(tags, "(Run, Intent)별 전송 허가 횟수 (0=끔, 최대 1000000)", intent);
-        row(tags, "보호할 Proxy 리스너 포트 (쉼표 구분, 빈칸=모두)", listeners);
+        row(tags, "기존 리스너 제한 (빈칸=모든 Proxy 보호 · 새 제한은 추후 지원)", listeners);
         panel.add(tags);
-        panel.add(note("X-Cairn-Intent / X-Cairn-Run은 클라이언트가 주장한 태그이며 인증·신뢰 경계가 아닙니다. 한도가 꺼져도 기존 사용량은 보존됩니다. 현재 네이티브 리스너 제한은 미지원입니다. 목록을 제한하면 보호 중 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED로 거절됩니다. 정상적인 전체 보호는 빈칸으로 두세요. 목적지 서버 포트가 아니라 실제 Burp 인바운드 리스너 포트입니다. 최대 16개, 1~65535, 중복 불가."));
+        panel.add(note("X-Cairn-Intent / X-Cairn-Run은 클라이언트가 주장한 태그이며 인증·신뢰 경계가 아닙니다. 한도가 꺼져도 기존 사용량은 보존됩니다. 이번 범위는 모든 Proxy 리스너 보호이며 포트별 보호는 추후 지원합니다. 새 포트 제한은 저장할 수 없습니다. 기존 제한은 자동 삭제하지 않습니다. 남아 있으면 모든 새 보호 요청이 LISTENER_UNVERIFIED로 거절되므로, 직접 목록을 비우고 전체 보호 전환을 확인해 저장하세요."));
         panel.add(probes);
         panel.add(note("GET도 부작용이 있을 수 있습니다. 아래 정확한 scheme/host/port/path만 지정하세요. query·fragment·모호한 경로 불가. 상태 확인도 범위·일반 규칙·대용량/확산 차단·예산·속도는 우회하지 않습니다. 통과 응답으로 회로를 회복시키지 않습니다. 활성화/경로 변경 저장에는 별도 확인이 필요합니다."));
         panel.add(probeRoutes.panel);
@@ -120,16 +122,12 @@ final class SafetySettingsEditor {
     List<Integer> listenerPorts() {
         String text = input(listeners);
         if (text.isBlank()) return List.of();
-        String[] parts = text.split(",", -1);
-        if (parts.length > 16) throw error("보호 리스너는 최대 16개입니다.");
-        List<Integer> ports = new ArrayList<>();
-        HashSet<Integer> seen = new HashSet<>();
-        for (String part : parts) {
-            int p = port(part.strip());
-            if (!seen.add(p)) throw error("보호 리스너 포트가 중복되었습니다.");
-            ports.add(p);
-        }
-        return List.copyOf(ports);
+        // Preserve old authored data on unrelated edits; never create/change an unsupported selection.
+        if (!originalListeners.isEmpty() && text.equals(listenerText())) return originalListeners;
+        throw error("포트별 보호는 추후 지원합니다. 이번 버전은 빈 목록으로 모든 Proxy 리스너를 보호합니다. 기존 제한은 직접 비운 뒤 확인해 저장하세요.");
+    }
+    private String listenerText() {
+        return String.join(", ", originalListeners.stream().map(Object::toString).toList());
     }
 
     private static int port(String text) {

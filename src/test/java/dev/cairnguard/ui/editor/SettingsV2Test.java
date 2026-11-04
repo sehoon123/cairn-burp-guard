@@ -50,7 +50,8 @@ class SettingsV2Test {
             text(editor, "circuit.windowSeconds", "3.001"); text(editor, "circuit.threshold", "2"); text(editor, "circuit.openSeconds", "4.005");
             text(editor, "fanout.windowSeconds", "5.006"); text(editor, "fanout.distinctPaths", "7");
             get(editor, "settings.fanout.action", JComboBox.class).setSelectedItem(FanoutAction.PAUSE);
-            text(editor, "intent.maxRequests", "20"); text(editor, "listenerPorts", "8080, 8081");
+            text(editor, "intent.maxRequests", "20");
+            assertFalse(get(editor, "settings.listenerPorts", JTextField.class).isEditable());
             get(editor, "settings.probes.enabled", JCheckBox.class).setSelected(true);
             get(editor, "settings.probes.add", JButton.class).doClick(0);
             JTable probes = get(editor, "settings.probes.table", JTable.class);
@@ -63,7 +64,7 @@ class SettingsV2Test {
             assertFalse(probes.isEditing()); assertEquals(2_621_440, l.perPathMaxResponseBytes()); assertEquals(1001, l.autoBlockMillis());
             assertEquals(new Circuit5xx(3001, 2, 4005, 1), l.circuit5xx());
             assertEquals(new Fanout(5006, 7, FanoutAction.PAUSE), l.fanout()); assertEquals(20, l.perIntentMaxRequests());
-            assertEquals(List.of(8080,8081), result.guardListenerPorts());
+            assertTrue(result.guardListenerPorts().isEmpty(), "Per-port protection is deferred; new settings protect all listeners");
             assertEquals(List.of(new ProbePath("https", "example.test", 443, "/ready")), l.healthProbePaths());
             assertEquals(List.of(new PathByteLimit("http", "example.test", 80, "/large", 1)), l.heavyPathLimits());
             get(editor, "settings.probes.enabled", JCheckBox.class).setSelected(false);
@@ -84,7 +85,7 @@ class SettingsV2Test {
                     "circuit.windowSeconds", List.of("0", "3600.001"),
                     "fanout.distinctPaths", List.of("1", "1001"),
                     "intent.maxRequests", List.of("-1", "1000001"),
-                    "listenerPorts", List.of("8080,8080", "0", "65536", "8080,", "+8080", "80.1")
+                    "listenerPorts", List.of("8080", "8080, 8081", "8080,8080", "0", "65536", "8080,", "+8080", "80.1")
             ).entrySet()) for (String invalid : test.getValue()) {
                 SettingsEditor editor = new SettingsEditor(GuardConfig.defaults()); text(editor, test.getKey(), invalid);
                 assertThrows(FormValidationException.class, editor::value, test.getKey() + ": " + invalid);

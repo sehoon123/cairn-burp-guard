@@ -31,7 +31,7 @@ class GuardPanelV2DesktopTest {
                 assertTrue(editor.isModal());assertTrue(editor.isResizable());
                 JScrollPane scroll=get(editor,"settings.editor",JScrollPane.class);
                 assertTrue(scroll.getVerticalScrollBar().isVisible());
-                JTextField listener=get(editor,"settings.listenerPorts",JTextField.class);
+                JTextField listener=get(editor,"settings.listenerPorts",JTextField.class);assertFalse(listener.isEditable());
                 listener.scrollRectToVisible(new Rectangle(0,0,listener.getWidth(),listener.getHeight()));
                 get(editor,"settings.heavyMiB",JTextField.class).setText("8");listener.setText("8080");
                 assertEquals(0,v.access.updates);get(editor,"editor.cancel",JButton.class).doClick(0);return null;
@@ -43,21 +43,22 @@ class GuardPanelV2DesktopTest {
         }
     }
 
-    @ParameterizedTest @ValueSource(strings={"listener","probe"})
-    void listenerNarrowingAndHealthGetRequireASecondSafeCancelDefaultConfirmation(String kind) throws Exception {
+    @ParameterizedTest @ValueSource(strings={"listener-clear","probe"})
+    void legacyListenerClearAndHealthGetRequireASecondSafeCancelDefaultConfirmation(String kind) throws Exception {
         try(View v=new View(false)) {
+            if(kind.equals("listener-clear"))edt(()->{GuardConfig d=v.access.policy;v.access.policy=new GuardConfig(d.schemaVersion(),d.allowScope(),d.blockScope(),d.rules(),d.defaultMode(),d.limits(),List.of(8080));v.panel.refreshNow();return null;});
             for(boolean accept:List.of(false,true)) {
                 v.open("settings.edit");JDialog editor=await("editor.dialog");
-                edt(()->{if(kind.equals("listener"))get(editor,"settings.listenerPorts",JTextField.class).setText("8080");else {
+                edt(()->{if(kind.equals("listener-clear")){JTextField ports=get(editor,"settings.listenerPorts",JTextField.class);assertTrue(ports.isEditable());assertEquals("8080",ports.getText());ports.setText("");}else {
                     get(editor,"settings.probes.enabled",JCheckBox.class).setSelected(true);get(editor,"settings.probes.add",JButton.class).doClick(0);
                     JTable routes=get(editor,"settings.probes.table",JTable.class);routes.setValueAt("example.test",0,1);routes.setValueAt("/health",0,3);
                 }return null;});
                 asyncClick(editor,"editor.save");JDialog warning=await("message.dialog");
-                edt(()->{assertEquals("dialog.cancel",warning.getRootPane().getDefaultButton().getName());String text=get(warning,"dialog.body",JTextArea.class).getText();assertTrue(text.contains(kind.equals("listener")?"인바운드":"부작용"));assertEquals(0,v.access.updates);get(warning,accept?"dialog.confirm":"dialog.cancel",JButton.class).doClick(0);return null;});
+                edt(()->{assertEquals("dialog.cancel",warning.getRootPane().getDefaultButton().getName());String text=get(warning,"dialog.body",JTextArea.class).getText();assertTrue(text.contains(kind.equals("listener-clear")?"모든 Proxy":"부작용"));assertEquals(0,v.access.updates);get(warning,accept?"dialog.confirm":"dialog.cancel",JButton.class).doClick(0);return null;});
                 awaitClosed(warning);awaitClosed(editor);
                 assertEquals(accept?1:0,v.access.updates);
             }
-            if(kind.equals("listener"))assertEquals(List.of(8080),v.access.policy.guardListenerPorts());else assertTrue(v.access.policy.limits().healthProbePassthrough());
+            if(kind.equals("listener-clear"))assertTrue(v.access.policy.guardListenerPorts().isEmpty());else assertTrue(v.access.policy.limits().healthProbePassthrough());
             assertEquals("p",v.access.casProject);assertEquals(7,v.access.casRevision);assertTrue(v.dialogs.errors.isEmpty());
         }
     }

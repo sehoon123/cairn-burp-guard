@@ -1,8 +1,8 @@
 # 사람이 사용하는 v2 화면 — 2026-11-04
 
-일반적인 대상·규칙·속도·자동 안전 제어·태그 예산·리스너 설정은 **JSON 없이 폼으로 작성**합니다. `Cairn Guard`는 Burp 안에서 사람이 사용하는 Swing UI입니다. 워커 제어 API, 요청 전송/재실행 도구, 인증 편집기·쿠키 주입·세션 복구 기능은 없습니다. 허용한 native 요청·응답·annotation을 수정하는 기능도 아닙니다.
+일반적인 대상·규칙·속도·자동 안전 제어·태그 예산은 **JSON 없이 폼으로 작성**합니다. `Cairn Guard`는 Burp 안에서 사람이 사용하는 Swing UI입니다. 워커 제어 API, 요청 전송/재실행 도구, 인증 편집기·쿠키 주입·세션 복구 기능은 없습니다. 허용한 native 요청·응답·annotation을 수정하는 기능도 아닙니다.
 
-> **현재 native 리스너 한정은 미지원(H FAIL)입니다.** 빈 목록으로 모든 리스너를 보호하세요. 제한 목록은 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED로 거절합니다. UI 경고와 [실제 발견 기록](V2_NATIVE_FINDINGS.md)을 따르세요.
+> **사용자가 포트별 적용(H)을 추후로 미뤘습니다.** 현재는 빈 목록으로 모든 Proxy를 보호하며 새 제한을 폼/JSON으로 저장하지 못합니다. 기존 목록은 보존·fail-closed하고, 사람이 명시 해제/전체 보호 전환을 확인해야 비웁니다. H는 현재 gate나 PASS가 아닙니다. [현재 범위·개별 검증](ALL_LISTENERS_ACCEPTANCE.md)을 따르세요.
 
 ## 시작과 상단 보호 상태
 
@@ -82,7 +82,7 @@ EXEMPT 행은 주황/적색 경고와 함께 표의 **보기에서만** 위에 �
 | Intent 예산 | `(Run, Intent)`별 최대 최종 전송 허가 0–1000000; 0=끔 |
 | 상태 확인 | 사용 체크 + 최대16행의 정확한 scheme/host/port/path GET |
 | 경로 응답 한도 | 최대256행, scheme/host/port/path + MiB (0=그 경로 크기 감지 끔) |
-| 보호 리스너 | 빈칸=모든 Proxy 리스너; 쉼표로 최대16개 고유 포트1–65535 |
+| 보호 리스너 | 새 정책은 읽기 전용 전체 보호. 기존 목록은 표시·보존하고 필드를 직접 비울 수 있음; 새 제한은 추후 지원 |
 
 새 프로필은 기본 경로5MiB, 5xx5회/60초·열림10분, 확산100경로/60초 WARN입니다. v1 변환은 새 감지/예산/상태 확인 OFF입니다. 옵션을 껐다고 이미 열린 차단을 지우지 않습니다. 경로 표 행의 추가·편집·삭제도 저장 전까지 초안입니다. 시간·바이트를 반올림하거나 잘린 입력/이전 유효 값으로 저장하지 않습니다.
 
@@ -90,7 +90,7 @@ EXEMPT 행은 주황/적색 경고와 함께 표의 **보기에서만** 위에 �
 
 **GET 상태 확인 통과 활성화/활성 경로 변경**에는 별도 확인이 필요합니다. 정확한 GET만 운영자 일시중지·회로를 통과합니다. 범위·일반 규칙·heavy/fanout·예산·속도는 유지하고 회로를 회복시키지 않습니다. GET도 부작용이 있을 수 있습니다.
 
-**리스너 제한을 새로 지정/변경**하면 현재 native **미지원·모두 거절** 경고를 별도 확인합니다. 실제 Burp 인바운드 포트이며 목적지 포트가 아닙니다. Proxy/HTTP 숫자 ID·원본 annotation 연결 가정은 실제 검사에서 실패해 증거 생산을 제거했습니다. 제한 목록은 선택·미선택 모두 내용 검사 전에 LISTENER_UNVERIFIED, 빈 목록은 정상 전체 보호입니다. [adapter 경계](BURP_ADAPTER.md)
+**포트별 리스너 제한은 추후 지원**합니다. 새 nonempty 목록은 폼과 고급 전체 JSON 모두 저장 전에 거절합니다. 기존 nonempty 값은 무관한 편집에서도 보존하며, 기존 필드를 직접 비우거나 고급 JSON의 빈 목록을 사람이 작성하고 **모든 Proxy 보호 전환을 별도 확인**해야 비웁니다. 실제 inbound 포트이지 목적지 포트가 아니며 Proxy/HTTP 숫자 ID·annotation 연결을 추정하지 않습니다. 기존 제한은 선택·미선택 모두 내용 검사 전 LISTENER_UNVERIFIED, 빈 목록은 정상 전체 보호입니다. [adapter 경계](BURP_ADAPTER.md)
 
 응답 미확인은 native permit을 임의 반환하지 않습니다. stalled host를 격리하며 다른 host는 실제 사용 가능한 전체 슬롯만 쓸 수 있습니다. 설정 저장/재개/논리 timeout으로 in-flight 자리를 재활용하지 않습니다.
 
@@ -146,6 +146,6 @@ POSIX에서는 임시/결과 파일 `0600`, 같은 디렉터리 atomic publicati
 
 패널/폼은 EDT-only, 1초 coalescing refresh입니다. evidence/approval/overlay/candidate 표시와 입력은 bounded입니다. 이름·요청·응답·정책은 plain text(HTML 해석 없음)이고 새 요청을 보내거나 URL을 여는 viewer가 아닙니다. 오류는 고정 범주이며 원본 exception/traffic을 로그나 오류 문자열로 붙이지 않습니다. close는 자신의 timer/worker/window와 화면 사본을 정리할 뿐 controller/native permit을 임의로 닫지 않습니다.
 
-다음은 이전 v2 UI 작업 스냅샷의 기록이며, 최신 안전 수정의 Java1231/Swing27(scale1·2)와 실제 native 범위는 [검증](VERIFICATION.md)·[발견 기록](V2_NATIVE_FINDINGS.md)을 따릅니다. 합성 input·mock CAS·실제 in-process controller를 사용하는 **분리된 private source copy**에서 **291 headless UI cases PASS / 27 desktop-tag Swing cases PASS**입니다 (2026-11-04). 새 회귀는 `GuardPanelV2Test` 24개, `SettingsV2Test` 4개, `GuardPanelV2DesktopTest` 7개입니다. 모든 v2 설정 roundtrip/host·preset 보존, EXEMPT 정렬·확인, overlay 만료/교체/stale 해제, 후보 초안/한도/재마스킹, raw-screen/masked-export, 태그 필터/초기화, migration cancel/manual-save/reopen/원본 export, UTC 사건/파일 안전성을 포함합니다. desktop는 자기 소유의 격리 Xvfb에서 실행했으며 실제 모달 lifecycle·14/28pt 폼·listener/GET 추가 확인·migration·threshold 저장/취소를 검사했습니다. 패키지는 scratch에만 추출했고 시스템 설치/설정 변경이나 live display 사용은 하지 않았습니다. 실행 명령은 `./gradlew --no-daemon --offline --max-workers=2 test --tests 'dev.cairnguard.ui.*'`, 별도 private display의 `./gradlew --no-daemon --offline --max-workers=2 desktopTest`입니다.
+다음은 이전 v2 UI 작업 스냅샷의 기록이며, 최신 소스의 Java1235/Swing27(scale1·2)와 실제 native 범위는 [검증](VERIFICATION.md)·[전체 Proxy 검증 기록](ALL_LISTENERS_ACCEPTANCE.md)을 따릅니다. 합성 input·mock CAS·실제 in-process controller를 사용하는 **분리된 private source copy**에서 **291 headless UI cases PASS / 27 desktop-tag Swing cases PASS**입니다 (2026-11-04). 새 회귀는 `GuardPanelV2Test` 24개, `SettingsV2Test` 4개, `GuardPanelV2DesktopTest` 7개입니다. 모든 v2 설정 roundtrip/host·preset 보존, EXEMPT 정렬·확인, overlay 만료/교체/stale 해제, 후보 초안/한도/재마스킹, raw-screen/masked-export, 태그 필터/초기화, migration cancel/manual-save/reopen/원본 export, UTC 사건/파일 안전성을 포함합니다. desktop는 자기 소유의 격리 Xvfb에서 실행했으며 실제 모달 lifecycle·14/28pt 폼·listener/GET 추가 확인·migration·threshold 저장/취소를 검사했습니다. 패키지는 scratch에만 추출했고 시스템 설치/설정 변경이나 live display 사용은 하지 않았습니다. 실행 명령은 `./gradlew --no-daemon --offline --max-workers=2 test --tests 'dev.cairnguard.ui.*'`, 별도 private display의 `./gradlew --no-daemon --offline --max-workers=2 desktopTest`입니다.
 
-**개별 native 6MiB/5xx/원문·export 관찰은 두 리스너 H 통과나 release 승인이 아닙니다.** 이전 artifact의 native 결과와 최신 소스 UI 결과는 구분해야 합니다. [산출물별 실제 native 결과](NATIVE_BURP_RESULTS.md)
+**현재 exact JAR의 개별 native/원문·export 성공도 H 통과나 release 승인이 아닙니다.** 두 inbound의 전체 보호와 포트별 선택 보호는 다릅니다. 이전 artifact와 현재 결과를 구분하며 [현재 기록과 한계](ALL_LISTENERS_ACCEPTANCE.md)를 따릅니다.

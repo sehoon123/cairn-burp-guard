@@ -100,7 +100,7 @@ final class UiText {
             case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION", "EXEMPT", "RULE_EXEMPT" -> "요청 기록의 처리 결과·검사 경고·응답을 확인하세요. 정책상 허용과 실제 대상 도착은 다릅니다.";
             case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "‘자동 차단’에서 만료·해제와 ‘사건 내보내기’를 확인하세요. 로컬 451을 대상 장애로 오인하지 마세요. 첫 큰 응답은 예방할 수 없습니다.";
             case "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "‘설정’의 태그 한도와 클라이언트 X-Cairn 태그를 검토하세요. 초기화는 ‘개요’에서 명시 확인해야 하며 태그는 인증이 아닙니다.";
-            case "LISTENER_UNVERIFIED" -> "현재 네이티브 리스너 제한은 미지원입니다. 정상적인 전체 보호는 ‘설정’의 리스너 목록을 비우세요. Proxy·HTTP ID/주석이나 목적지 포트로 리스너를 추정하지 않습니다.";
+            case "LISTENER_UNVERIFIED" -> "이전 포트 제한이 남아 있습니다. 포트별 보호는 추후 지원하므로 ‘설정’에서 기존 목록을 직접 비우고 모든 Proxy 보호 전환을 확인해 저장하세요. 자동 삭제나 리스너 추정은 하지 않습니다.";
             case "PATH_INTERPRETATION_INCOMPLETE" -> "명시적 모든 경로 범위에서 원래 target은 바꾸지 않습니다. 제한 경로·명시 차단은 계속 검사하며 불완전 경로로 EXEMPT를 부여하지 않습니다.";
             case "SCOPE_NOT_ALLOWED" -> "허가받은 대상인지 확인한 뒤 ‘대상’에서 호스트·연결 방식·포트·경로를 등록하세요. 빈 허용 목록은 모든 요청을 차단합니다.";
             case "SCOPE_BLOCKED" -> "‘대상 → 차단 대상’에서 해당 범위를 확인하세요. 차단 대상은 허용 대상보다 우선합니다.";
@@ -123,6 +123,7 @@ final class UiText {
             case "MODE_CHANGE_REJECTED" -> "보호 상태 전환을 완료하지 못했습니다. 프로젝트·설정 버전과 현재 보호 상태를 새로고침한 뒤 다시 확인하세요. 프로젝트를 확인할 수 없거나 정책 재확인이 필요하면 전체 통과로 전환하지 않습니다.";
             case "PROJECT_UNAVAILABLE", "REFRESH_UNAVAILABLE" -> "현재 프로젝트의 상태를 확인할 수 없습니다. Burp 프로젝트를 확인하고 ‘새로고침’을 누르세요. 확인 전에는 설정 변경과 승인을 막습니다.";
             case "INVALID_POLICY", "INVALID_BOUNDED_JSON" -> "정책을 저장할 수 없습니다. 필수 항목·숫자 범위·중복 ID·RE2 정규식과 설정 형식을 확인하세요. 기존 정책은 이 작업으로 바뀌지 않았습니다.";
+            case "LISTENER_SELECTION_DEFERRED" -> "포트별 보호는 추후 지원합니다. 이번 버전은 빈 목록으로 모든 Proxy 리스너를 보호합니다. 새 포트 제한은 저장하지 않았습니다. 기존 제한은 직접 비운 뒤 전체 보호 전환을 확인하세요.";
             case "POLICY_ROW_LIMIT" -> "대상과 규칙은 각각 최대 256개입니다. 사용하지 않는 항목을 삭제한 뒤 추가하세요.";
             case "SELECT_OVERLAY_FIRST" -> "먼저 해제할 자동 차단을 표에서 선택하세요.";
             case "SELECT_CANDIDATE_FIRST" -> "먼저 대용량 후보를 표에서 선택하세요.";

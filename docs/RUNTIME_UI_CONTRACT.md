@@ -211,7 +211,8 @@ Current risk confirmations in the common save path:
 | Action | Confirmation / retained constraints |
 |---|---|
 | New/enabled/changed enabled EXEMPT | Explicit ordinary BLOCK/ASK bypass warning; hard/automatic/budget gates retained |
-| Nonempty changed listener selection | Explicit UNSUPPORTED warning: no verified native shared identity; both selected/unselected reject LISTENER_UNVERIFIED before native capture. Empty list restores normal all-listener protection |
+| New/changed nonempty listener selection | Rejected before save in UI/whole-policy JSON: H deferred, no verified native identity. Unrelated edits preserve legacy selection |
+| Explicit clearing of legacy listener selection | Separate confirmation of transition to ALL Proxy protection, followed by original project/revision CAS; cancel/stale preserves old data |
 | Health enabled or enabled routes changed | GET can have side effects; exact authored service/path only, no query/body; bypass only operator pause/circuit |
 | Pending v1 → v2 save | Original backup/comparison, full schema2 save, no automatic legacy removal/old-JAR compatibility |
 | Candidate path threshold | First-heavy limitation and retained active overlays |
@@ -221,9 +222,11 @@ Current risk confirmations in the common save path:
 Empty `guardListenerPorts` protects all. Native Proxy/HTTP shared-ID and original-
 annotation assumptions were falsified. The observer supplies no trusted registry
 proof; every current restriction rejects `LISTENER_UNVERIFIED` before native
-capture. H is FAIL/UNSUPPORTED, not merely pending UI confirmation. No destination,
-number, timing or content-fingerprint fallback. Synthetic trusted-registry behavior
-must not be presented as native support. See [findings](V2_NATIVE_FINDINGS.md).
+capture. H is user-DEFERRED, not a current gate/PASS or merely pending confirmation.
+New nonempty selections cannot be authored; old values remain until confirmed clearing.
+No destination, number, timing or content-fingerprint fallback. Synthetic trusted-registry
+behavior must not be presented as native support. See [current scope](ALL_LISTENERS_ACCEPTANCE.md)
+and [historical findings](V2_NATIVE_FINDINGS.md).
 
 Health exception requires exact configured actual service/path, **GET**, verified
 empty body metadata, no query, and all routing views identical. It cannot bypass

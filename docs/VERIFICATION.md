@@ -1,12 +1,36 @@
 # Verification status — unreleased v2 integration, 2026-11-04
 
-**In progress, not native acceptance, final independent audit, installation or
-release completion.** This is an independent development preview project, not a
+**Bounded exact-artifact native observations now recorded; NOT full acceptance,
+final independent audit, installation or release completion.** This is an independent development preview project, not a
 certified safety boundary. Source, frozen snapshots, automated checks, disposable
 Swing, exact JAR/native observations and independent review are separate evidence.
 Historical counts/hashes never transfer to a new candidate.
 
-## Latest safe-source checkpoint — native H FAILED / UNSUPPORTED
+## Current scope — all Proxy listeners, H explicitly deferred
+
+The user explicitly deferred per-port protection H and asked to finish the rest first.
+Current acceptance is A–G plus OFF/lifecycle/raw-history, with all Proxy listeners protected.
+H is NOT a current gate or a claimed PASS. UI/JSON cannot create new unsupported restrictions;
+old data is preserved until explicit confirmed clearing. Current source is Java1235/Python31 PASS;
+clean/forced repeat builds match exact native JAR956bcf…, real Swing is27 PASS at each of
+scales1/2. Actual Community2026.10.1 now individually checked both inbound HTTP/HTTPS,
+actual-service/raw paths, health, fanout modes, pacing/concurrency/queue/quarantine,
+EXEMPT/intent/heavy/circuit, OFF old permits/ASK/queue cancellation/retained pause/debt,
+human raw UI, JSON56/HAR56 and incident4 events/3 kinds. A human Repeater DELETE
+passed without new Guard evidence while Proxy DELETE was locally denied.
+
+Inbound H2→H1-origin has5 partial checks, NOT full H2 or literal lower-case-percent
+preservation: `/c/%2e/main.do` reached the origin as `/c/%2E/main.do` even with Guard
+fully unloaded. Unsafe-candidate ignore was observed after its overlay had already
+expired; active-overlay persistence is not a native PASS. Cross-project/ABA,
+Professional/disk/migration persistence, all saturation/shutdown races, opaque
+protocols and CAIRN/model/report E2E remain unverified. Full facts, failed setup
+attempts and limits are in [ALL_LISTENERS_ACCEPTANCE.md](ALL_LISTENERS_ACCEPTANCE.md).
+Requested independent audits remain incomplete (ten prior dispatches, zero reports).
+No provider/model/auth/routing substitution, public push/tag/release or user installation.
+Independent audit and safety gates remain; the following sections are historical.
+
+## Earlier437503 safe-source checkpoint — before H deferral
 
 Main found two problems after user-authorized temporary-instance terms: native
 listener ID correlation failed and a human JSON export retained a credential's
@@ -34,9 +58,9 @@ scales successfully; no system package install, test weakening or skipped assert
 The temporary Burp/WM/runner and owned listener ports were confirmed closed.
 Current user Burp/JAR/settings were not replaced. No public push/tag/release/install.
 The old217730… prerelease bundle is a **rejected historical candidate**, not the
-current safe checkpoint or a publishable artifact. Final gates are supported H
-design, remaining exact-artifact native acceptance and fresh requested audits on
-the eventual final source. Local commits/builds cannot clear these gates.
+then-current safe checkpoint or a publishable artifact. After the user's later H
+deferral, current gates are remaining A–G/OFF exact-artifact native acceptance and
+fresh requested audits on the eventual final source; H is a separate future feature. Local commits/builds cannot clear these gates.
 
 ## Historical pre-authorization checkpoint (superseded status below)
 

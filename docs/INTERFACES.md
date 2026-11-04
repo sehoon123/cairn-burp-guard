@@ -7,7 +7,7 @@ for the frozen-snapshot results and pending acceptance gates. No worker/network
 control API, outbound HTTP client, authentication mutation or automatic policy
 save is introduced by these interfaces.
 
-**Native listener selection is currently UNSUPPORTED (H FAIL).** The old cross-namespace ID assumption was falsified; [exact-artifact findings](V2_NATIVE_FINDINGS.md) supersede earlier pending-only descriptions. Trusted registry tests are model seams, not a production Montoya identity producer.
+**Per-port protection H is explicitly DEFERRED by the user, not a current gate or PASS.** Current delivery protects all Proxy listeners and rejects new nonempty UI/JSON selections. Legacy data remains fail-closed until explicit confirmed clearing. The old cross-namespace ID assumption was falsified; trusted registry tests are model seams, not a production Montoya identity producer. See [current scope/results](ALL_LISTENERS_ACCEPTANCE.md) and [historical findings](V2_NATIVE_FINDINGS.md).
 
 ## Models and strict project policy
 
@@ -70,9 +70,11 @@ It is intentionally different from a **new v2 profile**:
 | Fanout | 100 distinct paths in60000 ms, WARN |
 | Intent / health / listener selection | Off / off / empty = all Proxy listeners protected |
 
-`guardListenerPorts` selects **actual inbound Burp listener ports**, not target
-server ports: at most16 unique integers1–65535. Empty protects all. With the current
-native adapter, nonempty selection always rejects before native content capture:
+`guardListenerPorts` retains the **legacy/future** actual-inbound-listener model,
+not target server ports: at most16 unique integers1–65535. Empty protects all.
+Current UI/whole-policy JSON cannot create/change a nonempty selection; unrelated
+edits preserve legacy values. Explicit confirmed clearing alone switches it to all
+listeners. With the current native adapter, legacy nonempty selection rejects before native content capture:
 there is no verified shared-identity producer. Core known-unselected bypass needs
 trusted proof and is synthetic-only, not successful H. See native seam below.
 Authored health/byte-limit routes remain strict exact scheme/host/port/path,

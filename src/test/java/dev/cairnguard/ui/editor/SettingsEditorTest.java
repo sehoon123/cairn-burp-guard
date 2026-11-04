@@ -48,6 +48,38 @@ class SettingsEditorTest {
     private static final List<String> INTEGER_FIELDS = List.of("globalRps", "perHostRps", "maxConcurrent", "maxQueued");
     private static final List<String> TIME_FIELDS = List.of("queueTimeoutSeconds", "approvalTimeoutSeconds", "requestTimeoutSeconds");
 
+    @Test void deferredListenerSelectionIsReadOnlyForAllProtectionAndCannotBeCreatedProgrammatically() throws Exception {
+        edt(() -> {
+            GuardConfig original = GuardConfig.defaults();
+            SettingsEditor editor = new SettingsEditor(original);
+            JTextField listeners = get(editor, "settings.listenerPorts", JTextField.class);
+            assertFalse(listeners.isEditable(), "Current scope protects all listeners; do not offer unsupported selection");
+            assertTrue(editor.value().guardListenerPorts().isEmpty());
+            listeners.setText("8080"); // Defense in depth even if a caller bypasses read-only presentation.
+            FormValidationException failure = assertThrows(FormValidationException.class, editor::value);
+            assertTrue(failure.getMessage().contains("추후"));
+            assertEquals(GuardConfig.defaults(), original);
+            return null;
+        });
+    }
+
+    @Test void existingDeferredListenerDataIsPreservedOrExplicitlyClearedButCannotBeReplaced() throws Exception {
+        edt(() -> {
+            GuardConfig d = GuardConfig.defaults();
+            GuardConfig original = new GuardConfig(d.schemaVersion(), d.allowScope(), d.blockScope(), d.rules(), d.defaultMode(), d.limits(), List.of(8080));
+            SettingsEditor editor = new SettingsEditor(original);
+            JTextField listeners = get(editor, "settings.listenerPorts", JTextField.class);
+            assertTrue(listeners.isEditable(), "Human must be able to clear an old restriction, never silently erase it");
+            assertEquals(List.of(8080), editor.value().guardListenerPorts());
+            listeners.setText("8081");
+            assertThrows(FormValidationException.class, editor::value);
+            listeners.setText("");
+            assertTrue(editor.value().guardListenerPorts().isEmpty());
+            assertEquals(List.of(8080), original.guardListenerPorts());
+            return null;
+        });
+    }
+
     @Test void defaultsAreReadableAccessibleAndRoundTripWithoutOpeningAdvanced() throws Exception {
         edt(() -> {
             SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());

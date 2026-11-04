@@ -249,8 +249,49 @@ class Run:
         self.case("exact21st intent final handoff denied", lambda: self.assert_block(expected_reason="INTENT_BUDGET_EXCEEDED", headers=headers))
         self.case("other intent unaffected", lambda: self.assert_arrives(headers=dict(headers, **{"X-Cairn-Intent": "other"})))
 
+    def alllisteners(self):
+        """Current scope: empty guardListenerPorts, both owned inbound listeners protected."""
+        for name, port in (("first", self.args.proxy_port), ("second", self.args.unselected_proxy_port)):
+            self.case(name + " inbound: DELETE protected", lambda p=port: self.assert_block(
+                expected_reason="RULE_BLOCK", method="DELETE", proxy_port=p))
+            self.case(name + " inbound: allowed GET unchanged", lambda p=port: self.assert_arrives(proxy_port=p))
+
+    def health(self):
+        """Human paused; only exact GET /health enabled, both routes in actual service scope."""
+        self.case("explicit exact empty GET health bypasses operator pause", lambda: self.assert_arrives(path="/health"))
+        for name, kwargs in [
+            ("query", {"path": "/health?probe=1"}),
+            ("body", {"path": "/health", "body": b"fixture"}),
+            ("POST", {"path": "/health", "method": "POST", "body": b""}),
+            ("different path", {"path": "/safe"}),
+        ]:
+            self.case(name + " does not receive health exception", lambda k=kwargs: self.assert_block(expected_reason="PAUSED", **k))
+        def head():
+            before = len(self.state.snapshot())
+            status, headers, body = self.request("/health", "HEAD")
+            assert status == 451 and {k.lower(): v for k, v in headers.items()}.get("x-cairn-guard") == "blocked"
+            assert body == b"", "HEAD client must not consume a response body"
+            assert len(self.state.snapshot()) == before, "HEAD health bypass reached fixture"
+        self.case("HEAD denied: local header and zero arrivals (no HEAD body claim)", head)
+
+    def fanout(self):
+        """Human configures distinctPaths3/action BLOCK or PAUSE; no pre-existing seen episode."""
+        for path in ("/fanout/one?value=1", "/fanout/one?value=2", "/fanout/two"):
+            self.case("query-free distinct-path accounting: " + path, lambda p=path: self.assert_arrives(path=p))
+        self.case("third distinct path rejected at final admission", lambda: self.assert_block(
+            expected_reason="FANOUT_SUSPECTED", path="/fanout/three"))
+        self.case("active fanout protects earlier path", lambda: self.assert_block(
+            expected_reason="FANOUT_SUSPECTED", path="/fanout/one"))
+        if self.args.phase == "fanout-block":
+            self.case("service-local BLOCK leaves other owned service available", lambda: self.assert_arrives(second=True))
+        else:
+            self.case("automatic PAUSE also protects other owned service", lambda: self.assert_block(
+                expected_reason="FANOUT_SUSPECTED", second=True))
+        input("HUMAN: explicitly release the fanout overlay in the human UI, then press Enter (no Burp control API): ")
+        self.case("human release restores an already-seen path", lambda: self.assert_arrives(path="/fanout/one"))
+
     def listeners(self):
-        """Human protects only --proxy-port; both listeners must exist in disposable Burp."""
+        """DEFERRED future contract, not current acceptance: protect only --proxy-port."""
         self.case("selected listener enforces DELETE default", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
         self.case("known unselected listener forwards same DELETE", lambda: self.assert_arrives(method="DELETE", proxy_port=self.args.unselected_proxy_port))
         print("HUMAN CHECK: unselected request created no history/raw capture, approval, watcher or intent entry; external clients cannot prove memory non-capture", flush=True)
@@ -557,7 +598,7 @@ def validate_incident(document):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "passthrough", "passthrough-cancel", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine", "rawpaths", "heavy", "circuit", "exempt", "intent", "listeners", "incident"])
+    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "passthrough", "passthrough-cancel", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine", "rawpaths", "heavy", "circuit", "exempt", "intent", "alllisteners", "health", "fanout-block", "fanout-pause", "listeners", "incident"])
     parser.add_argument("--proxy-host", default="127.0.0.1", type=loopback)
     parser.add_argument("--proxy-port", default=8080, type=int)
     parser.add_argument("--port", default=18080, type=int)
@@ -585,7 +626,7 @@ def main():
     if not 1 <= args.open_seconds <= 3600 or any(not 1 <= p <= 65535 for p in
             (args.proxy_port, args.unselected_proxy_port, args.port, args.second_port)):
         parser.error("Invalid bounded duration/port")
-    if args.phase == "listeners" and args.unselected_proxy_port == args.proxy_port:
+    if args.phase in ("listeners", "alllisteners") and args.unselected_proxy_port == args.proxy_port:
         parser.error("Listener proof requires two distinct ports")
     if args.https and not all((args.fixture_cert, args.fixture_key, args.burp_ca)):
         parser.error("HTTPS requires fixture certificate/key and explicitly exported disposable Burp public CA")
@@ -616,6 +657,8 @@ def main():
             run.approval()
         elif args.phase == "host":
             run.rate()
+        elif args.phase in ("fanout-block", "fanout-pause"):
+            run.fanout()
         else:
             getattr(run, args.phase)()
         print(json.dumps({"protocol": "HTTPS" if args.https else "HTTP/1.1", "phase": args.phase,

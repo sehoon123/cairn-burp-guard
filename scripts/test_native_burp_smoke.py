@@ -10,7 +10,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from native_burp_smoke import BODY, SYNTHETIC_AUTH, SYNTHETIC_COOKIE, LARGE_BYTES, PENTEST_PATHS, Run, State, fixture, loopback, validate_incident
 
@@ -157,6 +157,62 @@ class NativeSmokeHarnessTest(unittest.TestCase):
                 return 451, {}, b"{}"
         with self.assertRaises(AssertionError):
             StillProtected(SimpleNamespace(https=False), State()).passthrough()
+
+    def test_all_listener_scope_requires_both_inbound_ports_to_enforce_delete(self):
+        owner = self
+        class SyntheticRun(Run):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False, proxy_port=None):
+                owner.assertIn(proxy_port, (54321, 54322))
+                if method == "DELETE":
+                    return owner.response()
+                self.state.events.append({"path": path, "method": method, "body": body or b"", "host": "127.0.0.1"})
+                return 200, {"X-Fixture": "owned-loopback"}, b"{}"
+        args = SimpleNamespace(proxy_port=54321, unselected_proxy_port=54322, https=False)
+        run = SyntheticRun(args, State())
+        run.alllisteners()
+        self.assertEqual(4, len(run.results)); self.assertEqual(2, len(run.state.snapshot()))
+        class UnprotectedSecond(SyntheticRun):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False, proxy_port=None):
+                if proxy_port == 54322:
+                    return 200, {"X-Fixture": "owned-loopback"}, b"{}"
+                return super().request(path, method, body, headers, second, proxy_port)
+        with self.assertRaises(AssertionError):
+            UnprotectedSecond(args, State()).alllisteners()
+
+    def test_all_listener_phase_refuses_identical_ports_before_starting_fixtures(self):
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("native_burp_smoke.py")),
+                                 "--phase", "alllisteners", "--proxy-port", "54321", "--unselected-proxy-port", "54321"],
+                                capture_output=True, text=True)
+        self.assertEqual(2, result.returncode); self.assertIn("two distinct ports", result.stderr)
+
+    def test_health_only_allows_exact_empty_get_and_checks_head_without_parsing_a_body(self):
+        owner = self
+        class SyntheticRun(Run):
+            def request(self, path="/safe", method="GET", body=None, headers=None, second=False):
+                if method == "GET" and path == "/health" and not body:
+                    self.state.events.append({"path": path, "method": method, "body": b"", "host": "127.0.0.1"})
+                    return 200, {"X-Fixture": "owned-loopback"}, b"{}"
+                if method == "HEAD": return 451, {"X-Cairn-Guard": "blocked"}, b""
+                return 451, {}, json.dumps(dict(owner.payload, reason="PAUSED", guardState="PAUSED_BY_OPERATOR")).encode()
+        run = SyntheticRun(SimpleNamespace(https=False), State()); run.health()
+        self.assertEqual(6, len(run.results)); self.assertEqual(1, len(run.state.snapshot()))
+        class Overbroad(SyntheticRun):
+            def request(self, *args, **kwargs): return 200, {"X-Fixture": "owned-loopback"}, b"{}"
+        with self.assertRaises(AssertionError): Overbroad(SimpleNamespace(https=False), State()).health()
+
+    def test_fanout_phases_check_query_dedup_final_admission_service_scope_and_explicit_release(self):
+        for phase in ("fanout-block", "fanout-pause"):
+            run = Run(SimpleNamespace(phase=phase), State())
+            run.assert_arrives = Mock(); run.assert_block = Mock()
+            with patch("builtins.input", return_value="") as human:
+                run.fanout()
+            self.assertEqual(7, len(run.results)); human.assert_called_once()
+            self.assertEqual("/fanout/one?value=1", run.assert_arrives.call_args_list[0].kwargs["path"])
+            self.assertEqual("/fanout/one?value=2", run.assert_arrives.call_args_list[1].kwargs["path"])
+            self.assertEqual({"expected_reason": "FANOUT_SUSPECTED", "path": "/fanout/three"}, run.assert_block.call_args_list[0].kwargs)
+            if phase == "fanout-block": run.assert_arrives.assert_any_call(second=True)
+            else: run.assert_block.assert_any_call(expected_reason="FANOUT_SUSPECTED", second=True)
+            self.assertEqual({"path": "/fanout/one"}, run.assert_arrives.call_args.kwargs)
 
     def test_passthrough_tls_cannot_be_mislabeled_as_two_host_http(self):
         result = subprocess.run([sys.executable, str(Path(__file__).with_name("native_burp_smoke.py")),

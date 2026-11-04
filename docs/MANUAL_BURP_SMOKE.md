@@ -1,6 +1,8 @@
-# Future owned native A–H checklist — unreleased v2
+# Owned native A–G plus OFF checklist — unreleased v2
 
-**Procedure, not a PASS log. H is currently FAIL/UNSUPPORTED.**
+**Latest user scope: H per-port protection is explicitly DEFERRED, not a current gate or PASS.** Use all Proxy listeners (`guardListenerPorts=[]`); new restrictions cannot be saved. Current exact-artifact observations are in [ALL_LISTENERS_ACCEPTANCE.md](ALL_LISTENERS_ACCEPTANCE.md).
+
+**Procedure, not a PASS log. Historical H is FAIL/UNSUPPORTED.**
 After explicit authorization for the temporary instance's terms, Main ran individual
 owned Community2026.10.1 cases and found/fixed HEX export reflection, but listener
 identity remained unsupported. The prior first-EULA stop is historical. See
@@ -286,18 +288,17 @@ unsupported optional bodies to arrive; old preview expectations do not apply.
 and1.5second fixture hold. `queue` uses concurrency1/queue0.080seconds. Match these
 explicitly, then restore; do not confuse them with new-profile defaults60/30seconds.
 
-## H — Actual inbound listener restriction (FAILED / UNSUPPORTED gate)
+## H — Actual inbound listener restriction (DEFERRED future work)
 
-**The procedure below is the REQUIRED future acceptance contract, not current
-support.** Production no longer feeds Proxy numeric IDs/annotations into the HTTP
+**The user removed H from the current delivery scope. Do not run this as a current gate.** The procedure below is only the future contract once a supported implementation exists; current human UI/JSON cannot create a restricted selection. Production no longer feeds Proxy numeric IDs/annotations into the HTTP
 listener registry. Both restricted ports currently reject LISTENER_UNVERIFIED
 before native capture; UI says unsupported. The script should FAIL the selected
 RULE_BLOCK expectation. Do not accept that mitigation as H PASS or add heuristic
 identity/traffic markers. A supported shared identity/design decision is needed first.
 
 Human creates **two distinct owned inbound Proxy listeners** in the disposable
-instance. Start empty selection (all protected), then explicitly save only
-`$GUARDED_PORT` after the warning; `$UNSELECTED_PORT` is a different inbound port,
+instance in that FUTURE supported implementation. Start empty selection (all protected), then explicitly save only
+`$GUARDED_PORT` after its future warning; `$UNSELECTED_PORT` is a different inbound port,
 not a fixture destination port.
 
 ```sh

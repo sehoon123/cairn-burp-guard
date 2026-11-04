@@ -48,7 +48,7 @@ class GuardPanelV2Test {
             dialogs.edit=(form,save)-> {
                 for(String name:List.of("settings.heavyMiB","settings.circuit.enabled","settings.fanout.enabled","settings.intent.maxRequests","settings.probes.table","settings.pathLimits.table","settings.listenerPorts")) assertNotNull(find(form.component(),name),name);
                 get("settings.heavyMiB",JTextField.class).setText("8");
-                get("settings.listenerPorts",JTextField.class).setText("8080");
+                assertFalse(get("settings.listenerPorts",JTextField.class).isEditable());
                 panel.refreshNow();
                 assertEquals("8",get("settings.heavyMiB",JTextField.class).getText(),"timer must not replace an open draft");
             };
@@ -94,20 +94,40 @@ class GuardPanelV2Test {
         dialogs.confirmed=true;edt(()->{click("rules.edit");return null;});assertEquals(1,access.updates);assertEquals("변경한 예외",access.policy.rules().get(1).name());
     }
 
-    @Test void listenerNarrowingAndProbeEnableEachRequireExplicitConfirmationAndUseOriginalCas() throws Exception {
-        open(); dialogs.confirmed=false;
+    @Test void deferredListenerSelectionCannotBeNewlySavedBySettingsOrWholePolicyJson() throws Exception {
+        open(); dialogs.confirmed=true;
         dialogs.edit=(form,save)->{get("settings.listenerPorts",JTextField.class).setText("8080");save.run();};
-        edt(()->{click("settings.edit");return null;});assertEquals(0,access.updates);assertTrue(dialogs.confirmations.getLast().contains("실제 인바운드"));assertTrue(dialogs.confirmations.getLast().contains("미지원"));assertTrue(dialogs.confirmations.getLast().contains("LISTENER_UNVERIFIED"));assertTrue(dialogs.confirmations.getLast().contains("선택·미선택 모두"));
-        dialogs.confirmed=true;edt(()->{click("settings.edit");return null;});assertEquals(List.of(8080),access.policy.guardListenerPorts());assertEquals(1,access.updates);
-        dialogs.confirmed=false;
+        edt(()->{click("settings.edit");return null;});
+        assertEquals(0,access.updates);assertTrue(dialogs.errors.getLast().contains("추후"));
+        GuardConfig d=access.policy;
+        GuardConfig restricted=new GuardConfig(d.schemaVersion(),d.allowScope(),d.blockScope(),d.rules(),d.defaultMode(),d.limits(),List.of(8080));
+        dialogs.edit=(form,save)->{get("advanced.policyJson",JTextArea.class).setText(PolicyCodec.encode(restricted));save.run();};
+        edt(()->{click("settings.policyJson");return null;});
+        assertEquals(0,access.updates);assertTrue(access.policy.guardListenerPorts().isEmpty());
+        assertTrue(dialogs.errors.contains(UiText.error("LISTENER_SELECTION_DEFERRED")));
+    }
+
+    @Test void clearingExistingDeferredListenerSelectionRequiresConfirmationAndPreservesOtherPolicy() throws Exception {
+        access.policy=fullPolicy();GuardConfig original=access.policy;open();dialogs.confirmed=false;
+        dialogs.edit=(form,save)->{get("settings.listenerPorts",JTextField.class).setText("");save.run();};
+        edt(()->{click("settings.edit");return null;});
+        assertEquals(0,access.updates);assertEquals(original,access.policy);assertTrue(dialogs.confirmations.getLast().contains("모든 Proxy"));
+        dialogs.confirmed=true;edt(()->{click("settings.edit");return null;});
+        assertEquals(1,access.updates);assertTrue(access.policy.guardListenerPorts().isEmpty());
+        assertEquals(original.limits(),access.policy.limits());assertEquals(original.rules(),access.policy.rules());
+        assertEquals("p",access.casProject);assertEquals(7,access.casRevision);
+    }
+
+    @Test void probeEnableRequiresExplicitConfirmationAndUsesOriginalCas() throws Exception {
+        open();dialogs.confirmed=false;
         dialogs.edit=(form,save)->{
             get("settings.probes.enabled",JCheckBox.class).setSelected(true);click("settings.probes.add");
             JTable t=get("settings.probes.table",JTable.class);t.setValueAt("example.test",0,1);t.setValueAt("/health",0,3);save.run();
         };
         edt(()->{click("settings.edit");return null;});assertFalse(access.policy.limits().healthProbePassthrough());assertTrue(dialogs.confirmations.getLast().contains("GET도 부작용"));
         dialogs.confirmed=true;dialogs.onConfirm=()->access.project="new-project";
-        edt(()->{click("settings.edit");return null;});assertEquals(1,access.updates);assertFalse(access.policy.limits().healthProbePassthrough());
-        assertTrue(dialogs.errors.contains(UiText.error("STALE_POLICY")));assertEquals(1,access.updateAttempts);
+        edt(()->{click("settings.edit");return null;});assertEquals(0,access.updates);assertFalse(access.policy.limits().healthProbePassthrough());
+        assertTrue(dialogs.errors.contains(UiText.error("STALE_POLICY")));assertEquals(0,access.updateAttempts);
     }
 
     @Test void overlaysExposeExpiryAndReleaseOneAllAreCasBoundMemoryOnlyActions() throws Exception {
