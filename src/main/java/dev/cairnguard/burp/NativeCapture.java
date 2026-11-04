@@ -46,6 +46,9 @@ final class NativeCapture {
         // request.url() can reflect a deliberately fuzzed Host/:authority. Only the actual service
         // and the untouched request.path() establish scope. No URI parser, percent decoder or
         // normalization barrier is allowed here (including malformed-percent pentest targets).
+        // The bounded untouched target is preserved SEPARATELY (RequestData.nativeTarget): policy must
+        // never re-derive it from the synthetic URL, or a non-origin-form target ("admin/x", "*",
+        // "@h/x") would silently lose its prefix. The URL below is display/inspection metadata only.
         String path = inspectionTarget(request.path());
         String authority = host.indexOf(':') >= 0 && !host.startsWith("[") ? "[" + host + "]" : host;
         String url = (secure ? "https://" : "http://") + authority + ":" + port + path;
@@ -59,7 +62,8 @@ final class NativeCapture {
         // An independently verified EMPTY body remains known even without a copy slot. Unknown or
         // nonempty omitted bodies must never accidentally become health-probe passthroughs.
         Body body = copyBody(nativeBody, length, MAX_BODY - method.length() - url.length() - headers.chars(), contentSlot);
-        return new RequestData(method, url, host, port, secure, headers.values(), body.values(), headers.complete(), body.complete());
+        return new RequestData(method, url, host, port, secure, headers.values(), body.values(),
+                headers.complete(), body.complete(), path);
     }
 
     static Observation observe(HttpResponseReceived response) {

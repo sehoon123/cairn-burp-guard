@@ -69,8 +69,10 @@ public final class PolicyEngine {
             }
             boolean allowed = false;
             for (CompiledScope scope : policy.allow) {
-                if (scope.authorityMatches(target) && (target.routingComplete() || scope.allowsEveryPath())
-                        && scope.allPaths(target.paths(), budget)) {
+                // Incomplete routing (undecodable, raw controls, non-origin-form) can pass ONLY an
+                // explicit all-path scope; its raw views need not literally match e.g. "/.*".
+                if (scope.authorityMatches(target) && (target.routingComplete()
+                        ? scope.allPaths(target.paths(), budget) : scope.allowsEveryPath())) {
                     allowed = true;
                     break;
                 }
@@ -81,7 +83,11 @@ public final class PolicyEngine {
             Mode action = null;
             for (CompiledRule rule : policy.rules) {
                 if (!rule.enabled) continue;
-                Evaluation result = rule.condition.evaluate(inspection);
+                // EXEMPT is a privilege: PATH/URL leaves must hold for EVERY routing view (raw,
+                // decoded, normalized), so a disagreeing alias such as /broker/../admin cannot gain
+                // it. Ordinary BLOCK/ASK/ALLOW/MONITOR keep conservative any-view positives.
+                boolean privileged = rule.mode == Mode.EXEMPT;
+                Evaluation result = rule.condition.evaluate(inspection, privileged);
                 // A known OR/ANY branch may enforce an ordinary rule, but missing inspection must
                 // never grant the stronger EXEMPT privilege (even with another known true branch).
                 if (result == Evaluation.MATCH && (rule.mode != Mode.EXEMPT || rule.condition.available(inspection))) {
@@ -418,30 +424,35 @@ public final class PolicyEngine {
             return true;
         }
 
-        Evaluation evaluate(RequestInspection input) {
+        Evaluation evaluate(RequestInspection input, boolean privileged) {
             if (logic != Logic.LEAF) {
                 boolean unknown = false;
                 for (CompiledCondition child : children) {
-                    Evaluation result = child.evaluate(input);
+                    Evaluation result = child.evaluate(input, privileged);
                     if (logic == Logic.AND && result == Evaluation.NO_MATCH) return Evaluation.NO_MATCH;
                     if (logic == Logic.OR && result == Evaluation.MATCH) return Evaluation.MATCH;
                     unknown |= result == Evaluation.UNAVAILABLE;
                 }
                 return unknown ? Evaluation.UNAVAILABLE : logic == Logic.AND ? Evaluation.MATCH : Evaluation.NO_MATCH;
             }
-            if (!input.available(field) && field != Field.ANY && field != Field.PATH) return Evaluation.UNAVAILABLE;
+            // PATH/URL/ANY views stay usable for ordinary positives when interpretation is incomplete.
+            if (!input.available(field) && field != Field.ANY && field != Field.PATH && field != Field.URL)
+                return Evaluation.UNAVAILABLE;
             Budget budget = input.workBudget(field);
             try {
                 boolean matched = switch (field) {
                     case METHOD -> values(input.method, budget);
-                    case URL -> values(input.url, budget);
-                    case PATH -> values(input.path, budget);
+                    case URL -> privileged ? every(input.url, budget) : values(input.url, budget);
+                    case PATH -> privileged ? every(input.path, budget) : values(input.path, budget);
                     case QUERY -> named(input.query, false, budget);
                     case HEADER -> named(input.headers, true, budget);
                     case BODY -> values(input.body, budget);
                     case JSON -> (name.isEmpty() ? input.json : input.json.select(pointer)).matches(value -> test(value, budget));
                     case FORM -> named(input.form, false, budget);
-                    case ANY -> values(input.any, budget);
+                    // Privileged ANY: a non-routing component, or ALL routing views of PATH or URL.
+                    case ANY -> privileged
+                            ? values(input.anyContent, budget) || every(input.path, budget) || every(input.url, budget)
+                            : values(input.any, budget);
                 };
                 return matched ? Evaluation.MATCH : input.available(field) ? Evaluation.NO_MATCH : Evaluation.UNAVAILABLE;
             } catch (Failure e) {
@@ -475,6 +486,13 @@ public final class PolicyEngine {
         private boolean values(List<String> values, Budget budget) {
             for (String value : values) if (test(value, budget)) return true;
             return false;
+        }
+
+        /** Privilege semantics: a nonempty view set whose every view matches. */
+        private boolean every(List<String> values, Budget budget) {
+            if (values.isEmpty()) return false;
+            for (String value : values) if (!test(value, budget)) return false;
+            return true;
         }
 
         private boolean test(String value, Budget budget) {

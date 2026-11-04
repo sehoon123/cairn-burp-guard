@@ -104,13 +104,28 @@ final class PolicySupport {
      * Unknown decoding is explicit; it can pass all-path scope, never prove restricted-path scope.
      */
     static RoutingPaths routingPaths(String rawPath, Budget budget) {
-        if (rawPath == null || !rawPath.startsWith("/") || rawPath.length() > MAX_URL
-                || !cleanUnicode(rawPath, false)) throw fail("INVALID_URI");
+        if (rawPath == null || rawPath.length() > MAX_URL) throw fail("INVALID_URI");
         LinkedHashSet<String> paths = new LinkedHashSet<>();
-        String current = rawPath;
-        boolean complete = true;
+        // The untouched native target is ALWAYS the first view (runtime keys/health rely on this).
+        paths.add(rawPath);
+        budget.text(rawPath);
+        // Raw controls/DEL/C1 (e.g. Latin-1-mapped raw UTF-8 CJK/Hangul bytes) or lone surrogates
+        // are an interpretation gap, NOT a blanket INVALID_URI: explicit all-path scope still passes
+        // the unchanged request; restricted scope, path EXEMPT and health can never be proven.
+        boolean complete = cleanUnicode(rawPath, false);
+        String root = rawPath;
+        if (!rawPath.startsWith("/")) {
+            // Non-origin-form target (e.g. "admin/x", "*", "@h/x", absolute-form). Never drop its
+            // prefix. Keep the raw view and add ONE bounded '/'-rooted alias so explicit BLOCK rules
+            // and block scopes still see likely server interpretations. Routing is incomplete.
+            complete = false;
+            root = absoluteFormPath(rawPath);
+            if (root == null) root = "/" + rawPath;
+        }
+        String current = root;
         for (int round = 0; ; round++) {
-            if (!cleanUnicode(current, false)) { complete = false; break; }
+            // Unclean views stay available for explicit BLOCK/block-scope positives only.
+            if (!cleanUnicode(current, false)) complete = false;
             if (paths.add(current)) budget.text(current);
             if (current.indexOf('%') < 0) break;
             if (round == MAX_DECODE_ROUNDS) { complete = false; break; }
@@ -119,10 +134,21 @@ final class PolicySupport {
         }
         // Add interpretations only for scope/rule/overlay keys. Never assign these back to RequestData.
         for (String path : List.copyOf(paths)) {
+            if (!path.startsWith("/")) continue;
             String normalized = normalizedRoutingPath(path);
             if (paths.add(normalized)) budget.text(normalized);
         }
         return new RoutingPaths(List.copyOf(paths), complete);
+    }
+
+    /** Path component of an absolute-form http(s) target, or null. Authority is NEVER trusted for scope. */
+    private static String absoluteFormPath(String target) {
+        int separator = target.indexOf("://");
+        if (separator <= 0) return null;
+        String scheme = target.substring(0, separator);
+        if (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https")) return null;
+        int slash = target.indexOf('/', separator + 3);
+        return slash < 0 ? "/" : target.substring(slash);
     }
 
     private static String normalizedRoutingPath(String path) {

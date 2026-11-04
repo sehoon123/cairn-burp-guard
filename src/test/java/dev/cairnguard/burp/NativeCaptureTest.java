@@ -135,6 +135,33 @@ class NativeCaptureTest {
         assertEquals(NativeCapture.MAX_URL + 1, copy.url().substring(copy.url().indexOf('?') + 1).length());
         assertEquals(target, request.path());
     }
+    @ParameterizedTest @ValueSource(strings = {"admin/secret", "*", "@evil/admin", "x/health", "http://other.test/admin", ""})
+    void nonOriginFormNativeTargetIsPreservedSeparatelyAndNeverReDerivedFromSyntheticUrl(String target) {
+        var request = request(1); when(request.path()).thenReturn(target);
+        var copy = NativeCapture.request(request);
+        assertEquals(target, copy.nativeTarget());
+        assertEquals(target, request.path());
+        List<String> views = dev.cairnguard.policy.PolicyEngine.routingPaths(copy);
+        assertEquals(target, views.getFirst(), "prefix must not be dropped (old indexOf('/') re-derivation)");
+        assertNotEquals("/health", views.getFirst());
+    }
+    @Test void rawControlAndLatin1MappedTargetsAreCopiedUntouchedNotRejected() {
+        String target = new String("/search/\uD55C?q=1".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.ISO_8859_1) + "\u007f";
+        var request = request(1); when(request.path()).thenReturn(target);
+        var copy = NativeCapture.request(request);
+        assertEquals(target, copy.nativeTarget());
+        assertEquals(target.substring(0, target.indexOf('?')), dev.cairnguard.policy.PolicyEngine.routingPaths(copy).getFirst());
+    }
+    @Test void boundedQueryIsTheSameTargetPreservedForPolicyAndLegacyConstructorsHaveNoNativeTarget() {
+        var request = request(1); String target = "/safe?value=" + "x".repeat(2 * NativeCapture.MAX_URL);
+        when(request.path()).thenReturn(target);
+        var copy = NativeCapture.request(request);
+        assertTrue(copy.url().endsWith(copy.nativeTarget()));
+        assertEquals(NativeCapture.MAX_URL + 1, copy.nativeTarget().length() - copy.nativeTarget().indexOf('?') - 1);
+        assertNull(new RequestData("GET", "https://e.test/", "e.test", 443, true, List.of(), new byte[0]).nativeTarget());
+        assertNull(new RequestData("GET", "https://e.test/", "e.test", 443, true, List.of(), new byte[0], false, false).nativeTarget());
+    }
     @Test void failedZeroByteCopyStillHasVerifiedEmptyBodyNotUnknownNonemptyMetadata() {
         var request = request(1); when(request.body().getBytes()).thenThrow(new IllegalArgumentException("SYNTHETIC"));
         assertTrue(NativeCapture.request(request).bodyComplete());

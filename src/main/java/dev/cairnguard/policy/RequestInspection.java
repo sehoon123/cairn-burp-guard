@@ -24,9 +24,10 @@ import static dev.cairnguard.policy.PolicySupport.*;
 final class RequestInspection {
     private static final JsonFactory JSON_FACTORY = Json.MAPPER.getFactory().copy();
 
+    /** service is the canonical actual scheme://host[:non-default-port]; paths[0] is the raw native target path. */
     record Target(String scheme, Authority authority, List<String> paths, String url,
                   String query, boolean hasQuery, String method, List<Header> headers,
-                  boolean routingComplete) {}
+                  boolean routingComplete, String service) {}
     record Named(List<String> names, List<String> values) {}
     record JsonMember(List<String> names, JsonValue value) {}
 
@@ -93,6 +94,9 @@ final class RequestInspection {
     private final Budget routingWork = new Budget();
     private final Budget contentWork = new Budget();
 
+    /** ANY components other than PATH/URL routing views (privileged ANY treats routing per view set). */
+    List<String> anyContent = List.of();
+
     private RequestInspection(Target target) {
         method = List.of(target.method);
         path = target.paths;
@@ -135,11 +139,32 @@ final class RequestInspection {
         if (request.port() < 1 || request.port() > 65_535) throw fail("INVALID_AUTHORITY");
         String scheme = request.secure() ? "https" : "http";
         Authority authority = new Authority(host(request.host()), request.port());
-        String suppliedUrl = request.url();
+        String target = request.nativeTarget() != null ? request.nativeTarget() : legacyTarget(request.url());
+        int question = target.indexOf('?');
+        String rawPath = question < 0 ? target : target.substring(0, question);
+        if (rawPath.length() > MAX_URL) throw fail("INVALID_URI");
+        // Non-origin-form, raw-control and undecodable targets are INCOMPLETE routing, not denials.
+        RoutingPaths routing = routingPaths(rawPath, budget);
+        boolean hasQuery = question >= 0;
+        // Oversized optional query data is unavailable, not a scope denial or a truncated match.
+        String query = hasQuery && target.length() - question - 1 > MAX_URL ? null
+                : hasQuery ? target.substring(question + 1) : "";
+        String service = scheme + "://" + authority.host()
+                + (authority.port() == (request.secure() ? 443 : 80) ? "" : ":" + authority.port());
+        String actualUrl = service + rawPath + (hasQuery && query != null ? "?" + query : "");
+        return new Target(scheme, authority, routing.paths(), actualUrl, query, hasQuery,
+                request.method(), request.headers(), routing.complete(), service);
+    }
+
+    /**
+     * Legacy callers without RequestData.nativeTarget: derive path+query from the supplied URL as
+     * before (its authority is ignored). Native capture always supplies nativeTarget instead.
+     */
+    private static String legacyTarget(String suppliedUrl) {
         if (suppliedUrl == null) throw fail("INVALID_URI");
         int question = suppliedUrl.indexOf('?');
         String base = question < 0 ? suppliedUrl : suppliedUrl.substring(0, question);
-        if (base.length() > MAX_URL || !cleanUnicode(base, false)) throw fail("INVALID_URI");
+        if (base.length() > MAX_URL) throw fail("INVALID_URI");
         int separator = base.indexOf("://");
         if (separator <= 0) throw fail("INVALID_URI");
         String suppliedScheme = base.substring(0, separator);
@@ -147,22 +172,11 @@ final class RequestInspection {
             throw fail("UNSUPPORTED_SCHEME");
         // This is an HTTP request target, not a URL being navigated by this extension. A generic URI
         // parser would ban malformed-percent pentest targets (and interpret # as a fragment).
-        // Only extract the untouched path here. Native capture MUST construct this URL from the
-        // actual service + request.path(), not a fuzzed Host-derived request.url().
         int authorityStart = separator + 3;
         int slash = base.indexOf('/', authorityStart);
         if (authorityStart == base.length() || slash == authorityStart) throw fail("INVALID_URI");
         String rawPath = slash < 0 ? "/" : base.substring(slash);
-        RoutingPaths routing = routingPaths(rawPath, budget);
-        boolean hasQuery = question >= 0;
-        // Oversized optional query data is unavailable, not a scope denial or a truncated match.
-        String query = hasQuery && suppliedUrl.length() - question - 1 > MAX_URL ? null
-                : hasQuery ? suppliedUrl.substring(question + 1) : "";
-        String actualBase = scheme + "://" + authority.host()
-                + (authority.port() == (request.secure() ? 443 : 80) ? "" : ":" + authority.port()) + rawPath;
-        String actualUrl = actualBase + (hasQuery && query != null ? "?" + query : "");
-        return new Target(scheme, authority, routing.paths(), actualUrl, query, hasQuery,
-                request.method(), request.headers(), routing.complete());
+        return rawPath + (question < 0 ? "" : suppliedUrl.substring(question));
     }
 
     static RequestInspection inspect(Target target, RequestData request, Set<Field> demand) {
@@ -170,10 +184,7 @@ final class RequestInspection {
         if (!request.headersComplete()) input.warnings.add("HEADERS_INCOMPLETE");
         if (!request.bodyComplete()) input.warnings.add("BODY_INCOMPLETE");
         boolean any = demand.contains(Field.ANY);
-        if (any || demand.contains(Field.URL)) input.optional(Field.URL, () -> {
-            if (target.query == null) throw fail("REQUEST_TOO_LARGE");
-            input.url = urlViews(target, new Budget());
-        });
+        if (any || demand.contains(Field.URL)) inspectUrl(input, target);
         if (any || demand.contains(Field.QUERY)) input.optional(Field.QUERY, () -> {
             if (target.query == null) throw fail("REQUEST_TOO_LARGE");
             input.query = parameters(target.query, new Budget());
@@ -193,15 +204,18 @@ final class RequestInspection {
         if (any) {
             // ANY can preserve positive matches in an inspectable component. Its completeness is
             // tracked separately so incomplete ANY (or any other field) can NEVER grant EXEMPT.
-            List<String> all = new ArrayList<>();
-            all.addAll(input.method);
-            if (input.available(Field.URL)) all.addAll(input.url);
+            List<String> content = new ArrayList<>();
+            content.addAll(input.method);
+            if (input.available(Field.QUERY)) addNamed(content, input.query);
+            if (input.available(Field.HEADER)) addNamed(content, input.headers);
+            if (input.available(Field.BODY)) content.addAll(input.body);
+            if (input.available(Field.JSON)) input.json.flatten(content);
+            if (input.available(Field.FORM)) addNamed(content, input.form);
+            input.anyContent = List.copyOf(content);
+            List<String> all = new ArrayList<>(content);
+            // URL/PATH views are kept for ordinary positives even when routing is incomplete.
+            all.addAll(input.url);
             all.addAll(input.path);
-            if (input.available(Field.QUERY)) addNamed(all, input.query);
-            if (input.available(Field.HEADER)) addNamed(all, input.headers);
-            if (input.available(Field.BODY)) all.addAll(input.body);
-            if (input.available(Field.JSON)) input.json.flatten(all);
-            if (input.available(Field.FORM)) addNamed(all, input.form);
             input.any = List.copyOf(all);
             if (input.available.containsAll(EnumSet.complementOf(EnumSet.of(Field.ANY)))) input.available.add(Field.ANY);
         }
@@ -277,20 +291,49 @@ final class RequestInspection {
         });
     }
 
-    private static List<String> urlViews(Target target, Budget budget) {
-        Set<String> result = new LinkedHashSet<>(views(target.url, false, false, budget));
-        if (target.hasQuery) {
-            String base = target.url.substring(0, target.url.indexOf('?'));
-            List<String> bases = views(base, false, false, budget);
-            List<String> queries = views(target.query, true, false, budget);
-            for (String prefix : bases) {
+    /**
+     * URL views = actual service + EVERY bounded routing path view (raw, decoded, dot/semicolon/
+     * repeated-slash normalized) x (raw + decoded query). So an exact-URL BLOCK catches /./, ;param,
+     * //, /x/../ and percent aliases without rewriting the native request. A non-origin-form raw
+     * target contributes only through its '/'-rooted alias (never glued onto the authority).
+     * URL is privilege-available ONLY when routing and query interpretation are complete; otherwise
+     * its views still serve ordinary BLOCK/ASK positives.
+     */
+    private static void inspectUrl(RequestInspection input, Target target) {
+        try {
+            if (target.query == null) throw fail("REQUEST_TOO_LARGE");
+            Budget budget = new Budget();
+            boolean complete = target.routingComplete;
+            List<String> queries = List.of();
+            if (target.hasQuery) {
+                LinkedHashSet<String> all = new LinkedHashSet<>();
+                all.add(target.query);
+                try { all.addAll(views(target.query, true, false, budget)); }
+                catch (Failure e) {
+                    // Raw query view still serves ordinary positives; report, never pretend complete.
+                    complete = false;
+                    input.warnings.add("URL_INSPECTION_UNAVAILABLE_" + e.getMessage());
+                }
+                queries = List.copyOf(all);
+            }
+            Set<String> result = new LinkedHashSet<>();
+            for (String path : target.paths) {
+                if (!path.startsWith("/")) continue;
+                String base = target.service + path;
+                if (!target.hasQuery) {
+                    if (result.add(base)) budget.text(base);
+                    continue;
+                }
                 for (String query : queries) {
-                    String combined = prefix + "?" + query;
+                    String combined = base + "?" + query;
                     if (result.add(combined)) budget.text(combined);
                 }
             }
-        }
-        return List.copyOf(result);
+            input.url = List.copyOf(result);
+            if (complete && !input.url.isEmpty()) input.available.add(Field.URL);
+            else input.available.remove(Field.ANY);
+        } catch (Failure e) { input.unavailable(Field.URL, e.getMessage()); }
+        catch (RuntimeException e) { input.unavailable(Field.URL, "INSPECTION_ERROR"); }
     }
 
     private record Media(String name, boolean ascii) {}
