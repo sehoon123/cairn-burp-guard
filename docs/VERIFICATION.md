@@ -1,7 +1,8 @@
-# Verification status — unreleased v2 integration, 2026-11-04
+# Verification status — v2 development checkpoints, 2026-11-04
 
-**Bounded exact-artifact native observations now recorded; NOT full acceptance,
-final independent audit, installation or release completion.** This is an independent development preview project, not a
+**An explicitly requested development prerelease is NOT full acceptance, final
+independent audit, installation or production approval. Native observations below
+are artifact-specific historical results.** This is an independent development preview project, not a
 certified safety boundary. Source, frozen snapshots, automated checks, disposable
 Swing, exact JAR/native observations and independent review are separate evidence.
 Historical counts/hashes never transfer to a new candidate.
@@ -11,9 +12,26 @@ Historical counts/hashes never transfer to a new candidate.
 The user explicitly deferred per-port protection H and asked to finish the rest first.
 Current acceptance is A–G plus OFF/lifecycle/raw-history, with all Proxy listeners protected.
 H is NOT a current gate or a claimed PASS. UI/JSON cannot create new unsupported restrictions;
-old data is preserved until explicit confirmed clearing. Current source is Java1235/Python31 PASS;
-clean/forced repeat builds match exact native JAR956bcf…, real Swing is27 PASS at each of
-scales1/2. Actual Community2026.10.1 now individually checked both inbound HTTP/HTTPS,
+old data is preserved until explicit confirmed clearing.
+
+The user explicitly requested committing/pushing the current work and publishing a
+**development-only prerelease**, `dev-2026-11-04-v2-all-listeners-checkpoint`.
+Current isolated Java is **1302 PASS**, Python helper offline unit31 and local
+template18 PASS (actual upstream SKIP). Clean/forced production builds reproduce
+JAR `c61b7d1f869ec926c30f0e0fcc9cd188396f7fd694e9fc2cfac542a6d191f491`.
+**That new JAR has NOT been run in native Burp or real Swing.** Prior native/desktop
+results do not transfer. Two cold audits of older `7b974de` reported defects, not
+approval; the third privacy/export review is blocked without a substantive report.
+Updated-source final independent review and adjudication of remaining queue/fanout/
+optional-capture findings remain incomplete. Publication does not waive those gates
+or install into the user's Burp. See the [checkpoint record](PRERELEASE_2026-11-04_V2_CHECKPOINT.md)
+and [current scope/results](ALL_LISTENERS_ACCEPTANCE.md).
+
+### Historical956bcf… observations — not the published checkpoint's native result
+
+That prior source was Java1235/Python31 PASS; clean/forced repeat builds matched
+exact native JAR956bcf…, and real Swing was27 PASS at each of scales1/2.
+Community2026.10.1 individually checked both inbound HTTP/HTTPS,
 actual-service/raw paths, health, fanout modes, pacing/concurrency/queue/quarantine,
 EXEMPT/intent/heavy/circuit, OFF old permits/ASK/queue cancellation/retained pause/debt,
 human raw UI, JSON56/HAR56 and incident4 events/3 kinds. A human Repeater DELETE
@@ -26,9 +44,11 @@ expired; active-overlay persistence is not a native PASS. Cross-project/ABA,
 Professional/disk/migration persistence, all saturation/shutdown races, opaque
 protocols and CAIRN/model/report E2E remain unverified. Full facts, failed setup
 attempts and limits are in [ALL_LISTENERS_ACCEPTANCE.md](ALL_LISTENERS_ACCEPTANCE.md).
-Requested independent audits remain incomplete (ten prior dispatches, zero reports).
-No provider/model/auth/routing substitution, public push/tag/release or user installation.
-Independent audit and safety gates remain; the following sections are historical.
+At that checkpoint ten prior audit dispatches had produced no substantive report.
+The later two cold reports and still-blocked privacy review are distinguished above.
+No provider/model/auth/routing substitution was used. Historical native observations
+and the user's later checkpoint-publication request do not clear acceptance or
+independent-review gates. The following sections are also historical.
 
 ## Earlier437503 safe-source checkpoint — before H deferral
 
