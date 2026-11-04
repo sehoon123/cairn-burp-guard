@@ -16,6 +16,7 @@ import dev.cairnguard.model.GuardConfig.ScopeEntry;
 import dev.cairnguard.model.RequestData;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -40,12 +41,19 @@ public final class PolicyEngine {
         catch (RuntimeException e) { throw new IllegalArgumentException("INVALID_HOST"); }
     }
 
+    /** Validated raw/decoded routing path views for bounded runtime route keys; no headers/body copied. */
+    public static List<String> routingPaths(RequestData request) {
+        try { return RequestInspection.target(request, new Budget()).paths(); }
+        catch (Failure e) { throw new IllegalArgumentException(e.getMessage()); }
+        catch (RuntimeException e) { throw new IllegalArgumentException("INVALID_REQUEST"); }
+    }
+
     /** Validates even disabled entries, so enabling them cannot activate an unvalidated expression. */
     public void validate(GuardConfig config) {
         compiled(config);
     }
 
-    /** Mandatory authority/scope/inspection gates cannot be overridden by any mode or rule order. */
+    /** Actual destination/routing scope gates cannot be overridden by any mode or rule order. */
     public Decision evaluate(GuardConfig config, RequestData request) {
         CompiledPolicy policy;
         try { policy = compiled(config); }
@@ -53,30 +61,37 @@ public final class PolicyEngine {
         try {
             Budget budget = new Budget();
             RequestInspection.Target target = RequestInspection.target(request, budget);
+            boolean unresolvedBlockScope = false;
             for (CompiledScope scope : policy.block) {
-                if (scope.authorityMatches(target) && scope.anyPath(target.paths(), budget))
-                    return Decision.blocked("SCOPE_BLOCKED");
+                if (!scope.authorityMatches(target)) continue;
+                if (scope.anyPath(target.paths(), budget)) return Decision.blocked("SCOPE_BLOCKED");
+                if (!target.routingComplete()) unresolvedBlockScope = true;
             }
             boolean allowed = false;
             for (CompiledScope scope : policy.allow) {
-                if (scope.authorityMatches(target) && scope.allPaths(target.paths(), budget)) {
+                if (scope.authorityMatches(target) && (target.routingComplete() || scope.allowsEveryPath())
+                        && scope.allPaths(target.paths(), budget)) {
                     allowed = true;
                     break;
                 }
             }
-            if (!allowed) return Decision.blocked("SCOPE_NOT_ALLOWED");
-            RequestInspection inspection = RequestInspection.inspect(target, request, budget);
+            if (!allowed || unresolvedBlockScope) return Decision.blocked("SCOPE_NOT_ALLOWED");
+            RequestInspection inspection = RequestInspection.inspect(target, request, policy.demand);
             List<RuleHit> hits = new ArrayList<>();
             Mode action = null;
             for (CompiledRule rule : policy.rules) {
-                if (rule.enabled && rule.condition.matches(inspection, budget)) {
+                if (!rule.enabled) continue;
+                Evaluation result = rule.condition.evaluate(inspection);
+                // A known OR/ANY branch may enforce an ordinary rule, but missing inspection must
+                // never grant the stronger EXEMPT privilege (even with another known true branch).
+                if (result == Evaluation.MATCH && (rule.mode != Mode.EXEMPT || rule.condition.available(inspection))) {
                     hits.add(new RuleHit(rule.id, rule.name, rule.mode));
                     if (rule.mode != Mode.MONITOR && (action == null || rank(rule.mode) > rank(action)))
                         action = rule.mode;
                 }
             }
-            if (action == null) return new Decision(policy.defaultMode, "DEFAULT_" + policy.defaultMode.name(), hits);
-            return new Decision(action, "RULE_" + action.name(), hits);
+            if (action == null) return new Decision(policy.defaultMode, "DEFAULT_" + policy.defaultMode.name(), hits, inspection.warnings());
+            return new Decision(action, "RULE_" + action.name(), hits, inspection.warnings());
         } catch (Failure e) {
             return Decision.blocked(e.getMessage());
         } catch (RuntimeException e) {
@@ -87,6 +102,7 @@ public final class PolicyEngine {
 
     private static int rank(Mode mode) {
         return switch (mode) {
+            case EXEMPT -> 4;
             case BLOCK -> 3;
             case ASK -> 2;
             case ALLOW -> 1;
@@ -107,25 +123,54 @@ public final class PolicyEngine {
     }
 
     private static CompiledPolicy compile(GuardConfig config) {
-        require(config != null && config.schemaVersion() == 1 && config.defaultMode() != null, "INVALID_CONFIG");
+        require(config != null && (config.schemaVersion() == 1 || config.schemaVersion() == 2)
+                && config.defaultMode() != null && config.defaultMode() != Mode.EXEMPT, "INVALID_CONFIG");
         require(config.allowScope() != null && config.blockScope() != null && config.rules() != null
                 && config.allowScope().size() <= MAX_SCOPES && config.blockScope().size() <= MAX_SCOPES
                 && config.rules().size() <= MAX_RULES, "CONFIG_LIMIT");
         validateLimits(config.limits());
+        require(config.guardListenerPorts() != null && config.guardListenerPorts().size() <= 16, "INVALID_LISTENERS");
+        Set<Integer> listenerPorts = new HashSet<>();
+        for (Integer port : config.guardListenerPorts())
+            require(port != null && port >= 1 && port <= 65_535 && listenerPorts.add(port), "INVALID_LISTENERS");
         CompileBudget budget = new CompileBudget();
         List<CompiledScope> allow = scopes(config.allowScope(), budget);
         List<CompiledScope> block = scopes(config.blockScope(), budget);
         List<CompiledRule> rules = new ArrayList<>();
         Set<String> ids = new HashSet<>();
+        Set<Field> demand = EnumSet.noneOf(Field.class);
         int[] nodes = new int[1];
         for (Rule rule : config.rules()) {
             require(rule != null && validId(rule.id()) && ids.add(rule.id()), "INVALID_RULE_ID");
             require(rule.name() != null && rule.name().length() <= 256 && !rule.name().isBlank()
                     && cleanUnicode(rule.name(), false) && rule.mode() != null, "INVALID_RULE");
-            rules.add(new CompiledRule(rule.id(), rule.name(), rule.enabled(), rule.mode(),
-                    condition(rule.condition(), 0, nodes, budget)));
+            CompiledCondition compiled = condition(rule.condition(), 0, nodes, budget);
+            require(rule.mode() != Mode.EXEMPT || config.schemaVersion() == 2
+                    && !emptyExemption(rule.condition()) && !universal(rule.condition()), "INVALID_EXEMPT");
+            if (rule.enabled()) compiled.demand(demand);
+            rules.add(new CompiledRule(rule.id(), rule.name(), rule.enabled(), rule.mode(), compiled));
         }
-        return new CompiledPolicy(config, allow, block, List.copyOf(rules), config.defaultMode());
+        return new CompiledPolicy(config, allow, block, List.copyOf(rules), config.defaultMode(), Set.copyOf(demand));
+    }
+
+    private static boolean emptyExemption(Condition condition) {
+        return condition.logic() == Logic.LEAF && condition.value().isEmpty();
+    }
+
+    /** Reject syntactically universal exemptions, not merely broad operator-authored conditions. */
+    private static boolean universal(Condition condition) {
+        if (condition.logic() == Logic.AND) return condition.children().stream().allMatch(PolicyEngine::universal);
+        if (condition.logic() == Logic.OR) return condition.children().stream().anyMatch(PolicyEngine::universal);
+        if (condition.match() == Match.CONTAINS) return condition.value().isEmpty();
+        if (condition.match() != Match.REGEX) return false;
+        String expression = condition.value();
+        // RE2 find semantics: these expressions (including common anchored/flagged spellings)
+        // impose no constraint. No heuristic "sample request" matching is used for validation.
+        for (String flag : List.of("(?i)", "(?s)", "(?is)", "(?si)")) expression = expression.replace(flag, "");
+        if (expression.startsWith("^") && expression.endsWith("$")) expression = expression.substring(1, expression.length() - 1);
+        while (expression.startsWith("(?:") && expression.endsWith(")")) expression = expression.substring(3, expression.length() - 1);
+        return expression.isEmpty() || expression.equals(".*") || expression.equals("^.*") || expression.equals(".*$")
+                || condition.field() == Field.PATH && (expression.equals("/.*") || expression.equals("^/.*"));
     }
 
     private static boolean validId(String id) {
@@ -265,15 +310,63 @@ public final class PolicyEngine {
             try { require(hosts.add(host(entry.getKey())), "INVALID_LIMITS"); }
             catch (Failure e) { throw invalid("INVALID_LIMITS"); }
         }
+        bytes(limits.perPathMaxResponseBytes());
+        openTime(limits.autoBlockMillis());
+        require(limits.perIntentMaxRequests() >= 0 && limits.perIntentMaxRequests() <= 1_000_000, "INVALID_LIMITS");
+        if (limits.circuit5xx() != null) {
+            GuardConfig.Circuit5xx circuit = limits.circuit5xx();
+            window(circuit.windowMillis());
+            openTime(circuit.openMillis());
+            require(circuit.threshold() >= 1 && circuit.threshold() <= 1_000 && circuit.halfOpenProbe() == 1, "INVALID_LIMITS");
+        }
+        if (limits.fanout() != null) {
+            GuardConfig.Fanout fanout = limits.fanout();
+            window(fanout.windowMillis());
+            require(fanout.distinctPaths() >= 2 && fanout.distinctPaths() <= 1_000 && fanout.action() != null, "INVALID_LIMITS");
+        }
+        require(limits.healthProbePaths() != null && limits.healthProbePaths().size() <= 16
+                && limits.heavyPathLimits() != null && limits.heavyPathLimits().size() <= 256, "INVALID_LIMITS");
+        Set<String> probes = new HashSet<>();
+        for (GuardConfig.ProbePath path : limits.healthProbePaths()) {
+            require(path != null, "INVALID_LIMITS");
+            require(probes.add(route(path.scheme(), path.host(), path.port(), path.path())), "INVALID_LIMITS");
+        }
+        Set<String> heavyPaths = new HashSet<>();
+        for (GuardConfig.PathByteLimit path : limits.heavyPathLimits()) {
+            require(path != null, "INVALID_LIMITS");
+            require(heavyPaths.add(route(path.scheme(), path.host(), path.port(), path.path())), "INVALID_LIMITS");
+            bytes(path.maxBytes());
+        }
     }
 
+    /** Exact authored runtime routes: no wildcard/auth/query/fragment or decoded-path aliases. */
+    private static String route(String scheme, String host, int port, String path) {
+        require(("http".equals(scheme) || "https".equals(scheme)) && port >= 1 && port <= 65_535
+                && path != null && path.startsWith("/") && !path.startsWith("//")
+                && path.length() <= MAX_URL && cleanUnicode(path, false)
+                && path.indexOf('#') < 0 && path.chars().noneMatch(Character::isWhitespace), "INVALID_LIMITS");
+        try {
+            String canonical = host(host);
+            RequestData request = new RequestData("GET", scheme + "://" + canonical + ":" + port + path,
+                    canonical, port, scheme.equals("https"), List.of(), new byte[0]);
+            RequestInspection.Target target = RequestInspection.target(request, new Budget());
+            require(target.routingComplete() && !target.hasQuery() && target.paths().size() == 1
+                    && target.paths().getFirst().equals(path), "INVALID_LIMITS");
+            return scheme + "://" + canonical + ":" + port + path;
+        } catch (RuntimeException e) { throw invalid("INVALID_LIMITS"); }
+    }
+
+    private static void bytes(long bytes) { require(bytes >= 0 && bytes <= 2_147_483_648L, "INVALID_LIMITS"); }
+    private static void window(long millis) { require(millis >= 1_000 && millis <= 3_600_000, "INVALID_LIMITS"); }
+    private static void openTime(long millis) { require(millis >= 1_000 && millis <= 86_400_000, "INVALID_LIMITS"); }
     private static void rate(int rate) { require(rate >= 1 && rate <= 1_000, "INVALID_LIMITS"); }
     private static void timeout(long timeout) { require(timeout >= 1 && timeout <= 600_000, "INVALID_LIMITS"); }
     private static void require(boolean valid, String category) { if (!valid) throw invalid(category); }
     private static IllegalArgumentException invalid(String category) { return new IllegalArgumentException(category); }
 
     private record CompiledPolicy(GuardConfig source, List<CompiledScope> allow, List<CompiledScope> block,
-                                  List<CompiledRule> rules, Mode defaultMode) {}
+                                  List<CompiledRule> rules, Mode defaultMode, Set<Field> demand) {}
+    private enum Evaluation { MATCH, NO_MATCH, UNAVAILABLE }
     private record CompiledRule(String id, String name, boolean enabled, Mode mode, CompiledCondition condition) {}
 
     private record CompiledScope(boolean enabled, String host, boolean wildcard, String scheme,
@@ -300,31 +393,64 @@ public final class PolicyEngine {
             for (String value : paths) if (!pathMatches(value, budget)) return false;
             return true;
         }
+
+        boolean allowsEveryPath() {
+            if (path == null) return true; // UI's explicit all-path scope.
+            return switch (path.pattern()) {
+                case ".*", "^.*$", "^.*", "/.*", "^/.*$", "^/.*", "(?s).*", "(?s)^.*$",
+                        "(?s)/.*", "(?s)^/.*$" -> true;
+                default -> false;
+            };
+        }
     }
 
     private record CompiledCondition(Logic logic, Field field, String name, Pattern pattern, boolean exact,
                                      int weight, boolean caseSensitive, List<String> pointer,
                                      List<CompiledCondition> children) {
-        boolean matches(RequestInspection input, Budget budget) {
-            if (logic == Logic.AND) {
-                for (CompiledCondition child : children) if (!child.matches(input, budget)) return false;
-                return true;
+        void demand(Set<Field> fields) {
+            if (logic == Logic.LEAF) fields.add(field);
+            else for (CompiledCondition child : children) child.demand(fields);
+        }
+
+        boolean available(RequestInspection input) {
+            if (logic == Logic.LEAF) return input.available(field);
+            for (CompiledCondition child : children) if (!child.available(input)) return false;
+            return true;
+        }
+
+        Evaluation evaluate(RequestInspection input) {
+            if (logic != Logic.LEAF) {
+                boolean unknown = false;
+                for (CompiledCondition child : children) {
+                    Evaluation result = child.evaluate(input);
+                    if (logic == Logic.AND && result == Evaluation.NO_MATCH) return Evaluation.NO_MATCH;
+                    if (logic == Logic.OR && result == Evaluation.MATCH) return Evaluation.MATCH;
+                    unknown |= result == Evaluation.UNAVAILABLE;
+                }
+                return unknown ? Evaluation.UNAVAILABLE : logic == Logic.AND ? Evaluation.MATCH : Evaluation.NO_MATCH;
             }
-            if (logic == Logic.OR) {
-                for (CompiledCondition child : children) if (child.matches(input, budget)) return true;
-                return false;
+            if (!input.available(field) && field != Field.ANY && field != Field.PATH) return Evaluation.UNAVAILABLE;
+            Budget budget = input.workBudget(field);
+            try {
+                boolean matched = switch (field) {
+                    case METHOD -> values(input.method, budget);
+                    case URL -> values(input.url, budget);
+                    case PATH -> values(input.path, budget);
+                    case QUERY -> named(input.query, false, budget);
+                    case HEADER -> named(input.headers, true, budget);
+                    case BODY -> values(input.body, budget);
+                    case JSON -> (name.isEmpty() ? input.json : input.json.select(pointer)).matches(value -> test(value, budget));
+                    case FORM -> named(input.form, false, budget);
+                    case ANY -> values(input.any, budget);
+                };
+                return matched ? Evaluation.MATCH : input.available(field) ? Evaluation.NO_MATCH : Evaluation.UNAVAILABLE;
+            } catch (Failure e) {
+                // Optional parsing/matching capacity cannot turn an otherwise in-scope request into
+                // a local denial. Mandatory routing/scope work still fails closed independently.
+                if (field == Field.METHOD || field == Field.PATH) throw e;
+                input.unavailable(field, e.getMessage());
+                return Evaluation.UNAVAILABLE;
             }
-            return switch (field) {
-                case METHOD -> values(input.method, budget);
-                case URL -> values(input.url, budget);
-                case PATH -> values(input.path, budget);
-                case QUERY -> named(input.query, false, budget);
-                case HEADER -> named(input.headers, true, budget);
-                case BODY -> values(input.body, budget);
-                case JSON -> (name.isEmpty() ? input.json : input.json.select(pointer)).matches(value -> test(value, budget));
-                case FORM -> named(input.form, false, budget);
-                case ANY -> values(input.any, budget);
-            };
         }
 
         private boolean named(List<RequestInspection.Named> values, boolean header, Budget budget) {

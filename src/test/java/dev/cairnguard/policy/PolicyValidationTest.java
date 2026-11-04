@@ -36,7 +36,8 @@ class PolicyValidationTest {
                 leaf(Field.BODY, Match.REGEX, "(a+)+$"))))));
         invalid(null);
         GuardConfig valid = config(List.of());
-        invalid(new GuardConfig(2, valid.allowScope(), valid.blockScope(), valid.rules(), valid.defaultMode(), valid.limits()));
+        assertDoesNotThrow(() -> engine.validate(new GuardConfig(2, valid.allowScope(), valid.blockScope(), valid.rules(), valid.defaultMode(), valid.limits())));
+        invalid(new GuardConfig(3, valid.allowScope(), valid.blockScope(), valid.rules(), valid.defaultMode(), valid.limits()));
         invalid(new GuardConfig(1, valid.allowScope(), valid.blockScope(), valid.rules(), null, valid.limits()));
         invalid(new GuardConfig(1, valid.allowScope(), valid.blockScope(), valid.rules(), Mode.ALLOW, null));
     }

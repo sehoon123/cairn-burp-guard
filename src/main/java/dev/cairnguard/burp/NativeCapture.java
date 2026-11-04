@@ -7,25 +7,16 @@ import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.message.HttpHeader;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.model.RequestData.Header;
-import dev.cairnguard.policy.PolicyEngine;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
-/** Bounded, transient inspection copies, never native replacements or partial/truncated raw captures. */
+/** Bounded inspection copies only. Never parses/normalizes a native target or replaces native data. */
 final class NativeCapture {
     static final int MAX_URL = 16_384;
     static final int MAX_HEADERS = 256;
     static final int MAX_HEAD_CHARS = 65_536;
     static final int MAX_BODY = RequestData.MAX_INSPECT_BYTES;
-    private static final Set<String> PSEUDO = Set.of(":method", ":path", ":scheme", ":authority");
-    // A constant zero-filled oversized input triggers Redactor's omission/uncertainty path, NOT raw truncation.
-    private static final byte[] OMITTED_BODY = new byte[MAX_BODY + 1];
-    private static final List<Header> OMITTED_HEADERS = List.of(new Header("X-Cairn-Guard-Capture", "OMITTED"));
+    private static final byte[] EMPTY = new byte[0];
 
     private NativeCapture() {}
 
@@ -35,159 +26,125 @@ final class NativeCapture {
         Rejected(String category) { super(category, null, false, false); this.category = category; }
         String category() { return category; }
     }
-    record Response(int status, List<Header> headers, byte[] body) {}
+    private record Headers(List<Header> values, int chars, boolean complete) {}
+    private record Body(byte[] values, boolean complete) {}
+    /** Actual scalars are observed even when optional response capture has no slot. -1 means unknown. */
+    record Observation(int status, ByteArray nativeBody, long actualBytes) {}
+    record Response(int status, List<Header> headers, byte[] body, long actualBytes,
+                    boolean headersComplete, boolean bodyComplete) {}
 
-    static RequestData request(HttpRequestToBeSent request) {
+    static RequestData request(HttpRequestToBeSent request) { return request(request, true); }
+
+    static RequestData request(HttpRequestToBeSent request, boolean contentSlot) {
         String method = bounded(request.method(), 32);
-        String url = bounded(request.url(), MAX_URL);
         HttpService service = request.httpService();
         if (service == null) throw reject("CAPTURE_FAILED");
         String host = bounded(service.host(), 255);
         int port = service.port();
         boolean secure = service.secure();
-        String version = bounded(request.httpVersion(), 16);
-        boolean http2 = version.equals("HTTP/2") || version.equals("HTTP/2.0");
-        if (!http2 && !version.equals("HTTP/1.0") && !version.equals("HTTP/1.1"))
-            throw reject("UNSUPPORTED_HTTP_VERSION");
-        List<Header> observed = headers(request.headers(), method.length() + url.length());
-        List<Header> normalized = normalize(request, observed, method, url, host, port, secure, http2);
-        // Check every metadata bound before asking the native byte array for a body copy.
-        int head = method.length() + url.length();
-        for (Header header : normalized) head = addHead(head, header.name(), header.value());
-        byte[] body = body(request.body(), Math.min(MAX_BODY, MAX_BODY - head));
-        return new RequestData(method, url, host, port, secure, normalized, body);
-    }
-
-    static Response response(HttpResponseReceived response) {
-        int status = response.statusCode();
+        if (port < 1 || port > 65_535) throw reject("CAPTURE_FAILED");
+        // request.url() can reflect a deliberately fuzzed Host/:authority. Only the actual service
+        // and the untouched request.path() establish scope. No URI parser, percent decoder or
+        // normalization barrier is allowed here (including malformed-percent pentest targets).
+        String path = inspectionTarget(request.path());
+        String authority = host.indexOf(':') >= 0 && !host.startsWith("[") ? "[" + host + "]" : host;
+        String url = (secure ? "https://" : "http://") + authority + ":" + port + path;
+        Headers headers = contentSlot ? requestHeaders(request, method.length() + url.length()) : missingHeaders();
+        ByteArray nativeBody = null;
+        long length = -1;
         try {
-            List<Header> headers = headers(response.headers(), 0);
-            ByteArray body = response.body();
-            if (body == null) return omitted(status);
-            int length = body.length();
-            if (length < 0 || length > MAX_BODY) return new Response(status, headers, OMITTED_BODY);
-            return new Response(status, headers, body(body, MAX_BODY));
-        } catch (RuntimeException | LinkageError e) { return omitted(status); }
+            nativeBody = request.body();
+            if (nativeBody != null) length = nativeBody.length();
+        } catch (RuntimeException | LinkageError ignored) { /* Optional capture, not scope failure. */ }
+        // An independently verified EMPTY body remains known even without a copy slot. Unknown or
+        // nonempty omitted bodies must never accidentally become health-probe passthroughs.
+        Body body = copyBody(nativeBody, length, MAX_BODY - method.length() - url.length() - headers.chars(), contentSlot);
+        return new RequestData(method, url, host, port, secure, headers.values(), body.values(), headers.complete(), body.complete());
     }
 
-    static Response omitted(int status) { return new Response(status, OMITTED_HEADERS, OMITTED_BODY); }
+    static Observation observe(HttpResponseReceived response) {
+        int status = 0;
+        ByteArray body = null;
+        long size = -1;
+        try { status = response.statusCode(); }
+        catch (RuntimeException | LinkageError ignored) { /* Keep independent size observation. */ }
+        try {
+            body = response.body();
+            if (body != null) size = body.length();
+            if (size < 0) size = -1;
+        } catch (RuntimeException | LinkageError ignored) { size = -1; }
+        return new Observation(status, body, size);
+    }
 
+    static Response response(HttpResponseReceived response) { return response(response, observe(response), true); }
+    static Response response(HttpResponseReceived response, Observation observed, boolean contentSlot) {
+        Headers headers = contentSlot ? responseHeaders(response) : missingHeaders();
+        Body body = copyBody(observed.nativeBody(), observed.actualBytes(), MAX_BODY - headers.chars(), contentSlot);
+        // No oversized zero-filled sentinel: omitted bytes are explicitly absent, never "original".
+        return new Response(observed.status(), headers.values(), body.values(), observed.actualBytes(), headers.complete(), body.complete());
+    }
+
+    private static Headers requestHeaders(HttpRequestToBeSent request, int initial) {
+        try { return headers(request.headers(), initial); }
+        catch (RuntimeException | LinkageError ignored) { return missingHeaders(); }
+    }
+    private static Headers responseHeaders(HttpResponseReceived response) {
+        try { return headers(response.headers(), 0); }
+        catch (RuntimeException | LinkageError ignored) { return missingHeaders(); }
+    }
+    private static Headers missingHeaders() { return new Headers(List.of(), 0, false); }
+    private static Headers headers(List<HttpHeader> nativeHeaders, int initial) {
+        if (nativeHeaders == null) return missingHeaders();
+        int count = nativeHeaders.size();
+        if (count > MAX_HEADERS || count < 0) return missingHeaders();
+        List<Header> copy = new ArrayList<>(count);
+        long total = initial;
+        // Index only the bounded advertised size. Preserve even fuzzed/duplicate/pseudo fields in
+        // the inspection copy; explicit rules report unavailable inspection when not interpretable.
+        for (int i = 0; i < count; i++) {
+            HttpHeader h = nativeHeaders.get(i);
+            if (h == null) return missingHeaders();
+            String name = h.name(), value = h.value();
+            if (name == null || value == null || name.length() > 256 || value.length() > MAX_HEAD_CHARS)
+                return missingHeaders();
+            total += (long) name.length() + value.length();
+            if (total > MAX_HEAD_CHARS) return missingHeaders();
+            copy.add(new Header(name, value));
+        }
+        return new Headers(List.copyOf(copy), (int) total - initial, true);
+    }
+    private static Body copyBody(ByteArray body, long size, int budget, boolean contentSlot) {
+        if (size == 0 && !contentSlot) return new Body(EMPTY, true);
+        if (!contentSlot || body == null || size < 0 || size > Math.max(0, budget)) return new Body(EMPTY, false);
+        try {
+            byte[] copy = body.getBytes();
+            if (copy != null && copy.length == size && body.length() == size) return new Body(copy, true);
+        } catch (RuntimeException | LinkageError ignored) { /* Never echo native exception text. */ }
+        // A failed optional zero-byte copy does not erase independently verified EMPTY metadata.
+        if (size == 0 && body != null) {
+            try { if (body.length() == 0) return new Body(EMPTY, true); }
+            catch (RuntimeException | LinkageError ignored) { /* Unknown, not a health probe. */ }
+        }
+        return new Body(EMPTY, false);
+    }
+    private static String inspectionTarget(String target) {
+        if (target == null) throw reject("CAPTURE_FAILED");
+        int question = -1;
+        // Scope-essential PATH is bounded; optional oversized QUERY is not an automatic451. Keep
+        // one byte beyond the policy query bound so it is explicitly unavailable, never a partial
+        // successful rule match. The raw UI's own shorter bound labels this as truncated. This
+        // bounded inspection string is NEVER used for native continuation/transmission.
+        for (int i = 0; i < Math.min(target.length(), MAX_URL + 1); i++) {
+            if (target.charAt(i) == '?') { question = i; break; }
+        }
+        if (question < 0) return bounded(target, MAX_URL);
+        return target.length() - question - 1 > MAX_URL
+                ? target.substring(0, question + 1 + MAX_URL + 1) : target;
+    }
     private static String bounded(String text, int limit) {
         if (text == null) throw reject("CAPTURE_FAILED");
         if (text.length() > limit) throw reject("CAPTURE_LIMIT");
         return text;
-    }
-
-    private static int addHead(int total, String name, String value) {
-        long next = (long) total + name.length() + value.length();
-        if (next > MAX_HEAD_CHARS) throw reject("CAPTURE_LIMIT");
-        return (int) next;
-    }
-
-    private static List<Header> headers(List<HttpHeader> nativeHeaders, int initial) {
-        if (nativeHeaders == null) throw reject("CAPTURE_FAILED");
-        int count = nativeHeaders.size();
-        if (count > MAX_HEADERS || count < 0) throw reject("CAPTURE_LIMIT");
-        List<Header> copy = new ArrayList<>(count);
-        int total = initial;
-        // Index the bounded advertised size; never traverse an unexpectedly unbounded iterator.
-        for (int i = 0; i < count; i++) {
-            HttpHeader h = nativeHeaders.get(i);
-            if (h == null) throw reject("CAPTURE_FAILED");
-            String name = bounded(h.name(), 256);
-            String value = bounded(h.value(), MAX_HEAD_CHARS);
-            total = addHead(total, name, value);
-            copy.add(new Header(name, value));
-        }
-        return copy;
-    }
-
-    private static byte[] body(ByteArray nativeBody, int budget) {
-        if (nativeBody == null) throw reject("CAPTURE_FAILED");
-        int size = nativeBody.length();
-        if (size < 0 || size > budget) throw reject("CAPTURE_LIMIT");
-        byte[] copy = nativeBody.getBytes();
-        if (copy == null || copy.length != size || nativeBody.length() != size) throw reject("CAPTURE_FAILED");
-        return copy;
-    }
-
-    private static List<Header> normalize(HttpRequestToBeSent request, List<Header> observed, String method,
-                                          String url, String host, int port, boolean secure, boolean http2) {
-        Map<String, String> pseudo = new HashMap<>();
-        List<Header> copy = new ArrayList<>(observed.size());
-        boolean regularSeen = false;
-        for (Header header : observed) {
-            if (header.name().startsWith(":")) {
-                if (!http2 || regularSeen || !PSEUDO.contains(header.name())
-                        || pseudo.putIfAbsent(header.name(), header.value()) != null)
-                    throw reject("HTTP2_INCONSISTENT");
-            } else {
-                regularSeen = true;
-                copy.add(header);
-            }
-        }
-        // Montoya can expose HTTP/2 with its pseudo fields already normalized away. In that case
-        // the policy still checks URL/service/Host consistency. A partially exposed set is NOT OK.
-        if (pseudo.isEmpty()) return copy;
-        if (pseudo.size() != PSEUDO.size()) throw reject("HTTP2_INCONSISTENT");
-        try {
-            URI uri = new URI(url);
-            String scheme = secure ? "https" : "http";
-            if (uri.isOpaque() || uri.getRawUserInfo() != null || uri.getRawFragment() != null
-                    || !scheme.equals(uri.getScheme()) || !scheme.equals(pseudo.get(":scheme"))
-                    || !method.equals(pseudo.get(":method"))) throw reject("HTTP2_INCONSISTENT");
-            String path = uri.getRawPath();
-            if (path == null || path.isEmpty()) path = "/";
-            if (uri.getRawQuery() != null) path += "?" + uri.getRawQuery();
-            if (!path.startsWith("/") || !path.equals(pseudo.get(":path"))
-                    || !path.equals(bounded(request.path(), MAX_URL))) throw reject("HTTP2_INCONSISTENT");
-            Authority expected = new Authority(PolicyEngine.canonicalHost(host), port);
-            int defaultPort = secure ? 443 : 80;
-            if (!expected.equals(authority(uri.getRawAuthority(), defaultPort))
-                    || !expected.equals(authority(pseudo.get(":authority"), defaultPort)))
-                throw reject("HTTP2_INCONSISTENT");
-            boolean hostSeen = false;
-            for (Header header : copy) if (header.name().equalsIgnoreCase("host")) {
-                if (hostSeen || !expected.equals(authority(header.value(), defaultPort))) throw reject("HTTP2_INCONSISTENT");
-                hostSeen = true;
-            }
-            if (!hostSeen) copy.add(new Header("Host", pseudo.get(":authority")));
-            if (copy.size() > MAX_HEADERS) throw reject("CAPTURE_LIMIT");
-            return copy;
-        } catch (URISyntaxException | IllegalArgumentException e) { throw reject("HTTP2_INCONSISTENT"); }
-    }
-
-    private record Authority(String host, int port) {}
-    private static Authority authority(String input, int defaultPort) {
-        if (input == null || input.isEmpty() || input.length() > 320) throw reject("HTTP2_INCONSISTENT");
-        String host;
-        String port = null;
-        if (input.startsWith("[")) {
-            int end = input.indexOf(']');
-            if (end < 0) throw reject("HTTP2_INCONSISTENT");
-            host = input.substring(0, end + 1);
-            if (end + 1 < input.length()) {
-                if (input.charAt(end + 1) != ':') throw reject("HTTP2_INCONSISTENT");
-                port = input.substring(end + 2);
-            }
-        } else {
-            int colon = input.indexOf(':');
-            if (colon != input.lastIndexOf(':')) throw reject("HTTP2_INCONSISTENT");
-            host = colon < 0 ? input : input.substring(0, colon);
-            if (colon >= 0) port = input.substring(colon + 1);
-        }
-        int number = defaultPort;
-        if (port != null) {
-            if (port.isEmpty() || port.length() > 5) throw reject("HTTP2_INCONSISTENT");
-            number = 0;
-            for (int i = 0; i < port.length(); i++) {
-                char c = port.charAt(i);
-                if (c < '0' || c > '9') throw reject("HTTP2_INCONSISTENT");
-                number = number * 10 + c - '0';
-            }
-        }
-        if (number < 1 || number > 65_535) throw reject("HTTP2_INCONSISTENT");
-        return new Authority(PolicyEngine.canonicalHost(host), number);
     }
     private static Rejected reject(String category) { return new Rejected(category); }
 }

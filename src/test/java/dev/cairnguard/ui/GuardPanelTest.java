@@ -64,7 +64,7 @@ class GuardPanelTest {
         open();
         edt(() -> {
             JTabbedPane tabs = get("tabs", JTabbedPane.class);
-            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정"),
+            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정", "자동 차단", "대용량 후보", "사건 내보내기"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
             assertTrue(get("dashboard.state", JLabel.class).getText().contains("모든 요청 차단"));
             assertTrue(get("dashboard.guidance", JTextArea.class).getText().contains("허용 대상 등록"));
@@ -82,7 +82,7 @@ class GuardPanelTest {
         open();
         GuardConfig original = access.policy; int refreshes = access.refreshes;
         dialogs.editScript = (form, close) -> {
-            assertEquals(3, get("help.examples.tabs", JTabbedPane.class).getTabCount());
+            assertEquals(4, get("help.examples.tabs", JTabbedPane.class).getTabCount());
             for (String name : List.of("scope", "rules", "limits")) {
                 JTextArea text = get("help.examples." + name, JTextArea.class);
                 assertFalse(text.isEditable()); assertTrue(text.isFocusable());
@@ -131,12 +131,12 @@ class GuardPanelTest {
         assertEquals(0, access.updates); assertTrue(dialogs.errors.isEmpty());
     }
 
-    @Test void trafficAndApprovalShortcutsOnlyReviewMaskedEvidenceAndNeverApproveOrSend() throws Exception {
+    @Test void trafficUsesRawScreenWhileApprovalUsesMaskedEvidenceAndNeitherShortcutSends() throws Exception {
         access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
         edt(() -> {
             trafficTable().setRowSelectionInterval(0, 0); pressEnter(trafficTable());
             assertFalse(get("traffic.request", JTextArea.class).isEditable());
-            assertFalse(get("traffic.request", JTextArea.class).getText().contains(SECRET));
+            assertTrue(get("traffic.request", JTextArea.class).getText().contains(SECRET));
             mouseClick(get("approval.table", JTable.class), 0, 2, MouseEvent.BUTTON1);
             assertTrue(get("approval.detail", JTextArea.class).getText().contains("마스킹"));
             assertEquals(2, dialogs.edits);
@@ -231,7 +231,7 @@ class GuardPanelTest {
             save.run();
         };
         edt(() -> { click("rules.add"); return null; });
-        assertEquals(3, access.policy.rules().size());
+        assertEquals(GuardConfig.defaults().rules().size() + 1, access.policy.rules().size());
         Rule added = access.policy.rules().getLast(); assertTrue(added.enabled()); assertEquals(Mode.ASK, added.mode());
         assertEquals(GuardConfig.defaults().allowScope(), access.policy.allowScope());
         edt(() -> { selectRule(added.id()); click("rules.toggle"); return null; });
@@ -366,8 +366,8 @@ class GuardPanelTest {
     @Test void advancedImportRejectsDuplicateUnknownNullFractionalAndTrailingJson() throws Exception {
         open();
         String valid = Json.write(policyWithAllow());
-        List<String> invalid = new ArrayList<>(List.of("[{", "null", valid + " true", valid.replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 1, \"unknown\" : true"),
-                valid.replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 1, \"schemaVersion\" : 1")));
+        List<String> invalid = new ArrayList<>(List.of("[{", "null", valid + " true", valid.replace("\"schemaVersion\" : 2", "\"schemaVersion\" : 2, \"unknown\" : true"),
+                valid.replace("\"schemaVersion\" : 2", "\"schemaVersion\" : 2, \"schemaVersion\" : 2")));
         for (String port : List.of("null", "443.5")) invalid.add(valid.replace("\"port\" : 443", "\"port\" : " + port));
         invalid.add(valid.replace("\"port\" : 443,", ""));
         for (String rate : List.of("null", "2.5")) invalid.add(valid.replace("\"globalRps\" : 5", "\"globalRps\" : " + rate));
@@ -541,7 +541,7 @@ class GuardPanelTest {
         });
     }
 
-    @Test void sortedSelectionBookmarkAndMaskedDetailsUseModelIndicesAcrossRefresh() throws Exception {
+    @Test void sortedSelectionBookmarkAndUnmaskedScreenDetailsUseModelIndicesAcrossRefresh() throws Exception {
         access.rows = fixtures(); open();
         edt(() -> {
             JTable table = trafficTable(); table.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(3, SortOrder.DESCENDING)));
@@ -550,8 +550,8 @@ class GuardPanelTest {
             assertTrue(expected.contains("/z?"));
             click("traffic.detail");
             for (String name : List.of("traffic.metadata", "traffic.request", "traffic.response")) assertFalse(get(name, JTextArea.class).isEditable());
-            assertFalse(get("traffic.request", JTextArea.class).getText().contains(SECRET));
-            assertTrue(get("traffic.request", JTextArea.class).getText().contains("[REDACTED]"));
+            assertTrue(get("traffic.request", JTextArea.class).getText().contains(SECRET));
+            assertTrue(get("traffic.request", JTextArea.class).getText().contains("화면 전용"));
             click("traffic.bookmark");
             assertEquals(access.rows.get(2).id(), access.lastBookmarked);
             assertEquals(expected, table.getValueAt(table.getSelectedRow(), 3));
@@ -840,7 +840,7 @@ class GuardPanelTest {
     }
     private static RequestData request(String path) { return new RequestData("GET", "https://example.test" + path, "example.test", 443, true, List.of(), new byte[0]); }
     private static GuardConfig policyWithAllow() {
-        GuardConfig d = GuardConfig.defaults(); return new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(), d.rules(), Mode.ALLOW, d.limits());
+        GuardConfig d = GuardConfig.defaults(); return new GuardConfig(2, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(), d.rules(), Mode.ALLOW, d.limits());
     }
     private static List<TrafficEntry> fixtures() {
         EvidenceStore store = new EvidenceStore(); List<TrafficEntry> rows = new ArrayList<>();
@@ -896,6 +896,10 @@ class GuardPanelTest {
             return Map.copyOf(result);
         }
         @Override public List<TrafficEntry> traffic() { onEdt(); if (failTraffic) throw new IllegalStateException(SECRET); return List.copyOf(rows); }
+        @Override public String rawUrl(String id) { return rows.stream().filter(e -> e.id().equals(id)).map(e -> e.url().replace("[REDACTED]", SECRET)).findFirst().orElse(null); }
+        @Override public String rawRequest(String id) { return rawUrl(id) == null ? null : "Authorization: Bearer " + SECRET + "\nCookie: session=" + SECRET + "\n"; }
+        @Override public String rawResponse(String id) { return rawUrl(id) == null ? null : "HTTP/1.1 200\nsynthetic response"; }
+        @Override public Map<String,Object> rawCaptureInfo(String id) { return Map.of("available", rawUrl(id) != null); }
         @Override public List<Pending> approvals() { onEdt(); return List.copyOf(pending); }
         @Override public boolean decideApproval(String id, boolean allow) { onEdt(); boolean removed = pending.removeIf(p -> p.id().equals(id)); if (removed) decisions.add(id + ":" + allow); return removed; }
         @Override public void bookmark(String id, boolean value) {
@@ -915,7 +919,7 @@ class GuardPanelTest {
             onEdt();
             if (raceOnPassthrough) revision++;
             if (failPassthrough || !project.equals(expectedProjectId) || revision != expectedRevision) throw new IllegalStateException(SECRET);
-            passthrough = enabled; paused = false; revision++; pending.clear(); modeChanges++;
+            passthrough = enabled; revision++; pending.clear(); modeChanges++;
         }
         @Override public void refreshProject() { onEdt(); refreshes++; if (failRefresh) throw new IllegalStateException(SECRET); }
     }

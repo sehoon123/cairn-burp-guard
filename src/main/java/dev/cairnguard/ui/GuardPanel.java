@@ -1,14 +1,16 @@
 package dev.cairnguard.ui;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import dev.cairnguard.evidence.TrafficEntry;
 import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Mode;
 import dev.cairnguard.model.GuardConfig.Rule;
 import dev.cairnguard.model.GuardConfig.ScopeEntry;
 import dev.cairnguard.model.Json;
+import dev.cairnguard.model.PolicyCodec;
 import dev.cairnguard.policy.PolicyEngine;
 import dev.cairnguard.runtime.ApprovalQueue.Pending;
+import dev.cairnguard.runtime.ResponseWatcher.Overlay;
+import dev.cairnguard.runtime.ResponseWatcher.Candidate;
 import dev.cairnguard.ui.editor.EditorForm;
 import dev.cairnguard.ui.editor.FormValidationException;
 import dev.cairnguard.ui.editor.RuleEditor;
@@ -21,6 +23,7 @@ import javax.swing.event.DocumentListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.TableRowSorter;
 import javax.swing.text.AbstractDocument;
 import javax.swing.text.AttributeSet;
 import javax.swing.text.BadLocationException;
@@ -68,7 +71,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     static final int MAX_EDITOR_CHARS = 2_097_152;
     private static final int MAX_ROWS = 2_000;
     private static final String ALL_PROJECTS = "모든 프로젝트";
-    private static final String EXPORT_NOTICE = "마스킹된 검사 사본만 표시·내보냅니다. 본문 생략·잘림·보관 만료가 있을 수 있으며, 완전한 통신 캡처나 대상 도착의 증명이 아닙니다.";
+    private static final String EXPORT_NOTICE = "화면의 원문은 민감정보를 포함하는 메모리 전용 검사 사본입니다. JSON/HAR/사건 내보내기는 별도의 마스킹된 증거만 사용합니다. 생략·잘림·만료가 있을 수 있고 완전한 통신 캡처나 대상 도착의 증명이 아닙니다.";
+    private static final String RAW_NOTICE = "민감정보 포함 · 원문 화면 전용 · 메모리 한정 · 검사 사본 (wire 증거 아님)";
     private static final String SAVE_NOTICE = "저장하면 현재 Burp 프로젝트에 즉시 적용하며 기존 승인 대기를 취소합니다. 취소하면 바뀌지 않습니다.";
 
     private final GuardUiAccess access;
@@ -87,6 +91,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JLabel gateCount = named(new JLabel(), "dashboard.gateCount");
     private final JLabel evidenceCount = named(new JLabel(), "dashboard.evidenceCount");
     private final JTextArea recentBlock = note("dashboard.recentBlock", "");
+    private final JTextArea diagnosis = note("dashboard.diagnosis", "");
+    private final JTextArea warnings = note("dashboard.warning", "");
+    private final JTextArea reasonCounters = note("dashboard.reasonCounters", "");
+    private final JPanel migrationBanner = new JPanel(new BorderLayout(4, 4));
+    private Map<String,Object> migration = Map.of();
     private final JButton pause;
     private final JButton approve;
     private final JButton deny;
@@ -97,21 +106,24 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTable allowTable = table("scope.allow.table", allowModel, false);
     private final JTable blockTable = table("scope.block.table", blockModel, false);
     private final JTextArea scopeState = note("scope.state", "");
-    private final RowsModel<Rule> rulesModel = new RowsModel<>(new String[]{"사용", "규칙 이름", "동작", "조건"},
-            new Class<?>[]{String.class, String.class, String.class, String.class},
-            r -> new Object[]{r.enabled() ? "사용 중" : "중지", displayRuleName(r.name()), UiText.mode(r.mode().name()), RuleEditor.summary(r.condition())});
+    private final RowsModel<Rule> rulesModel = new RowsModel<>(new String[]{"사용", "규칙 이름", "동작", "조건", "우선순위"},
+            new Class<?>[]{String.class, String.class, String.class, String.class, Integer.class},
+            r -> new Object[]{r.enabled() ? "사용 중" : "중지", displayRuleName(r.name()), UiText.mode(r.mode().name()), RuleEditor.summary(r.condition()), r.mode() == Mode.EXEMPT ? 0 : 1});
     private final JTable rulesTable = table("rules.table", rulesModel, false);
     private final JTextArea settingsSummary = textArea("settings.summary", false);
     private final RowsModel<TrafficEntry> trafficModel = new RowsModel<>(
-            new String[]{"보관", "시각 (UTC)", "메서드", "마스킹된 URL", "결과", "HTTP", "이유"},
-            new Class<?>[]{Boolean.class, String.class, String.class, String.class, String.class, Integer.class, String.class},
-            e -> new Object[]{e.bookmarked(), e.timestamp(), e.method(), e.url(), UiText.outcome(e.disposition()), e.statusCode(), UiText.reason(e.reason())});
+            new String[]{"보관", "시각 (UTC)", "메서드", "원문 URL · 화면 전용", "결과", "HTTP", "이유", "Intent (비신뢰)", "Run (비신뢰)", "보호 상태", "검사 경고"},
+            new Class<?>[]{Boolean.class, String.class, String.class, String.class, String.class, Integer.class, String.class, String.class, String.class, String.class, String.class},
+            e -> new Object[]{e.bookmarked(), e.timestamp(), e.method(), screenUrl(e), trafficOutcome(e), e.statusCode(), UiText.reason(e.reason()), screenTag(e, "intentId"), screenTag(e, "runId"), UiText.guardState(e.guardState()), String.join(", ", e.inspectionWarnings())});
     private final JTable trafficTable = table("traffic.table", trafficModel, true);
     private final JTextField search = textField("traffic.search");
     private final JTextField methodFilter = textField("traffic.method");
     private final JTextField statusFilter = textField("traffic.status");
     private final JTextField timeFilter = textField("traffic.time");
-    private final JComboBox<String> outcomeFilter = named(new JComboBox<>(new String[]{"모든 결과", "차단됨", "전송 해제", "대기 중"}), "traffic.outcome");
+    private final JTextField intentFilter = textField("traffic.intent");
+    private final JTextField runFilter = textField("traffic.run");
+    private final JTextField stateFilter = textField("traffic.guardState");
+    private final JComboBox<String> outcomeFilter = named(new JComboBox<>(new String[]{"모든 결과", "차단됨", "전송 해제", "대기 중", "EXEMPT 예외", "상태 확인 통과", "회로 재확인"}), "traffic.outcome");
     private final JComboBox<String> projectFilter = named(new JComboBox<>(new String[]{ALL_PROJECTS}), "traffic.project");
     private final JCheckBox bookmarksOnly = named(new JCheckBox("보관한 요청만"), "traffic.bookmarked");
     private final JLabel trafficCount = named(new JLabel("기록 없음"), "traffic.count");
@@ -121,6 +133,23 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTextArea responseDetail = textArea("traffic.response", false);
     private final JTextArea trafficDetail = textArea("traffic.metadata", false);
     private JTabbedPane trafficDetails;
+    private final RowsModel<Overlay> overlayModel = new RowsModel<>(
+            new String[]{"종류", "호스트 (마스킹)", "경로 (마스킹)", "시작 (UTC)", "만료 (UTC)", "남은 시간 (초)", "이유"},
+            new Class<?>[]{String.class, String.class, String.class, String.class, String.class, Long.class, String.class},
+            o -> new Object[]{o.kind(), o.host(), o.path(), utc(o.createdAt()), utc(o.expiresAt()), Math.max(0, (o.expiresAt() - System.currentTimeMillis() + 999) / 1000), UiText.reason(o.reason())});
+    private final JTable overlayTable = table("overlays.table", overlayModel, false);
+    private final RowsModel<Candidate> candidateModel = new RowsModel<>(
+            new String[]{"호스트 (마스킹)", "경로 (마스킹)", "최대 bytes", "p95 bytes (근사)", "응답 수", "5xx 수", "최근 (UTC)", "정책 초안 가능"},
+            new Class<?>[]{String.class, String.class, Long.class, Long.class, Long.class, Long.class, String.class, String.class},
+            c -> new Object[]{c.host(), c.path(), c.maxBytes(), c.p95Bytes(), c.count(), c.count5xx(), utc(c.lastSeen()), safePolicyUrl(c) ? "예" : "아니오 · 마스킹/해석 불가"});
+    private final JTable candidateTable = table("candidates.table", candidateModel, false);
+    private final JTextArea runtimeSummary = note("overlays.summary", "");
+    private final JTextArea candidateSummary = note("candidates.summary", "");
+    private JButton candidateBlock;
+    private JButton candidateLimit;
+    private JButton candidateIgnore;
+    private final JTextField incidentFrom = textField("incident.from");
+    private final JTextField incidentTo = textField("incident.to");
     private final RowsModel<Pending> approvalModel = new RowsModel<>(
             new String[]{"메서드", "마스킹된 URL", "승인 요청 이유", "남은 시간"},
             new Class<?>[]{String.class, String.class, String.class, String.class}, this::approvalValues);
@@ -144,6 +173,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         this.dialogs = Objects.requireNonNull(dialogs);
         setLayout(new BorderLayout(8, 8));
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        configureRuleView();
         pause = button("dashboard.pause", "새 요청 모두 차단", this::togglePause);
         passthrough = button("protection.passthrough", "모두 통과 (보호 끔)…", this::togglePassthrough);
         protectionState.setFont(new javax.swing.plaf.FontUIResource(protectionState.getFont().deriveFont(java.awt.Font.BOLD)));
@@ -158,6 +188,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                     refreshNow();
                     if (available) message.setText("현재 프로젝트의 설정과 요청 기록을 다시 확인했습니다.");
                 })), BorderLayout.CENTER);
+        migrationBanner.setName("migration.banner");
+        migrationBanner.add(note("migration.notice", "v1 → v2 메모리 변환 대기 · 원본은 아직 저장소에 유지됩니다. 새 감지 기능은 OFF이며 기존 규칙을 보존합니다. 비교·원본 내보내기 후 사람이 명시적으로 저장하세요."), BorderLayout.CENTER);
+        migrationBanner.add(buttons(policyButton("migration.review", "변환 비교 / 명시적 저장…", this::reviewMigration),
+                button("migration.exportOriginal", "v1 원본 내보내기…", this::exportOriginal)), BorderLayout.SOUTH);
+        header.add(migrationBanner, BorderLayout.SOUTH);
         add(header, BorderLayout.NORTH);
         tabs.addTab("개요", dashboardTab());
         tabs.addTab("대상", scopeTab());
@@ -165,6 +200,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         tabs.addTab("요청 기록", trafficTab());
         tabs.addTab("승인 대기", approvalTab());
         tabs.addTab("설정", settingsTab());
+        tabs.addTab("자동 차단", overlaysTab());
+        tabs.addTab("대용량 후보", candidatesTab());
+        tabs.addTab("사건 내보내기", incidentTab());
         add(tabs, BorderLayout.CENTER);
         message.setBorder(BorderFactory.createEmptyBorder(4, 2, 2, 2));
         add(message, BorderLayout.SOUTH);
@@ -197,6 +235,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 button("dashboard.traffic", "요청 기록 보기", () -> tabs.setSelectedIndex(3))));
         recentBlock.setBorder(BorderFactory.createTitledBorder("최근 차단 이유"));
         content.add(recentBlock);
+        diagnosis.setBorder(BorderFactory.createTitledBorder("로컬 차단 / 대상 응답 구분"));
+        warnings.setForeground(new java.awt.Color(180, 65, 0));
+        content.add(diagnosis); content.add(warnings); content.add(reasonCounters);
+        content.add(buttons(button("dashboard.overlays", "자동 차단 보기", () -> tabs.setSelectedIndex(6)),
+                button("dashboard.candidates", "대용량 후보 보기", () -> tabs.setSelectedIndex(7)),
+                policyButton("dashboard.resetIntent", "Intent 예산 초기화…", this::resetIntentBudgets)));
         content.add(Box.createVerticalStrut(10));
         content.add(note("dashboard.boundary", "이 확장은 Burp Proxy에 전달된 요청만 제어합니다. 직접 연결·Proxy 우회·다른 Burp 도구의 트래픽까지 막는 네트워크 방화벽이 아닙니다. 허용한 원본 요청·응답·인증 상태를 변경하지 않습니다."));
         JPanel result = new JPanel(new BorderLayout());
@@ -212,7 +256,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         lists.addTab("허용 대상", scopeList(false));
         lists.addTab("차단 대상", scopeList(true));
         panel.add(lists, BorderLayout.CENTER);
-        panel.add(note("scope.help", "허용 대상은 실제 호스트·연결 방식·포트·경로가 모두 맞아야 합니다. 차단 대상이 우선하며, 하위 도메인이나 모든 포트는 직접 선택해야 포함됩니다. 표의 변경은 각 작업에서 명시적으로 저장할 때만 적용됩니다."), BorderLayout.SOUTH);
+        panel.add(note("scope.help", "실제 연결 목적지의 호스트·scheme·port와 원래 요청 path로 범위를 판정합니다 (fuzz한 Host/:authority는 대상 변경이 아님). 모든 경로를 허용하면 /c/;/main.do, /c/%2e/main.do도 원문 그대로 전송할 수 있습니다. 제한된 경로는 내부 해석 뷰 모두가 범위여야 하며 해석 불완전 경고를 숨기지 않습니다. 차단 대상·명시 규칙·자동 안전 제어는 별도입니다. 헤더/본문 형식 자체를 자동 차단하지 않으며 편집은 명시적 저장 전에는 적용되지 않습니다."), BorderLayout.SOUTH);
         return panel;
     }
 
@@ -232,7 +276,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private JPanel rulesTab() {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         JPanel header = new JPanel(new BorderLayout());
-        header.add(note("rules.help", "조건에 맞는 요청을 차단하거나 사람의 승인을 받습니다. 차단 > 승인 요청 > 허용 순서이며, ‘기록만’은 다른 동작을 바꾸지 않습니다. 허용 규칙도 대상 범위와 필수 안전 검사를 우회하지 못합니다."), BorderLayout.NORTH);
+        header.add(note("rules.help", "EXEMPT 예외 > 차단 > 승인 요청 > 허용. 주황색 EXEMPT는 일반 BLOCK·ASK를 무시하므로 명시적 저장 확인이 필요합니다. 표에서 예외를 위로 고정해도 정책 순서는 바꾸지 않습니다. 범위·유효성·일시중지·자동 차단·속도·예산은 예외로 우회할 수 없습니다. 헤더·본문 조건은 검사 가능할 때 적용하며 불완전 검사는 경고로 표시합니다."), BorderLayout.NORTH);
         header.add(buttons(policyButton("rules.add", "규칙 만들기…", () -> editRule(true)),
                 policyButton("rules.edit", "선택 규칙 편집…", () -> editRule(false)),
                 policyButton("rules.toggle", "사용 / 중지", () -> mutateRule(false)),
@@ -240,7 +284,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         panel.add(header, BorderLayout.NORTH);
         installOpenAction(rulesTable, () -> editRule(false), "두 번 클릭 또는 Enter: 선택한 규칙 편집 (저장 전에는 변경하지 않음)");
         panel.add(new JScrollPane(rulesTable), BorderLayout.CENTER);
-        panel.add(note("rules.defaults", "기본 규칙: DELETE 메서드와 대소문자 구분 없는 ‘delete’ 문자열을 차단합니다. 보수적인 문자열 규칙은 정상 요청에도 일치할 수 있습니다. 이름을 바꾸거나 사용 여부를 조정하기 전에 조건을 확인하세요."), BorderLayout.SOUTH);
+        panel.add(note("rules.defaults", "새 정책의 기본 규칙은 DELETE 메서드 차단만 있습니다 (EXEMPT 기본값 없음). v1의 delete 문자열 규칙은 변환 시 그대로 유지합니다. GET deleteInfoBoardComnt.do / undelete 등 오탐을 검토하고 원본과 정확히 같은 기존 규칙만 별도 선택하여 제거할 수 있습니다."), BorderLayout.SOUTH);
         return panel;
     }
 
@@ -253,8 +297,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         footer.add(buttons(policyButton("settings.policyJson", "고급: 정책 JSON 가져오기 / 복사…", this::editPolicyJson),
                 button("settings.diagnostics", "진단 정보…", this::diagnostics),
                 button("settings.clear", "보관 기록 비우기…", () -> {
-                    if (dialogs.confirm(this, "보관된 마스킹 요청 기록을 모두 지울까요? 누적 처리 수는 남을 수 있으며 복구할 수 없습니다.")) {
-                        access.clearEvidence(); refreshNow(); message.setText("보관된 마스킹 기록을 비웠습니다.");
+                    if (dialogs.confirm(this, "보관된 요청 기록과 화면 원문·사건 기록을 모두 지울까요? 누적 처리 수·열린 자동 차단·태그 사용량은 남을 수 있으며 복구할 수 없습니다.")) {
+                        access.clearEvidence(); refreshNow(); message.setText("보관 기록과 화면 원문·사건을 비웠습니다. 열린 차단·태그 사용량은 별도입니다.");
                     }
                 })), BorderLayout.SOUTH);
         panel.add(footer, BorderLayout.SOUTH);
@@ -265,14 +309,17 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         JPanel header = new JPanel(new BorderLayout(4, 4));
         JPanel quick = new JPanel(new BorderLayout(8, 0));
-        quick.add(labeled("마스킹된 URL·이유·메서드 검색", search), BorderLayout.CENTER);
+        quick.add(labeled("원문 URL·이유·메서드 검색 (화면 전용)", search), BorderLayout.CENTER);
         quick.add(buttons(outcomeFilter, bookmarksOnly, button("traffic.reset", "필터 지우기", this::resetFilters)), BorderLayout.LINE_END);
         header.add(quick, BorderLayout.NORTH);
-        JPanel extra = new JPanel(new GridLayout(1, 4, 6, 4));
+        JPanel extra = new JPanel(new GridLayout(0, 4, 6, 4));
         extra.add(labeled("메서드 포함", methodFilter));
         extra.add(labeled("HTTP 상태 포함", statusFilter));
         extra.add(labeled("UTC 시각 포함", timeFilter));
         extra.add(labeled("프로젝트", projectFilter));
+        extra.add(labeled("Intent 포함 (비신뢰 태그)", intentFilter));
+        extra.add(labeled("Run 포함 (비신뢰 태그)", runFilter));
+        extra.add(labeled("보호 상태 포함", stateFilter));
         extra.setVisible(false);
         JCheckBox more = named(new JCheckBox("상세 필터"), "traffic.more");
         more.addActionListener(e -> { extra.setVisible(more.isSelected()); header.revalidate(); });
@@ -282,7 +329,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 button("traffic.bookmark", "선택 요청 보관 / 해제", this::bookmarkSelected)), BorderLayout.SOUTH);
         header.add(filterBottom, BorderLayout.CENTER);
         panel.add(header, BorderLayout.NORTH);
-        for (JTextField filter : List.of(search, methodFilter, statusFilter, timeFilter)) listen(filter, this::filterTraffic);
+        for (JTextField filter : List.of(search, methodFilter, statusFilter, timeFilter, intentFilter, runFilter, stateFilter)) listen(filter, this::filterTraffic);
         DefaultListCellRenderer plain = new DefaultListCellRenderer();
         plain.putClientProperty("html.disable", Boolean.TRUE);
         projectFilter.setRenderer(plain);
@@ -290,15 +337,15 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         outcomeFilter.addActionListener(e -> filterTraffic());
         bookmarksOnly.addItemListener(e -> filterTraffic());
         trafficTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting() && selectionUpdates == 0) showTrafficDetail(); });
-        installOpenAction(trafficTable, this::openTrafficDetail, "두 번 클릭 또는 Enter: 마스킹된 요청·응답 상세 보기");
+        installOpenAction(trafficTable, this::openTrafficDetail, "두 번 클릭 또는 Enter: 민감정보가 포함된 메모리 원문 요청·응답 (화면 전용)");
         JTabbedPane details = named(new JTabbedPane(), "traffic.details");
         trafficDetails = details;
         JPanel explanation = new JPanel(new BorderLayout());
         explanation.add(new JScrollPane(trafficDetail), BorderLayout.CENTER);
         explanation.add(buttons(resolve), BorderLayout.SOUTH);
         details.addTab("결과와 해결 방법", explanation);
-        details.addTab("마스킹된 요청 · 읽기 전용", new JScrollPane(requestDetail));
-        details.addTab("마스킹된 응답 · 읽기 전용", new JScrollPane(responseDetail));
+        details.addTab("원문 요청 · 화면 전용", new JScrollPane(requestDetail));
+        details.addTab("원문 응답 · 화면 전용", new JScrollPane(responseDetail));
         panel.add(new JScrollPane(trafficTable), BorderLayout.CENTER);
         JPanel footer = new JPanel(new BorderLayout());
         footer.add(buttons(exportRange, exportFormat, button("traffic.export", "내보내기…",
@@ -306,6 +353,292 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         footer.add(note("traffic.exportNotice", EXPORT_NOTICE), BorderLayout.SOUTH);
         panel.add(footer, BorderLayout.SOUTH);
         return panel;
+    }
+
+    private JPanel overlaysTab() {
+        JPanel panel = new JPanel(new BorderLayout(6, 6));
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(note("overlays.help", "자동 차단은 정책과 분리된 메모리 상태입니다. 만료·수동 해제가 가능하며 저장 파일을 바꾸지 않습니다. 회로의 만료는 닫힘 보장이 아니라 GET/HEAD 재확인 가능 시각입니다 (최대 30초당 한 번). 해제 후 다음 응답·확산으로 다시 열릴 수 있습니다."), BorderLayout.NORTH);
+        header.add(buttons(policyButton("overlays.release", "선택 차단 해제…", () -> releaseOverlays(false)),
+                policyButton("overlays.releaseAll", "모든 자동 차단 해제…", () -> releaseOverlays(true))), BorderLayout.SOUTH);
+        panel.add(header, BorderLayout.NORTH); panel.add(new JScrollPane(overlayTable), BorderLayout.CENTER);
+        panel.add(runtimeSummary, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel candidatesTab() {
+        JPanel panel = new JPanel(new BorderLayout(6, 6));
+        panel.add(note("candidates.help", "응답 크기 후보 · 최대 bytes 내림차순, p95는 근사치, 보관 용량·24시간 창으로 불완전할 수 있습니다. 첫 큰 응답을 소급 차단하지 않습니다. 마스킹된 경로는 정책으로 자동 복사할 수 없습니다. ‘무시’는 후보 표시만 숨기며 열린 차단·정책·사건을 바꾸지 않습니다."), BorderLayout.NORTH);
+        candidateBlock = policyButton("candidates.block", "일반 BLOCK 규칙 초안…", this::candidateRule);
+        candidateLimit = policyButton("candidates.threshold", "이 경로 N MiB 초과 차단…", this::candidateThreshold);
+        candidateIgnore = policyButton("candidates.ignore", "이 후보 무시…", this::ignoreCandidate);
+        candidateTable.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(2, SortOrder.DESCENDING)));
+        candidateTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updateCandidateActions(); });
+        panel.add(new JScrollPane(candidateTable), BorderLayout.CENTER);
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.add(buttons(candidateBlock, candidateLimit, candidateIgnore), BorderLayout.NORTH);
+        footer.add(candidateSummary, BorderLayout.SOUTH); panel.add(footer, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel incidentTab() {
+        JPanel panel = new JPanel(new BorderLayout(6, 6));
+        JPanel form = new JPanel(new GridLayout(0, 1, 4, 6));
+        form.add(note("incident.help", "보관된 자동 안전 사건·5xx·크기 통계를 마스킹 JSON 한 파일로 내보냅니다. UTC ISO-8601의 [시작, 끝) 창, 최대 24시간입니다. 보관 시작 전·유실·퇴출·근사 여부는 번들에 표시되며 완전한 통신이나 대상 장애의 증거가 아닙니다. 원문 화면 데이터는 사용하지 않습니다."));
+        form.add(labeled("시작 UTC (예: 2026-01-01T00:00:00Z)", incidentFrom));
+        form.add(labeled("끝 UTC (시작 미포함 아님: [시작, 끝))", incidentTo));
+        setIncidentHour();
+        form.add(buttons(button("incident.lastHour", "최근 1시간 채우기", this::setIncidentHour),
+                button("incident.export", "마스킹 사건 JSON 내보내기…", this::exportIncident)));
+        panel.add(form, BorderLayout.NORTH);
+        return panel;
+    }
+
+    private void setIncidentHour() {
+        Instant now = Instant.ofEpochMilli(System.currentTimeMillis());
+        incidentFrom.setText(now.minusSeconds(3600).toString()); incidentTo.setText(now.toString());
+    }
+
+    private void updateRuntime() {
+        replaceRows(overlayTable, overlayModel, access.overlays().stream().limit(1025).toList(), Overlay::id);
+        replaceRows(candidateTable, candidateModel, access.heavyCandidates().stream().limit(2048).toList(), Candidate::id);
+        overlayTable.repaint();
+        Map<?,?> watcher = nested(latestStatus, "watchers");
+        setDetail(runtimeSummary, "열린 자동 차단 " + overlayModel.rows.size() + "개 · 회로 " + count(watcher, "circuits")
+                + " · 회로 재확인 " + count(watcher, "halfOpen") + " · 정책 자동 저장 없음");
+        setDetail(candidateSummary, "후보 " + candidateModel.rows.size() + "개 · p95 근사"
+                + (Boolean.TRUE.equals(watcher.get("candidatesIncomplete")) ? " · 보관 유실/퇴출로 통계 불완전" : " · 보관 창 기준 (전체 통신 아님)"));
+        updateCandidateActions();
+    }
+
+    private void updateCandidateActions() {
+        Candidate row = selected(candidateTable, candidateModel);
+        if (candidateBlock == null) return;
+        candidateBlock.setEnabled(available && !closed && row != null && safePolicyUrl(row));
+        candidateLimit.setEnabled(candidateBlock.isEnabled());
+        candidateIgnore.setEnabled(available && !closed && row != null);
+    }
+
+    private void releaseOverlays(boolean all) {
+        Snapshot base = beginEdit();
+        Overlay row = selected(overlayTable, overlayModel);
+        if (!all && row == null) throw failure("SELECT_OVERLAY_FIRST");
+        if (!dialogs.confirm(this, all ? "모든 자동 차단을 해제할까요? 정책·운영자 일시중지·사용량은 유지됩니다. 위험 요청을 멈추고 원인을 먼저 확인하세요."
+                : "선택한 자동 차단을 해제할까요? 만료/교체된 항목은 해제하지 않습니다. 다음 감지에서 다시 열릴 수 있습니다.")) return;
+        checkRuntimeVersion(base);
+        boolean changed = all ? access.releaseAllOverlays(base.projectId(), base.revision()) > 0
+                : access.releaseOverlay(row.id(), base.projectId(), base.revision());
+        refreshNow();
+        message.setText(changed ? "자동 차단을 해제했습니다. 정책을 저장하지 않았습니다." : "항목이 이미 만료·교체됐거나 해제할 자동 차단이 없습니다.");
+    }
+
+    private void resetIntentBudgets() {
+        Snapshot base = beginEdit();
+        if (!dialogs.confirm(this, "현재 프로젝트의 모든 (Run, Intent) 사용량을 초기화할까요? 이미 사용한 요청도 다시 예산을 쓸 수 있습니다. 태그는 클라이언트 주장으로 인증이 아닙니다. 정책 한도와 열린 자동 차단은 그대로입니다.", "사용량 초기화")) return;
+        checkRuntimeVersion(base);
+        access.resetIntentBudgets(base.projectId(), base.revision()); refreshNow();
+        message.setText("태그 예산 사용량을 명시적으로 초기화했습니다. 정책은 저장하지 않았습니다.");
+    }
+
+    private void checkRuntimeVersion(Snapshot base) {
+        access.refreshProject();
+        if (closed || !base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
+    }
+
+    private Candidate currentCandidate(Snapshot base) {
+        Candidate row = selected(candidateTable, candidateModel);
+        if (row == null) throw failure("SELECT_CANDIDATE_FIRST");
+        checkRuntimeVersion(base);
+        return access.heavyCandidates().stream().filter(c -> c.id().equals(row.id())).findFirst().orElseThrow(() -> failure("CANDIDATE_STALE"));
+    }
+
+    private void ignoreCandidate() {
+        Snapshot base = beginEdit(); Candidate row = currentCandidate(base);
+        if (!dialogs.confirm(this, "이 후보를 메모리 목록에서만 무시할까요? 열린 자동 차단·사건·정책은 바꾸지 않으며 프로젝트 전환/재시작 후 유지하지 않습니다.")) return;
+        checkRuntimeVersion(base);
+        boolean ignored = access.ignoreCandidate(row.id(), base.projectId(), base.revision());
+        refreshNow(); message.setText(ignored ? "후보를 런타임에서만 무시했습니다. 정책은 저장하지 않았습니다." : "후보가 이미 만료됐습니다.");
+    }
+
+    private void candidateRule() {
+        Snapshot base = beginEdit(); Candidate row = currentCandidate(base);
+        if (!safePolicyUrl(row)) throw failure("CANDIDATE_UNSAFE");
+        if (base.policy().rules().size() >= 256) throw failure("POLICY_ROW_LIMIT");
+        // Only the watcher's sealed-safe no-query URL is eligible. NEVER obtain a policy value from raw UI getters.
+        Rule draft = new Rule("rule-" + java.util.UUID.randomUUID(), "대용량 경로 차단 (검토 초안)", true, Mode.BLOCK,
+                GuardConfig.Condition.leaf(GuardConfig.Field.URL, GuardConfig.Match.REGEX,
+                        "^" + com.google.re2j.Pattern.quote(row.policyUrl()) + "(?:\\?.*)?$"));
+        RuleEditor form = new RuleEditor(draft);
+        dialogs.edit(this, "미저장 일반 BLOCK 규칙 초안 · 확인 후 저장", "규칙 저장하고 적용", form, () -> {
+            Candidate current = access.heavyCandidates().stream().filter(c -> c.id().equals(row.id())).findFirst().orElseThrow(() -> failure("CANDIDATE_STALE"));
+            if (!safePolicyUrl(current) || !current.policyUrl().equals(row.policyUrl())) throw failure("CANDIDATE_UNSAFE");
+            List<Rule> rules = new ArrayList<>(base.policy().rules()); rules.add(form.value());
+            save(base, withRules(base.policy(), rules));
+        });
+    }
+
+    private void candidateThreshold() {
+        Snapshot base = beginEdit(); Candidate row = currentCandidate(base);
+        if (!safePolicyUrl(row)) throw failure("CANDIDATE_UNSAFE");
+        JTextField mib = textField("candidates.thresholdMiB"); mib.setText("5");
+        JPanel content = new JPanel(new BorderLayout(4, 4));
+        content.add(note("candidates.thresholdNotice", "미저장 경로별 응답 한도 초안. 첫 N MiB 초과 응답은 이미 통과한 뒤 감지하며 다음 요청부터 자동 차단합니다. 0은 이 경로 크기 감지 끔, 최대 2048 MiB입니다. 일반 BLOCK 규칙이 아니라 정확한 경로의 watcher 한도를 저장합니다."), BorderLayout.NORTH);
+        content.add(labeled("이 경로 응답 MiB (정확한 바이트로 환산 가능)", mib), BorderLayout.CENTER);
+        EditorForm<Long> form = new EditorForm<>() {
+            @Override public JComponent component() { return content; }
+            @Override public Long value() {
+                try {
+                    String text = mib.getText();
+                    if (text.length() > 32 || !com.google.re2j.Pattern.matches("[0-9]+(?:\\.[0-9]+)?", text)) throw new IllegalArgumentException();
+                    long bytes = new java.math.BigDecimal(text).multiply(java.math.BigDecimal.valueOf(1_048_576)).longValueExact();
+                    if (bytes < 0 || bytes > 2_147_483_648L) throw new IllegalArgumentException();
+                    return bytes;
+                } catch (RuntimeException e) { throw new FormValidationException("0~2048 MiB 범위와 정확한 바이트 단위를 확인하세요."); }
+            }
+        };
+        dialogs.edit(this, "이 경로 응답 크기 한도 · 명시적 저장", "한도 저장하고 적용", form, () -> {
+            long bytes = form.value();
+            if (!dialogs.confirm(this, "이 경로의 응답 크기 한도를 저장할까요? 첫 초과 응답을 예방하지 못하며 이후 요청을 차단합니다. 기존 자동 차단은 별도 해제/만료해야 합니다.", "한도 저장")) return;
+            checkRuntimeVersion(base);
+            Candidate current = access.heavyCandidates().stream().filter(c -> c.id().equals(row.id())).findFirst().orElseThrow(() -> failure("CANDIDATE_STALE"));
+            if (!safePolicyUrl(current) || !current.policyUrl().equals(row.policyUrl())) throw failure("CANDIDATE_UNSAFE");
+            java.net.URI url = java.net.URI.create(row.policyUrl());
+            int port = url.getPort() >= 0 ? url.getPort() : url.getScheme().equals("https") ? 443 : 80;
+            GuardConfig.Limits old = base.policy().limits();
+            List<GuardConfig.PathByteLimit> paths = new ArrayList<>(old.heavyPathLimits());
+            GuardConfig.PathByteLimit limit = new GuardConfig.PathByteLimit(url.getScheme(), url.getHost(), port, url.getRawPath(), bytes);
+            int at = -1;
+            for (int i = 0; i < paths.size(); i++) {
+                var p = paths.get(i);
+                if (p.scheme().equals(limit.scheme()) && PolicyEngine.canonicalHost(p.host()).equals(PolicyEngine.canonicalHost(limit.host())) && p.port() == port && p.path().equals(limit.path())) at = i;
+            }
+            if (at >= 0) paths.set(at, limit); else paths.add(limit);
+            GuardConfig.Limits limits = new GuardConfig.Limits(old.globalRps(), old.perHostRps(), old.hostRps(), old.maxConcurrent(), old.maxQueued(), old.queueTimeoutMillis(), old.approvalTimeoutMillis(), old.requestTimeoutMillis(), old.perPathMaxResponseBytes(), old.autoBlockMillis(), old.circuit5xx(), old.fanout(), old.perIntentMaxRequests(), old.healthProbePassthrough(), old.healthProbePaths(), paths);
+            GuardConfig p = base.policy();
+            save(base, new GuardConfig(p.schemaVersion(), p.allowScope(), p.blockScope(), p.rules(), p.defaultMode(), limits, p.guardListenerPorts()));
+        });
+    }
+
+    private static boolean safePolicyUrl(Candidate row) {
+        if (row == null || row.policyUrl() == null || row.policyUrl().isBlank() || row.policyUrl().length() > 8192 || row.policyUrl().contains("[REDACTED]")) return false;
+        try {
+            java.net.URI uri = java.net.URI.create(row.policyUrl());
+            return Set.of("http", "https").contains(uri.getScheme()) && uri.getHost() != null && uri.getRawUserInfo() == null
+                    && uri.getRawQuery() == null && uri.getRawFragment() == null && uri.getRawPath() != null && uri.getRawPath().startsWith("/");
+        } catch (RuntimeException e) { return false; }
+    }
+    private static String utc(long millis) { try { return Instant.ofEpochMilli(millis).toString(); } catch (RuntimeException e) { return "—"; } }
+
+    private void reviewMigration() {
+        Snapshot base = beginEdit();
+        Map<String,Object> data = Map.copyOf(access.migrationView());
+        if (!Boolean.TRUE.equals(data.get("pending"))) { refreshNow(); return; }
+        String original = migrationText(data, "original"); String migrated = migrationText(data, "migrated");
+        JTextArea before = textArea("migration.original", false); before.setText(original);
+        JTextArea after = textArea("migration.migrated", false); after.setText(migrated);
+        JTextArea diff = textArea("migration.diff", false); diff.setText(migrationDiff(original, migrated));
+        JCheckBox remove = named(new JCheckBox("정확한 원본 legacy delete-string 규칙만 제거 (선택 사항, 기본 미선택)"), "migration.removeLegacy");
+        remove.addActionListener(e -> {
+            String next = remove.isSelected() ? PolicyCodec.encode(PolicyCodec.removeLegacyDeleteString(base.policy())) : migrated;
+            setDetail(after, next); setDetail(diff, migrationDiff(original, next));
+        });
+        JPanel content = new JPanel(new BorderLayout(4, 4));
+        JTabbedPane compare = new JTabbedPane(); compare.addTab("변경 비교", new JScrollPane(diff)); compare.addTab("저장된 v1 원본", new JScrollPane(before)); compare.addTab("v2 메모리 변환", new JScrollPane(after));
+        content.add(note("migration.explanation", "원본은 아직 저장소에 남아 있습니다. v2 새 감지는 OFF이며 기존 규칙은 유지합니다. 아래 제거는 별도 선택이며 원본과 정확히 같은 규칙만 제거합니다. 사용자 수정·중지·유사 이름 규칙은 그대로 둡니다. 취소/닫기는 저장하지 않습니다. 저장 후 구버전 확장은 v2를 읽지 못하므로 원본을 먼저 내보내세요."), BorderLayout.NORTH);
+        content.add(compare, BorderLayout.CENTER);
+        content.add(buttons(remove, button("migration.exportInReview", "원본 내보내기…", () -> exportOriginal(base, original))), BorderLayout.SOUTH);
+        EditorForm<GuardConfig> form = new EditorForm<>() {
+            @Override public JComponent component() { return content; }
+            @Override public GuardConfig value() { return remove.isSelected() ? PolicyCodec.removeLegacyDeleteString(base.policy()) : PolicyCodec.toV2(base.policy()); }
+        };
+        dialogs.edit(this, "v1 → v2 변환 비교 (아직 저장 안 됨)", "v2 명시적 저장", form, () -> {
+            if (!dialogs.confirm(this, "v1 원본을 v2 정책으로 교체하여 저장할까요? 기존 규칙 제거는 별도 체크한 경우만 적용합니다. 구버전 JAR는 v2 정책을 읽지 못합니다. 원본 내보내기를 먼저 권장합니다.", "v2 저장")) return;
+            save(base, form.value(), true);
+        });
+    }
+    private static String migrationText(Map<String,Object> data, String key) {
+        if (!(data.get(key) instanceof String text) || text.length() > MAX_EDITOR_CHARS) throw failure("INVALID_BOUNDED_JSON");
+        return text;
+    }
+    private static String migrationDiff(String original, String migrated) {
+        // Bounded line-oriented exact comparison, no quadratic LCS over an untrusted policy document.
+        String[] before = original.split("\\R", -1); String[] after = migrated.split("\\R", -1);
+        StringBuilder diff = new StringBuilder("- 저장 원본 / + 메모리 v2 (행 위치 비교; 원본·변환 탭에서 전체 확인)\n");
+        for (int i = 0; i < Math.max(before.length, after.length) && diff.length() < MAX_EDITOR_CHARS - 8192; i++) {
+            String a = i < before.length ? before[i] : null; String b = i < after.length ? after[i] : null;
+            if (Objects.equals(a, b)) continue;
+            if (a != null) diff.append("- ").append(a).append('\n');
+            if (b != null) diff.append("+ ").append(b).append('\n');
+        }
+        if (diff.length() >= MAX_EDITOR_CHARS - 8192) diff.append("\n[비교 표시 잘림: 원본·변환 탭 참조]");
+        return boundedText(diff.toString());
+    }
+    private void exportOriginal() { Snapshot base = beginEdit(); exportOriginal(base, migrationText(access.migrationView(), "original")); }
+    private void exportOriginal(Snapshot base, String original) {
+        checkRuntimeVersion(base);
+        if (original.isBlank()) throw failure("INVALID_BOUNDED_JSON");
+        exportDocument("v1 원본 정책 (운영자 작성 값 포함)", () -> original, base);
+    }
+
+    private void exportIncident() {
+        Snapshot base = beginEdit();
+        long from; long to;
+        try {
+            String a = incidentFrom.getText(); String b = incidentTo.getText();
+            if (!a.endsWith("Z") || !b.endsWith("Z")) throw new IllegalArgumentException();
+            Instant start = Instant.parse(a); Instant end = Instant.parse(b);
+            if (start.getNano() % 1_000_000 != 0 || end.getNano() % 1_000_000 != 0) throw new IllegalArgumentException();
+            from = start.toEpochMilli(); to = end.toEpochMilli();
+            long length = Math.subtractExact(to, from);
+            if (length <= 0 || length > 86_400_000) throw new IllegalArgumentException();
+        } catch (RuntimeException e) { throw failure("INVALID_INCIDENT_WINDOW"); }
+        exportDocument("마스킹 사건 JSON", () -> access.exportIncident(from, to), base);
+    }
+
+    private void exportDocument(String label, java.util.function.Supplier<String> source, Snapshot base) {
+        if (exportWorker != null) throw failure("EXPORT_IN_PROGRESS");
+        Path choice = dialogs.chooseExport(this, "json"); if (choice == null) return;
+        ExportTarget target;
+        try { target = inspectTarget(choice); } catch (IOException | RuntimeException e) { throw failure("EXPORT_TARGET_UNSAFE_OR_UNAVAILABLE"); }
+        if (target.existing() && !dialogs.confirm(this, label + " 파일로 기존 일반 파일을 덮어쓸까요? 소유자 전용 권한으로 저장합니다. 심볼릭 링크나 중간에 바뀐 파일은 덮어쓰지 않습니다.")) return;
+        checkRuntimeVersion(base);
+        message.setText(label + " 내보내는 중…");
+        exportWorker = new SwingWorker<>() {
+            @Override protected Void doInBackground() throws Exception {
+                if (!base.matches(access.status())) throw new IOException("STALE_EXPORT");
+                String text = source.get();
+                if (isCancelled() || !base.matches(access.status())) throw new IOException("STALE_EXPORT");
+                writeAtomic(target, text); return null;
+            }
+            @Override protected void done() {
+                exportWorker = null; if (closed) return;
+                try { get(); message.setText(label + " 내보내기 완료 · 화면 원문은 사용하지 않았습니다."); }
+                catch (Exception e) { report("EXPORT_FAILED"); }
+            }
+        };
+        exportWorker.execute();
+    }
+
+    private void configureRuleView() {
+        TableRowSorter<RowsModel<Rule>> sorter = new TableRowSorter<>(rulesModel) {
+            @Override public void setSortKeys(List<? extends RowSorter.SortKey> keys) {
+                List<RowSorter.SortKey> pinned = new ArrayList<>(); pinned.add(new RowSorter.SortKey(4, SortOrder.ASCENDING));
+                if (keys != null) for (var key : keys) if (key.getColumn() != 4) pinned.add(key);
+                super.setSortKeys(pinned);
+            }
+        };
+        sorter.setSortKeys(List.of(new RowSorter.SortKey(1, SortOrder.ASCENDING)));
+        rulesTable.setRowSorter(sorter); rulesTable.removeColumn(rulesTable.getColumnModel().getColumn(4));
+        rulesTable.setDefaultRenderer(String.class, new DefaultTableCellRenderer() {
+            { putClientProperty("html.disable", true); }
+            @Override public Component getTableCellRendererComponent(JTable table, Object value, boolean selected, boolean focus, int row, int col) {
+                super.getTableCellRendererComponent(table, value, selected, focus, row, col);
+                Rule rule = rulesModel.rows.get(table.convertRowIndexToModel(row));
+                if (!selected) setForeground(rule.mode() == Mode.EXEMPT ? new java.awt.Color(180, 65, 0) : table.getForeground());
+                setToolTipText(rule.mode() == Mode.EXEMPT ? "주의: 일반 BLOCK·ASK 무시. 범위와 가용성 제어는 유지됩니다." : null);
+                return this;
+            }
+        });
     }
 
     private JPanel approvalTab() {
@@ -339,7 +672,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             if (add) rows.add(entry); else rows.set(index, entry);
             GuardConfig old = base.policy();
             save(base, new GuardConfig(old.schemaVersion(), blocked ? old.allowScope() : rows,
-                    blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits()));
+                    blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts()));
         });
     }
 
@@ -359,7 +692,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!dialogs.confirm(this, (delete ? "선택한 대상을 삭제할까요?" : entry.enabled() ? "선택한 대상의 사용을 중지할까요?" : "선택한 대상을 사용할까요?")
                 + warning + "\n" + SAVE_NOTICE)) return;
         save(base, new GuardConfig(old.schemaVersion(), blocked ? old.allowScope() : rows,
-                blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits()));
+                blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts()));
     }
 
     private void editRule(boolean add) {
@@ -390,7 +723,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private static GuardConfig withRules(GuardConfig old, List<Rule> rows) {
-        return new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), rows, old.defaultMode(), old.limits());
+        return new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), rows, old.defaultMode(), old.limits(), old.guardListenerPorts());
     }
 
     private void editSettings() {
@@ -399,14 +732,14 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         dialogs.edit(this, "요청 제어 설정", "저장하고 적용", form, () -> {
             SettingsEditor.Value value = form.value();
             GuardConfig old = base.policy();
-            save(base, new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), old.rules(), value.defaultMode(), value.limits()));
+            save(base, new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), old.rules(), value.defaultMode(), value.limits(), value.guardListenerPorts()));
         });
     }
 
     private void editPolicyJson() {
         Snapshot base = beginEdit();
         JTextArea editor = textArea("advanced.policyJson", true);
-        editor.setText(boundedJson(base.policy()));
+        editor.setText(PolicyCodec.encode(base.policy()));
         editor.putClientProperty("inputRejected", Boolean.FALSE);
         ((AbstractDocument) editor.getDocument()).setDocumentFilter(new LengthLimit(MAX_EDITOR_CHARS,
                 () -> editor.putClientProperty("inputRejected", Boolean.TRUE)));
@@ -425,7 +758,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 return value;
             }
         };
-        dialogs.edit(this, "고급 · 전체 정책 JSON", "전체 정책 저장", form, () -> save(base, form.value()));
+        dialogs.edit(this, "고급 · 전체 정책 JSON", "전체 정책 저장", form, () -> {
+            GuardConfig value = form.value();
+            if (PolicyCodec.decode(editor.getText()).migrationPending()
+                    && !dialogs.confirm(this, "붙여넣은 v1 정책은 메모리에서 v2로 변환합니다. 새 감지 기능은 OFF, 기존 규칙은 그대로입니다. 전체 v2 정책을 명시적으로 저장할까요?")) return;
+            save(base, value);
+        });
     }
 
     private void diagnostics() {
@@ -437,7 +775,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private void openTrafficDetail() {
         if (selected(trafficTable, trafficModel) == null) throw failure("SELECT_TRAFFIC_FIRST");
         showTrafficDetail();
-        showReadOnly("요청 상세 · 마스킹된 증거", trafficDetails);
+        showReadOnly("요청 상세 · 민감정보 포함 원문 화면 (내보내기는 마스킹)", trafficDetails);
     }
 
     private void showReadOnly(String title, JComponent component) {
@@ -460,7 +798,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return base;
     }
 
-    private void save(Snapshot base, GuardConfig candidate) {
+    private void save(Snapshot base, GuardConfig candidate) { save(base, candidate, false); }
+
+    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed) {
         requireEdt();
         if (closed) throw failure("CLOSED");
         access.refreshProject();
@@ -468,13 +808,24 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!base.matches(current) || Boolean.TRUE.equals(current.get("closed"))) {
             refreshNow(); throw failure("STALE_POLICY");
         }
-        try { new PolicyEngine().validate(candidate); }
+        try { candidate = PolicyCodec.toV2(candidate); new PolicyEngine().validate(candidate); }
         catch (RuntimeException e) { throw failure("INVALID_POLICY"); }
-        boundedJson(candidate); // A saved policy must fit the strict project-load limit as a whole.
-        if (candidate.equals(base.policy())) {
+        PolicyCodec.encode(candidate); // A saved policy must fit the strict project-load limit as a whole.
+        if (candidate.equals(PolicyCodec.toV2(base.policy())) && !Boolean.TRUE.equals(migration.get("pending"))) {
             message.setText("변경한 내용이 없어 기존 설정을 유지했습니다.");
             return;
         }
+        if (Boolean.TRUE.equals(migration.get("pending")) && !migrationConfirmed
+                && !dialogs.confirm(this, "v1 변환 대기 중입니다. 이 명시적 저장은 v2 전체 정책으로 저장소를 교체합니다. 원본 내보내기·변환 비교를 먼저 권장합니다. 기존 delete-string 제거는 자동으로 하지 않습니다. 구버전 JAR는 v2를 읽지 못합니다. 계속 저장할까요?", "v2 저장")) return;
+        if (candidate.rules().stream().anyMatch(r -> r.enabled() && r.mode() == Mode.EXEMPT && !base.policy().rules().contains(r))
+                && !dialogs.confirm(this, "EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·자동 차단·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
+        if (!candidate.guardListenerPorts().isEmpty() && !candidate.guardListenerPorts().equals(base.policy().guardListenerPorts())
+                && !dialogs.confirm(this, "보호 리스너를 " + candidate.guardListenerPorts() + " 포트로 제한할까요? 다른 Burp Proxy 리스너는 범위·규칙·일시중지·자동 차단·예산·내용 기록을 우회합니다. 실제 인바운드 포트이며 목적지 서버 포트가 아닙니다.", "리스너 제한 저장")) return;
+        if (candidate.limits().healthProbePassthrough() && (!base.policy().limits().healthProbePassthrough()
+                || !candidate.limits().healthProbePaths().equals(base.policy().limits().healthProbePaths()))
+                && !dialogs.confirm(this, "GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지·회로 차단을 통과합니다. 범위·일반 규칙·다른 자동 차단·속도·예산은 유지됩니다.", "GET 통과 저장")) return;
+        access.refreshProject();
+        if (!base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
         try { access.updateConfig(candidate, base.projectId(), base.revision()); }
         catch (IllegalStateException e) { refreshNow(); throw failure("UPDATE_REJECTED"); }
         catch (IllegalArgumentException e) { throw failure("INVALID_POLICY"); }
@@ -500,7 +851,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!base.matches(access.status())) { refreshNow(); throw failure("MODE_CHANGE_REJECTED"); }
         try { access.pause(next); }
         finally { refreshNow(); } // Failed resume must not leave a misleading toggled control.
-        message.setText(next ? "일시중지했습니다. 모든 새 Proxy 요청을 차단합니다." : "보호를 재개했습니다. 대상 범위와 안전 검사는 계속 적용됩니다.");
+        message.setText(next ? "일시중지했습니다. 보호하도록 선택한 리스너의 새 요청을 차단합니다 (명시한 상태 확인 GET 제외)." : "보호를 재개했습니다. 대상 범위·자동 차단·속도·예산은 계속 적용됩니다.");
     }
 
     private void togglePassthrough() {
@@ -509,9 +860,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (next && !dialogs.confirm(this,
                 "모두 통과 (보호 끔)로 전환할까요?\n\n"
                 + "이 Burp의 모든 Proxy 요청이 허용 대상·차단 규칙·안전 검사·승인·속도 제한 없이 통과합니다. 빈 허용 목록이나 차단 대상도 적용하지 않습니다. 워커가 실행 중이면 범위 밖 요청도 나갈 수 있습니다.\n\n"
-                + "‘새 요청 차단’이나 응답 미확인 격리 상태도 전체 통과 중에는 새 요청을 막지 않습니다. 나중에 ‘보호 다시 켜기’는 이전 차단 상태가 아니라 정책 보호로 돌아갑니다 (미해결 격리는 유지).\n\n"
+                + "운영자 일시중지·자동 차단·응답 미확인 격리도 전체 통과 중에는 새 요청을 막지 않습니다. ‘보호 다시 켜기’는 이전 운영자 일시중지를 보존합니다. 자동 차단·태그 사용량·미해결 격리도 유지됩니다.\n\n"
                 + "전환 전 승인·전송 대기 요청은 자동 승인하지 않고 취소합니다. 필요한 요청만 다시 실행하세요. 이미 전송한 요청은 취소하지 않습니다.\n\n"
-                + "전체 통과 상태에서 새로 시작한 요청·응답 내용을 이 확장에서 수집·기록하지 않고 통과 횟수만 셉니다. 이전에 보호하여 전송한 요청은 실제 응답까지 추적하고 마스킹된 응답을 남길 수 있습니다. Burp 자체 history는 별개입니다.\n\n"
+                + "전체 통과 상태에서 새로 시작한 요청·응답 내용을 이 확장에서 수집·기록하지 않고 통과 횟수만 셉니다. 이전에 보호하여 전송한 요청은 실제 응답까지 추적하고 화면 사본·마스킹 증거를 남길 수 있습니다. Burp 자체 history는 별개입니다.\n\n"
                 + "현재 프로젝트의 임시 상태이며 프로젝트 전환·확장 재시작 후에는 유지하지 않습니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 기존 연결이 끝났는지 확인하세요.", "모두 통과")) return;
         if (closed) throw failure("CLOSED");
         access.refreshProject();
@@ -536,6 +887,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             if (view == null || !view.policy().equals(config)) new PolicyEngine().validate(config);
             view = new Snapshot(config, projectId(after), revision(after));
             latestStatus = Map.copyOf(after);
+            migration = Map.copyOf(access.migrationView());
+            if (!sameVersion(after, access.status())) throw failure("PROJECT_UNAVAILABLE");
+            migrationBanner.setVisible(Boolean.TRUE.equals(migration.get("pending")));
             available = true;
             allowModel.setRows(config.allowScope()); blockModel.setRows(config.blockScope());
             replaceRows(rulesTable, rulesModel, config.rules(), Rule::id);
@@ -546,13 +900,22 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             showApprovalDetail();
             updateOverview(config, after);
             updateSettings(config);
+            updateRuntime();
+            if (!sameVersion(after, access.status())) throw failure("PROJECT_UNAVAILABLE");
             version.setText("현재 Burp 프로젝트 · 설정 버전 " + view.revision());
             for (JButton action : policyActions) action.setEnabled(true);
+            updateCandidateActions();
             pause.setEnabled(true);
             passthrough.setEnabled(Boolean.TRUE.equals(after.get("passthrough")) || !Boolean.FALSE.equals(after.get("passthroughAvailable")));
             if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됐습니다. 허가받은 대상을 등록하고 보호 상태를 확인하세요.");
         } catch (RuntimeException e) {
             available = false;
+            setDetail(requestDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
+            setDetail(responseDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
+            setDetail(trafficDetail, "현재 프로젝트 확인 후 요청을 다시 선택하세요.");
+            trafficModel.setRows(List.of()); overlayModel.setRows(List.of()); candidateModel.setRows(List.of());
+            migrationBanner.setVisible(false);
+            updateCandidateActions();
             for (JButton action : policyActions) action.setEnabled(false);
             pause.setText("긴급: 새 요청 모두 차단"); pause.setEnabled(!closed);
             passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
@@ -573,7 +936,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         boolean paused = Boolean.TRUE.equals(status.get("paused"));
         boolean off = Boolean.TRUE.equals(status.get("passthrough"));
         boolean ended = Boolean.TRUE.equals(status.get("passthroughEnded"));
-        protectionState.setText(off ? "전체 통과 · 보호 꺼짐 · 새 기록 미수집" : (ended ? "전체 통과 자동 종료 · " : "") + (paused ? "새 요청 차단 중" : "보호 켜짐"));
+        protectionState.setText(off ? "전체 통과 · 보호 꺼짐 · 새 기록 미수집" : (ended ? "전체 통과 자동 종료 · " : "") + (paused ? "새 요청 차단 중 (보호 리스너)" : "보호 켜짐")
+                + (config.guardListenerPorts().isEmpty() ? "" : " · 선택 리스너만 " + config.guardListenerPorts()));
         protectionState.setIcon(off ? UIManager.getIcon("OptionPane.warningIcon") : null);
         passthroughCounter.setText("전체 통과 누적 " + count(status, "passthroughCount") + "건");
         passthrough.setText(off ? "보호 다시 켜기" : "모두 통과 (보호 끔)…");
@@ -582,21 +946,34 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 : "모든 Proxy 요청의 보호를 임시로 끕니다. 기존 대기 요청을 자동 승인하지 않습니다.");
         passthrough.getAccessibleContext().setAccessibleDescription(passthrough.getToolTipText());
         String note = Objects.toString(status.get("note"), "");
+        String guard = Objects.toString(status.get("guardState"), paused ? "PAUSED_BY_OPERATOR" : "PROTECTED");
+        Map<?,?> watcher = nested(status, "watchers");
+        Map<?,?> intents = nested(status, "intents");
+        setDetail(diagnosis, "로컬 guardState: " + UiText.guardState(guard) + " (" + guard + ") · 운영자 일시중지 보존: " + yes(status.getOrDefault("operatorPaused", status.get("paused")))
+                + "\n로컬 451은 source=cairn-proxy-guard / local=true인 확장 거절이며 대상 서버의 5xx와 다릅니다. 대상 응답이 없다는 사실만으로 장애를 단정하지 마세요."
+                + "\n응답 감지: 자동 차단 " + count(watcher, "overlays") + " / 회로 " + count(watcher, "circuits")
+                + " / 확산 에피소드 " + count(watcher, "fanoutWarnings") + " · 태그 사용 " + count(intents, "consumed") + " / 거절 " + count(intents, "rejected")
+                + "\n보호 리스너: " + (config.guardListenerPorts().isEmpty() ? "모든 Proxy 리스너" : config.guardListenerPorts() + " (다른 리스너는 검사·기록 안 함)"));
+        setDetail(warnings, Boolean.TRUE.equals(watcher.get("automaticPause")) ? "경고: 확산으로 전체 자동 차단 중입니다. 운영자 일시중지와 별개이며 ‘자동 차단’에서 확인·해제하세요."
+                : count(watcher, "fanoutWarnings") > 0 ? "경고: 경로 확산 감지 에피소드가 있습니다. 요청 발생을 검토하고 ‘자동 차단’ 및 사건을 확인하세요."
+                : count(watcher, "overlays") > 0 || count(watcher, "circuits") > 0 ? "경고: 자동 차단/회로가 열려 있습니다. 범위와 규칙을 바꿔도 자동 해제되지 않습니다."
+                : "자동 안전 경고 없음 (보관·감지 범위에 한함)");
+        Object reasons = status.get("reasonCounters");
+        setDetail(reasonCounters, "이유별 누적 (로컬 범주): " + boundedText(Json.write(reasons instanceof Map<?,?> ? reasons : Map.of())));
         if (off) {
             stateTitle.setText("전체 통과 · 보호 꺼짐 · 기록 미수집");
             stateHelp.setText("이 Burp의 모든 새 Proxy 요청을 범위·규칙·안전 검사·승인·속도 제한 없이 통과시킵니다. 전체 통과 누적 "
-                    + count(status, "passthroughCount") + "건 (대상 도착 증명 아님). 새 전체 통과 요청·응답 내용은 수집하지 않습니다. 표에는 이전 보호 기록이 남으며 기존 전송의 마스킹된 응답이 추가될 수 있습니다. Burp 자체 history는 별개입니다.\n"
-                    + "기존 승인·전송 대기는 취소되며 이미 전송한 요청은 취소하지 않습니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 전체 통과 중 시작한 연결이 끝났는지 확인하세요. 상단 ‘보호 다시 켜기’로 새 요청에 보호를 재적용하거나 ‘새 요청 모두 차단’으로 전송을 막을 수 있습니다.");
-        } else if (note.equals("PROJECT_UNAVAILABLE") || note.equals("PROJECT_POLICY_INVALID_DEFAULT_DENY_PAUSED")
-                || note.equals("POLICY_SAVE_UNCERTAIN_RELOAD_BEFORE_CONTINUING") || note.equals("PROJECT_CHANGED_DURING_SAVE")) {
+                    + count(status, "passthroughCount") + "건 (대상 도착 증명 아님). 새 전체 통과 요청·응답 내용은 수집하지 않습니다. 표에는 이전 보호 기록이 남으며 기존 전송의 화면 사본·마스킹 증거가 추가될 수 있습니다. Burp 자체 history는 별개입니다.\n"
+                    + "기존 승인·전송 대기는 취소되며 이미 전송한 요청은 취소하지 않습니다. 이전 운영자 일시중지·자동 차단·태그 사용량은 보존됩니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 전체 통과 중 시작한 연결이 끝났는지 확인하세요. 상단 ‘보호 다시 켜기’로 새 요청에 보호를 재적용하거나 ‘새 요청 모두 차단’으로 전송을 막을 수 있습니다.");
+        } else if (Set.of("POLICY_INVALID", "POLICY_SAVE_UNCERTAIN", "PROJECT_UNVERIFIED", "SHUTDOWN").contains(guard)) {
             stateTitle.setText("프로젝트 설정 확인 필요 · 새 요청 차단");
             stateHelp.setText("프로젝트 설정을 읽거나 저장한 결과를 확인할 수 없습니다. 요청 발생을 멈추고 Burp 프로젝트를 확인한 뒤 새로고침하세요. 확인 전에는 재개하지 마세요.");
         } else if (count(gate, "stalled") > 0) {
-            stateTitle.setText("응답 확인 필요 · 새 요청 차단");
+            stateTitle.setText("응답 확인 필요 · 해당 호스트 격리");
             stateHelp.setText(UiText.next("IN_FLIGHT_TIMEOUT"));
         } else if (paused) {
-            stateTitle.setText("일시중지 · 모든 새 요청 차단");
-            stateHelp.setText("모든 새 Proxy 요청을 차단합니다. 요청을 통과시키는 OFF 모드가 아닙니다. 정책을 적용하려면 ‘보호 재개’, 검사 없이 보내려면 상단 ‘모두 통과 (보호 끔)…’를 사용하세요.");
+            stateTitle.setText("일시중지 · 보호 리스너의 새 요청 차단");
+            stateHelp.setText("보호하도록 선택한 리스너의 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). 미선택 리스너까지 막는 기능이나 OFF 모드가 아닙니다. ‘보호 재개’는 운영자 일시중지만 해제하고 자동 차단·기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
         } else if (allowed == 0) {
             stateTitle.setText("허용 대상 없음 · 모든 요청 차단");
             stateHelp.setText("아직 요청을 보낼 수 없습니다. ‘허용 대상 등록’에서 허가받은 URL을 입력하고 호스트·포트·경로를 확인하세요. 등록하지 않은 대상은 계속 차단합니다.");
@@ -630,6 +1007,14 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n응답 대기 제한: " + seconds(l.requestTimeoutMillis()) + "초"
                 + "\n일치하는 규칙이 없을 때: " + UiText.mode(config.defaultMode().name())
                 + "\n호스트별 속도 예외: " + l.hostRps().size() + "개"
+                + "\n\n자동 안전 제어\n기본 경로 응답 한도: " + l.perPathMaxResponseBytes() + " bytes (0=끔)"
+                + "\n자동 차단 유지: " + seconds(l.autoBlockMillis()) + "초"
+                + "\n5xx 회로: " + (l.circuit5xx() == null ? "끔" : l.circuit5xx().threshold() + "회 / " + seconds(l.circuit5xx().windowMillis()) + "초, 열림 " + seconds(l.circuit5xx().openMillis()) + "초, GET/HEAD 1회 재확인 (최소 30초 간격)")
+                + "\n경로 확산: " + (l.fanout() == null ? "끔" : l.fanout().distinctPaths() + "경로 / " + seconds(l.fanout().windowMillis()) + "초, " + l.fanout().action())
+                + "\n(Run, Intent)별 최대 요청: " + l.perIntentMaxRequests() + " (0=끔, 태그는 비신뢰)"
+                + "\n상태 확인 GET 통과: " + (l.healthProbePassthrough() ? "사용 (부작용 주의)" : "끔") + " / 정확한 경로 " + l.healthProbePaths().size() + "개"
+                + "\n경로별 응답 한도: " + l.heavyPathLimits().size() + "개 (첫 초과 응답 예방 불가)"
+                + "\n보호 Proxy 리스너: " + (config.guardListenerPorts().isEmpty() ? "모두" : config.guardListenerPorts() + " (미선택은 검사·기록·일시중지 우회)")
                 + "\n\n보호 켜짐 상태에서만 범위·규칙·속도 제한을 적용합니다. 전체 통과 상태에서 설정을 저장해도 보호를 자동으로 켜지 않습니다.\n보호 중 응답을 확인하지 못하면 새 요청을 막으며 진행 중 요청의 자리를 임의로 비우지 않습니다.\n\n‘요청 제어 설정 변경’에서 읽기 쉬운 폼으로 수정할 수 있습니다.";
         setDetail(settingsSummary, summary);
     }
@@ -653,6 +1038,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
 
     private void resetFilters() {
         search.setText(""); methodFilter.setText(""); statusFilter.setText(""); timeFilter.setText("");
+        intentFilter.setText(""); runFilter.setText(""); stateFilter.setText("");
         projectFilter.setSelectedItem(ALL_PROJECTS); outcomeFilter.setSelectedIndex(0); bookmarksOnly.setSelected(false);
         filterTraffic();
     }
@@ -660,28 +1046,34 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private void filterTraffic() {
         if (closed || loading) return;
         String project = (String) projectFilter.getSelectedItem();
-        String outcome = switch (outcomeFilter.getSelectedIndex()) { case 1 -> "BLOCKED"; case 2 -> "FORWARDED"; case 3 -> "PENDING"; default -> ""; };
+        String outcome = switch (outcomeFilter.getSelectedIndex()) { case 1 -> "BLOCKED"; case 2 -> "FORWARDED"; case 3 -> "PENDING"; case 4 -> "exempt"; case 5 -> "probe_allowed"; case 6 -> "half_open"; default -> ""; };
         List<TrafficEntry> displayed = new ArrayList<>();
         for (TrafficEntry entry : traffic) {
             String status = entry.statusCode() == null ? "" : entry.statusCode().toString();
             if (bookmarksOnly.isSelected() && !entry.bookmarked()
                     || project != null && !project.equals(ALL_PROJECTS) && !project.equals(entry.projectId())
-                    || !outcome.isEmpty() && !(outcome.equals("PENDING") ? isWaiting(entry.disposition()) : outcome.equals(entry.disposition()))
+                    || !outcome.isEmpty() && !(outcome.equals("PENDING") ? isWaiting(entry.disposition()) : outcome.equals(entry.disposition()) || outcome.equals(entry.outcome()))
                     || !contains(entry.method(), methodFilter.getText()) || !contains(status, statusFilter.getText())
-                    || !contains(entry.timestamp(), timeFilter.getText())) continue;
+                    || !contains(entry.timestamp(), timeFilter.getText()) || !contains(screenTag(entry, "intentId"), intentFilter.getText())
+                    || !contains(screenTag(entry, "runId"), runFilter.getText())
+                    || !(contains(entry.guardState(), stateFilter.getText()) || contains(UiText.guardState(entry.guardState()), stateFilter.getText()))) continue;
             String needle = search.getText();
-            if (!needle.isEmpty() && !(contains(entry.url(), needle) || contains(entry.method(), needle) || contains(entry.timestamp(), needle)
+            if (!needle.isEmpty() && !(contains(screenUrl(entry), needle) || contains(entry.method(), needle) || contains(entry.timestamp(), needle)
                     || contains(status, needle) || contains(entry.reason(), needle) || contains(UiText.reason(entry.reason()), needle) || contains(entry.id(), needle))) continue;
             displayed.add(entry);
         }
         replaceRows(trafficTable, trafficModel, displayed, TrafficEntry::id);
         boolean filtered = !search.getText().isEmpty() || !methodFilter.getText().isEmpty() || !statusFilter.getText().isEmpty()
-                || !timeFilter.getText().isEmpty() || !ALL_PROJECTS.equals(project) || !outcome.isEmpty() || bookmarksOnly.isSelected();
+                || !timeFilter.getText().isEmpty() || !intentFilter.getText().isEmpty() || !runFilter.getText().isEmpty() || !stateFilter.getText().isEmpty()
+                || !ALL_PROJECTS.equals(project) || !outcome.isEmpty() || bookmarksOnly.isSelected();
         trafficCount.setText(displayed.size() + "개 표시 / " + traffic.size() + "개 보관" + (filtered ? " · 필터 적용 중" : ""));
         showTrafficDetail();
     }
 
     private static boolean isWaiting(String disposition) { return Set.of("PENDING", "AWAITING_APPROVAL", "QUEUED").contains(disposition); }
+    private static String trafficOutcome(TrafficEntry entry) {
+        return UiText.outcome(isWaiting(entry.disposition()) || "ERROR".equals(entry.disposition()) || entry.outcome().isEmpty() ? entry.disposition() : entry.outcome());
+    }
     private static boolean contains(String text, String literal) { return text != null && text.toLowerCase(Locale.ROOT).contains(literal.toLowerCase(Locale.ROOT)); }
     private List<TrafficEntry> selectedTraffic() {
         List<TrafficEntry> result = new ArrayList<>();
@@ -694,9 +1086,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
 
     private void showTrafficDetail() {
         TrafficEntry entry = selected(trafficTable, trafficModel);
-        setDetail(trafficDetail, entry == null ? "요청을 선택하면 결과·이유·다음 행동을 볼 수 있습니다." : boundedText(metadata(entry)));
-        setDetail(requestDetail, entry == null ? "" : boundedText(entry.request()));
-        setDetail(responseDetail, entry == null ? "" : boundedText(entry.response()));
+        setDetail(trafficDetail, entry == null ? "요청을 선택하면 결과·이유·다음 행동을 볼 수 있습니다." : boundedText(screenMetadata(entry)));
+        setDetail(requestDetail, entry == null ? "" : screenContent(entry.id(), true));
+        setDetail(responseDetail, entry == null ? "" : screenContent(entry.id(), false));
         resolve.setEnabled(entry != null && targetTab(entry.reason()) >= 0);
     }
 
@@ -704,9 +1096,35 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!area.getText().equals(text)) { area.setText(text); area.setCaretPosition(0); }
     }
 
+    private String screenUrl(TrafficEntry entry) {
+        String raw = access == null ? null : access.rawUrl(entry.id());
+        return raw == null ? "[원문 없음 · 마스킹 메타데이터] " + entry.url() : boundedText(raw);
+    }
+    private String screenTag(TrafficEntry entry, String key) {
+        Map<String,Object> info = access == null ? Map.of() : access.rawCaptureInfo(entry.id());
+        Object raw = info.get(key);
+        return raw instanceof String value ? boundedText(value) : key.equals("intentId") ? entry.intentId() : entry.runId();
+    }
+    private String screenContent(String id, boolean request) {
+        String text = request ? access.rawRequest(id) : access.rawResponse(id);
+        return RAW_NOTICE + "\n\n" + (text == null ? "[원문 생략/만료/미수집 · OFF/미선택 리스너는 새 내용을 수집하지 않음]" : boundedText(text));
+    }
+    private String screenMetadata(TrafficEntry entry) {
+        Map<String,Object> info = access.rawCaptureInfo(entry.id());
+        return screenUrl(entry) + "\n" + RAW_NOTICE + "\n"
+                + "화면 원문 보관: " + (Boolean.TRUE.equals(info.get("available")) ? "있음" : "없음/만료")
+                + " · 요청 잘림 " + yes(info.get("requestTruncated")) + " · 요청 생략 " + yes(info.get("requestOmitted"))
+                + " · 응답 잘림 " + yes(info.get("responseTruncated")) + " · 응답 생략 " + yes(info.get("responseOmitted"))
+                + "\n본문 표시: " + Objects.toString(info.get("requestBodyDisplay"), "미수집") + " / " + Objects.toString(info.get("responseBodyDisplay"), "미수집")
+                + " (지원하지 않는 문자셋/바이너리는 보관한 바이트의 HEX일 수 있음)"
+                + "\n비신뢰 Intent: " + screenTag(entry, "intentId") + " · Run: " + screenTag(entry, "runId")
+                + "\n\n마스킹된 진단 메타데이터\n" + metadata(entry);
+    }
+    private static String yes(Object value) { return value instanceof Boolean b ? b ? "예" : "아니오" : "확인 불가"; }
+
     private static String metadata(TrafficEntry entry) {
         StringBuilder result = new StringBuilder(entry.method()).append(" ").append(entry.url()).append("\n\n")
-                .append(UiText.outcome(entry.disposition())).append(" · ").append(UiText.reason(entry.reason()))
+                .append(trafficOutcome(entry)).append(" · ").append(UiText.reason(entry.reason()))
                 .append("\n\n다음 행동\n").append(UiText.next(entry.reason())).append("\n\n일치 규칙\n");
         if (entry.hits().isEmpty()) result.append("해당 없음 (대상 범위 또는 필수 검사에서 먼저 차단될 수 있습니다.)\n");
         for (var hit : entry.hits()) result.append("• ").append(hit.name()).append(" — ").append(UiText.mode(hit.mode().name())).append("\n");
@@ -714,7 +1132,13 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 .append("\n프로젝트: ").append(entry.projectId()).append("\n시각 (UTC): ").append(entry.timestamp())
                 .append("\n정책 동작: ").append(UiText.mode(entry.mode())).append("\n진단 코드: ").append(entry.reason())
                 .append("\nHTTP 상태: ").append(entry.statusCode() == null ? "없음" : entry.statusCode())
-                .append("\n정책 버전: ").append(entry.revision()).append("\n내용 잘림: ").append(entry.truncated() ? "있음" : "없음")
+                .append("\n정책 버전: ").append(entry.revision())
+                .append("\n보호 상태: ").append(UiText.guardState(entry.guardState())).append(" / ").append(entry.guardState())
+                .append("\n결과: ").append(entry.outcome()).append("\n자동 차단 ID: ").append(entry.overlayId())
+                .append("\n실제 응답 본문 bytes: ").append(entry.responseBytes())
+                .append("\n검사 경고: ").append(entry.inspectionWarnings().isEmpty() ? "없음" : String.join(", ", entry.inspectionWarnings()))
+                .append("\n헤더/본문 규칙은 검사 가능할 때만 평가합니다. 검사 불가를 평가 완료로 간주하지 않으며 불완전 조건으로 EXEMPT를 부여하지 않습니다.")
+                .append("\n내용 잘림: ").append(entry.truncated() ? "있음" : "없음")
                 .append("\n요청 본문 생략: ").append(entry.requestCapture().bodyOmitted() ? "예" : "아니오")
                 .append("\n응답 본문 생략: ").append(entry.responseCapture().bodyOmitted() ? "예" : "아니오").toString();
     }
@@ -734,9 +1158,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private static int targetTab(String reason) {
         return switch (reason) {
             case "SCOPE_NOT_ALLOWED", "SCOPE_BLOCKED" -> 1;
-            case "RULE_BLOCK", "RULE_MATCH" -> 2;
+            case "RULE_BLOCK", "RULE_MATCH", "EXEMPT" -> 2;
             case "ASK" -> 4;
-            case "DEFAULT_BLOCK", "QUEUE_TIMEOUT", "QUEUE_FULL" -> 5;
+            case "DEFAULT_BLOCK", "QUEUE_TIMEOUT", "QUEUE_FULL", "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "LISTENER_UNVERIFIED" -> 5;
+            case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY" -> 6;
             case "PAUSED", "IN_FLIGHT_TIMEOUT", "POLICY_CHANGED", "PROJECT_CHANGED" -> 0;
             default -> -1;
         };
@@ -898,13 +1323,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return value.longValue();
     }
     private static GuardConfig parsePolicy(String text) {
-        if (text == null || text.length() > MAX_EDITOR_CHARS) throw failure("INVALID_BOUNDED_JSON");
-        try {
-            GuardConfig value = Json.MAPPER.readerFor(GuardConfig.class).with(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
-                    .without(DeserializationFeature.ACCEPT_FLOAT_AS_INT).readValue(text);
-            if (value == null) throw new IllegalArgumentException();
-            return value;
-        } catch (Exception e) { throw failure("INVALID_BOUNDED_JSON"); }
+        if (text == null || text.isBlank() || text.length() > MAX_EDITOR_CHARS) throw failure("INVALID_BOUNDED_JSON");
+        try { return PolicyCodec.decode(text).config(); }
+        catch (Exception e) { throw failure("INVALID_BOUNDED_JSON"); }
     }
     private static String boundedJson(Object value) {
         String text = Json.write(value);
@@ -972,6 +1393,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
     private static JTable table(String name, AbstractTableModel model, boolean multi) {
         JTable table = named(new JTable(model), name); table.setAutoCreateRowSorter(true);
+        if (Set.of("traffic.table", "overlays.table", "candidates.table").contains(name)) table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setSelectionMode(multi ? ListSelectionModel.MULTIPLE_INTERVAL_SELECTION : ListSelectionModel.SINGLE_SELECTION);
         DefaultTableCellRenderer plain = new DefaultTableCellRenderer(); plain.putClientProperty("html.disable", Boolean.TRUE);
         table.setDefaultRenderer(String.class, plain); table.setFillsViewportHeight(true); table.getTableHeader().setReorderingAllowed(false);
@@ -979,10 +1401,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         table.addPropertyChangeListener("font", e -> table.setRowHeight(Math.max(24, table.getFontMetrics(table.getFont()).getHeight() + 10)));
         table.setRowHeight(Math.max(24, table.getFontMetrics(table.getFont()).getHeight() + 10));
         int[] widths = name.startsWith("scope.") ? new int[]{80, 220, 180, 90, 420}
-                : name.equals("rules.table") ? new int[]{80, 250, 130, 520}
+                : name.equals("rules.table") ? new int[]{80, 250, 220, 520}
                 : name.equals("approval.table") ? new int[]{90, 430, 280, 110}
-                : new int[]{60, 180, 90, 330, 110, 70, 260};
-        for (int col = 0; col < table.getColumnCount(); col++) table.getColumnModel().getColumn(col).setPreferredWidth(widths[col]);
+                : name.equals("overlays.table") ? new int[]{150, 220, 300, 210, 210, 140, 320}
+                : name.equals("candidates.table") ? new int[]{220, 340, 150, 170, 100, 100, 220, 220}
+                : new int[]{60, 190, 100, 460, 160, 90, 340, 180, 180, 180, 260};
+        for (int col = 0; col < table.getColumnCount(); col++) table.getColumnModel().getColumn(col).setPreferredWidth(col < widths.length ? widths[col] : 180);
         return table;
     }
     /** Local navigation only: Enter/double-click opens the same guarded editor/review as its button. */
@@ -1069,6 +1493,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         for (JButton action : policyActions) action.setEnabled(false);
         pause.setEnabled(false); passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
         protectionState.setText("확장 종료 · 보호 상태 확인 불가");
+        setDetail(requestDetail, ""); setDetail(responseDetail, ""); setDetail(trafficDetail, "");
+        trafficModel.setRows(List.of()); traffic = List.of();
+        overlayModel.setRows(List.of()); candidateModel.setRows(List.of()); migration = Map.of();
+        updateCandidateActions();
         dialogs.closeEditors();
         version.setText("확장 종료 · 설정 변경과 승인 불가");
     }
@@ -1098,8 +1526,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             return accepted[0];
         }
         @Override public Path chooseExport(Component parent, String extension) {
-            JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("마스킹된 요청 기록 내보내기");
-            chooser.setFileFilter(new FileNameExtensionFilter("마스킹된 " + extension.toUpperCase(Locale.ROOT), extension));
+            JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("Cairn Guard · 로컬 파일 내보내기");
+            chooser.setFileFilter(new FileNameExtensionFilter(extension.toUpperCase(Locale.ROOT), extension));
             return chooser.showSaveDialog(parent) == JFileChooser.APPROVE_OPTION ? chooser.getSelectedFile().toPath() : null;
         }
         @Override public void error(Component parent, String message) {

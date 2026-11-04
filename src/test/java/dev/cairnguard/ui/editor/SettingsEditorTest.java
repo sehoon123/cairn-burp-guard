@@ -170,14 +170,16 @@ class SettingsEditorTest {
             SettingsEditor.Value result = editor.value();
             assertFalse(hosts.isEditing());
             assertEquals(Mode.ASK, result.defaultMode());
-            assertEquals(new Limits(7, 4, Map.of("api.example.test", 5), 3, 0, 2_001, 3_009, 4_999), result.limits());
+            Limits old = initial.limits();
+            assertEquals(new Limits(7, 4, Map.of("api.example.test", 5), 3, 0, 2_001, 3_009, 4_999,
+                    old.perPathMaxResponseBytes(), old.autoBlockMillis(), old.circuit5xx(), old.fanout(), old.perIntentMaxRequests(), old.healthProbePassthrough(), old.healthProbePaths(), old.heavyPathLimits()), result.limits());
             assertEquals(GuardConfig.defaults(), initial);
             assertThrows(UnsupportedOperationException.class, () -> result.limits().hostRps().put("other.example.test", 1));
             return null;
         });
     }
 
-    @ParameterizedTest @EnumSource(Mode.class)
+    @ParameterizedTest @EnumSource(value = Mode.class, names = "EXEMPT", mode = EnumSource.Mode.EXCLUDE)
     void everyExistingDefaultModeRoundTripsAndAnEmptySelectionFails(Mode mode) throws Exception {
         edt(() -> {
             GuardConfig defaults = GuardConfig.defaults();

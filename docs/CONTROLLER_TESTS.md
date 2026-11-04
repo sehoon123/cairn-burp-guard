@@ -1,272 +1,241 @@
-# Controller integration and owned-loopback verification
+# Controller, native-boundary mocks and owned-loopback verification
 
-## Verification boundary
+## Current source and evidence boundary
 
-This document records the original isolated controller task and its repeat runs, not the current full-project status. Later public development and installed-Burp experiments are separately documented in [VERIFICATION.md](VERIFICATION.md) and [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
+These tests invoke real `GuardController`, `PolicyEngine`, `RateGate`,
+`ApprovalQueue`, `ResponseWatcher`, `IntentBudget`, `ListenerRegistry` and
+`EvidenceStore` dependencies. They do not substitute a policy-only fake controller.
+They are **not installed-Burp acceptance, release or independent implementation
+approval**. Current integration records are in [VERIFICATION.md](VERIFICATION.md);
+old native results remain historical in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
 
-These tests invoke the **actual `GuardController`, `PolicyEngine`, `RateGate`,
-`ApprovalQueue`, and `EvidenceStore`**. They do not substitute a policy-only fake
-for the controller.
+`ProxyLoopbackTest` is a controlled forwarding harness, **not an HTTP proxy,
+Montoya runtime, real-target test or forced-network-routing proof**. Its actual
+socket is always pinned to its owned numeric-loopback fixture. Controller and
+watcher themselves perform no outbound HTTP, automatic saves, health polling or
+authentication actions. No installed Burp/user project/display/license/system
+settings are required by these tests.
 
-**`ProxyLoopbackTest` is a controlled forwarding harness, NOT a native Burp test,
-an HTTP proxy implementation, a real-target test, or proof of forced network
-routing.** No installed Burp instance/project, external target, authentication
-service, TLS trust, desktop/system setting, proxy environment, or remote repository
-is used or changed. Development performed no commit/tag/push/release actions, in
-accordance with the project/task rules.
+## Recorded runs — do not add overlapping slices
 
-Owned files:
+| Snapshot / scope | Result / boundary |
+|---|---|
+| Model/policy/attribution slice |278 synthetic cases, including23 pentest-routing cases; not full integration |
+| Controller integration slice |685 cases /19 suites with real dependencies, including41 new controller v2,30 listener,6 watcher remasking/URI/IPv6 and2 evidence warning/masking cases; not adapter/UI/native acceptance |
+| Native adapter + owned-loopback integration snapshot |Full headless1220, including225 adapter+owned-loopback cases; mocks/sockets, not native Burp |
+| Main clean locked153-file revision1 |Full Java1220 PASS / focused Python25 PASS |
+| Main revision2 |One BODY-help correction plus regression, full Java1221 PASS |
+| Main revision3 / isolated Swing |Clean Java1221 PASS. Real Xvfb+owned-WM Swing27 PASS at scale1 and27 at scale2, plus27 scale2-repeat; test-only stable-layout/click waits retain focus/scroll assertions. Not native or broad platform certification |
+| Current Python / incident compatibility |Native harness27 + local-template18 PASS (actual upstream SKIP). Actual network-free217730… watcher output passed offline incident validation with nonempty top lists; not a native human export |
 
-- `src/test/java/dev/cairnguard/runtime/GuardControllerTest.java`
-- `src/test/java/dev/cairnguard/runtime/ProxyLoopbackTest.java`
-- this document
+These are supplied integration records, **not runs made by this documentation
+task**. Slices overlap; adding685+225+1221 would double-count. Headless `test`
+excludes desktop tags. No native v2 phase was run: the fully isolated disposable
+Burp attempt stopped at the first EULA, without agreement/extension loading.
+The revision2/3 candidate reproducibility and requested final-audit gaps are
+explicit in [VERIFICATION.md](VERIFICATION.md).
 
-The only production changes for this task are targeted regression fixes in
-`src/main/java/dev/cairnguard/runtime/GuardController.java`, described below. No
-shared model, policy, gate, approval, evidence, UI, or adapter file was changed.
-The public `Prepared` / `Admission` / prepare-authorize-commit APIs are unchanged.
-
-## Run and results
-
-From the project root, using the existing Java 21 Gradle wrapper/dependency locks:
+For a future **isolated frozen snapshot**, commands include:
 
 ```sh
-./gradlew test \
-  --tests 'dev.cairnguard.runtime.GuardControllerTest' \
-  --tests 'dev.cairnguard.runtime.ProxyLoopbackTest' \
-  --offline --no-daemon --rerun-tasks
+./gradlew --offline --no-daemon --max-workers=2 clean test
+# Focused investigations, not replacements for the full clean suite:
+./gradlew --offline --no-daemon test \
+  --tests '*GuardController*Test' --tests '*ListenerRegistryTest' \
+  --tests '*ResponseWatcher*Test' --tests '*IntentBudgetTest' \
+  --tests '*ProxyLoopbackTest' --tests 'dev.cairnguard.burp.*'
+python3 -m unittest discover -s scripts -p test_native_burp_smoke.py
 ```
 
-Verified on **2026-11-03**:
+Reports under `build/test-results/` / `build/reports/` are local build outputs, not
+new publishable source/evidence. Concurrent filtered reports can replace earlier
+outputs; retain the frozen manifest/result association privately, not raw logs in
+Git. Commands here do not authorize shared builds/native execution.
 
-| Suite | Cases | Result |
-| --- | ---: | --- |
-| `GuardControllerTest` | 72 | Passed |
-| `ProxyLoopbackTest` | 27 | Passed |
-| Owned total | **99** | **Five consecutive forced-rebuild repeat runs passed**, no failures/errors/skips |
+## Controller coverage and current contracts
 
-A subsequent full `./gradlew test --offline --no-daemon --rerun-tasks` run saw
-521 cases and two failures in concurrently developed `BurpLifecycleTest` cases
-(`failedSuiteTabRegistrationRollsBackPanelControllerAndUnloadingRegistration` and
-`unloadReentrantDuringSuiteTabRegistrationCannotLeaveLateRegistrationOrTimer`).
-The 99 owned cases passed in that run. The adapter owner was notified; these
-results must not be presented as a passing full suite until separately rerun.
+### Project validity, strict migration and CAS
 
-**Subsequent integration update:** those concurrent failures were resolved, and the current full suite passes **584 cases with zero failures/errors/skips**. A pause-category expectation now checks the preserved `PAUSED` label rather than its former generic evidence fallback. See the current verification document; the historical99-case repeat result above remains a distinct observation.
+`GuardControllerTest` / `GuardControllerV2Test` use in-memory `ProjectAccess` with
+fabricated projects and hooks for switch/load/save failures. They cover:
 
-JUnit XML is generated under `build/test-results/test/` and the HTML report under
-`build/reports/tests/test/`. These build outputs are not new source/evidence
-artifacts to publish. The documented owned repeat result is independent of any
-later concurrent worker's filtered Gradle run overwriting those outputs.
+- Empty/blank storage starts new schema2 empty-scope defaults without implicit
+  save. Valid same-project refresh retains baseline unless recovery is required.
+- `PolicyCodec` rejects unsupported schema, missing/null/unknown/duplicate keys,
+  wrong/fractional primitive types, oversized documents, trailing tokens and
+  invalid disabled rules. Failure is typed policy-invalid/default-deny, not
+  partially applied config or raw exception text.
+- Strict frozen-v1 decoding gives **memory-only v2**, new detectors OFF, original
+  rules/limits retained. `migrationView` original/migrated comparison and explicit
+  CAS save only; no automatic legacy delete-string removal or v1 rewrite.
+- Successful saves emit schema2; original project/revision CAS rejects stale or
+  competing drafts. Uncertain/partial save latches `POLICY_SAVE_UNCERTAIN`; Resume
+  cannot revive an older permissive cached policy. Verified reload/save repairs
+  validity, then explicit resume is still required for the recovery/pause latch.
+- Observed project switch/unavailability invalidates pending/prepared/admitted
+  work even before UI refresh. A→B→A cannot revive old generations. Native
+  persistence/project methods are separate calls, so fixtures do not establish
+  Burp's atomic switch semantics or exclude an unobserved native ABA.
 
-## Synthetic controller coverage
+### Scope, optional inspection and EXEMPT
 
-`GuardControllerTest` performs no socket or filesystem persistence I/O. Its
-in-memory `ProjectAccess` has separate fabricated project documents and one-shot
-hooks for a switch/failure during load or save. Native completions are explicitly
-simulated by the test owner; the controller is never assumed to complete traffic
-on its own.
+- Actual service host/scheme/port and untouched path establish scope, **not Host**
+  or possibly header-derived request.url authority. An allowed actual destination
+  with fuzzed Host passes; a spoofed Host cannot allow another actual destination.
+- ALL-path `/c/;/main.do`, `/c/%2e/main.do` and nested/encoded/matrix/separator/
+  malformed-percent variants survive unchanged. Internal routing aliases do not
+  replace the forwarded target or impose an unsolicited sanitizer. Restricted
+  scope/explicit blockScope and mandatory routing limits remain fail-closed.
+- Unsupported charset/body/encoding, binary/multipart, malformed JSON/percent and
+  optional capture bounds are **unavailable-inspection warnings**, not automatic
+  denials for otherwise in-scope traffic. Explicit field-authored BLOCK rules
+  still match available METHOD/PATH/QUERY/HEADER/BODY/JSON/FORM. Known positive
+  ordinary OR/ANY branches remain usable; incomplete conditions cannot grant EXEMPT.
+- EXEMPT wins ordinary BLOCK/ASK only; actual scope, lifecycle/pause, automatic
+  heavy/circuit/fanout, budget/rate/capacity/shutdown still apply.
+- New defaults contain DELETE-method only. Older tests' broad delete-string and
+  hard malformed/unsupported-body assumptions were updated, **not retained as v2
+  acceptance requirements**; explicit operator rule coverage remains.
 
-Coverage includes:
+### Admission, accounting and lifecycle
 
-- Missing/blank project config starts with the empty allowlist and performs no
-  implicit save. Valid project config loads without rewriting it; a normal
-  same-project refresh preserves the revision and editor baseline.
-- Invalid, oversized, duplicate-key, unknown-property, trailing-token,
-  unsupported-schema, and invalid-disabled-rule documents fail to default-deny
-  **paused**, not to a partially applied configuration. Null/missing primitive
-  ports/flags and fractional ports/RPS are regression cases.
-- Project-local successful save/reload, validation-before-save, stale project and
-  revision drafts, and two simultaneous drafts from one baseline. Exactly one
-  concurrent draft can save; the other cannot overwrite the winner.
-- Load failure, project lookup failure, uncertain partial save, failure before
-  writing, and project switch/unavailability during load/save. Raw persistence
-  exception text is not copied to public error/status strings.
-- A prepared request is invalidated on policy/project changes, even before UI
-  refresh. Switching away and back does not revive an old revision. An invalid
-  new project's config never inherits the previous permissive config.
-- Pending human approvals, approved-then-rate-queued requests, queued ordinary
-  requests, and already-authorized/pre-commit requests are invalidated by each
-  of policy update, unrefreshed project switch, refreshed project switch, pause,
-  and close. Old approval IDs are never reusable.
-- ASK waits have reference-only pending metadata and hold **no rate/concurrency
-  permit**. Denial, expiration, interruption, late clicks, pause/resume and
-  shutdown produce no release. Interrupt status is preserved and waits clean up.
-- Queue full/timeout denial, latched in-flight timeout, no automatic permit
-  recycling on longer timeouts/config/pause/close, and late completion-owned
-  release. Successful final commit is tested separately from authorization.
-- Actual evidence transitions, missing-response distinction, local versus
-  nonlocal 451, redacted JSON/HAR provenance, bookmark/clear behavior, cumulative
-  counters, and late responses after evidence was cleared.
-- Header/cookie/Authorization/Proxy-Authorization/API-key and body inputs remain
-  unchanged through approval, release, capture and export. Credentials are only
-  **fabricated fixtures**. This tests inspection/evidence non-mutation, not
-  native request identity or authentication/session management.
+- ASK waits have only opaque references; no rate/concurrency permit before the
+  human decision. Denial/expiry/interruption/stale click/project/policy/pause/OFF/
+  shutdown cancels, including provisional-approved or approved-but-rate-queued work.
+- Prepare/authorize are not sends. `commitDetailed` rechecks under mutation lock;
+  only instance-owned one-shot Prepared can claim handoff. Forged/replayed
+  projections cannot send/spend/mutate another evidence row.
+- Watcher claims precede intent consume. Exact limit20 denies21st; other(run,intent)
+  pairs remain separate. Concurrent final commits have exactly the bounded winners.
+  Invalid/duplicate/incomplete tags reject only with budgets enabled; absent intent
+  is unbudgeted and labels are untrusted. Disabling budgets preserves debt.
+- No new quota is spent for local continuation factory/correlation/final watcher/
+  lifecycle/budget failure. Conclusively-unsent logical tickets cancel; uncertain
+  native dispatch is never refunded/recycled. EXEMPT/health/half-open handoffs count.
+- Operator pause is retained across OFF/ON. OFF cancels old waits without approval,
+  bypasses new scope/rules/availability/rate/content capture and counts handoffs only.
+  Successful save does not silently restore protection; project uncertainty/restart
+  ends OFF. Old protected native permits/correlation remain until actual response.
+- Data-free listener registry checks before capture;4096 entries/30seconds,
+  generation-bound single consumption. Unknown/duplicate(even identical)/expired/
+  stale/capacity/invalid interface is UNKNOWN, not unselected bypass. No destination
+  fallback. Known unselected has separate count and no new capture/permit/budget.
 
-### Pipeline and permit ownership under test
+### Response watcher and evidence privacy
 
-```text
-prepare(inspection copy) -> PENDING
-  hard BLOCK -> authorize denies -> BLOCKED, local status 451
-  ASK -> AWAITING_APPROVAL (no rate permit) -> one-shot human result
-  allowed/current -> QUEUED -> authorize returns caller-owned permit
-  final current check -> commit -> FORWARDED / NATIVE_RELEASED
-  observed response -> evidence.response
-  completion owner -> permit.close
-```
+- Actual response body-length scalar is independent of inspection copy size,
+  Content-Length, optional slots and incomplete flags. Unknown remains unknown in
+  evidence, not fabricated wire bytes. Large/omitted responses can still trigger
+  size gates from independently observed scalars.
+- First heavy response is intact, subsequent route/alias attempts meet TTL overlay;
+  actual-service circuit opens after5xx threshold, expiry is half-open eligibility,
+  GET/HEAD single claim and30second cadence are enforced. Failed/unknown/missing
+  probe reopens, local cancel does not refund cadence. Logical deadlines never
+  close true native permits. Health GET bypasses only operator pause/circuit and
+  never heals it; no query/body/ambiguous authored route.
+- Fanout BLOCK/PAUSE/WARN, watcher capacity fences without evicting active
+  enforcement, explicit release/ignore and retained-window incident/candidate
+  statistics. Clearing diagnostics does not clear active overlays/probe debt.
+- `RawTrafficStoreTest`, `EvidenceStoreWatcherMaskingTest` and
+  `ResponseWatcherRemaskingTest`: human unmasked cache separate/bounded/project-bound,
+  UTF8/HEX and truncation/omission; no raw in masked JSON/HAR/incident/logs.
+  Response-only grants remask earlier watcher values/pending flights under the
+  display/export lock. Changed policyUrl becomes non-actionable; old endpoints/
+  aliases cannot revive a secret. No raw fallback or policy harvesting.
+- Sealed immutable TrafficEntry covers v2 fields/tampering; stale retained export
+  selections refresh to latest masking. Precise denial categories/typed causes,
+  local vs upstream451, missing response, actual size/warnings and cumulative /
+  retained/orphan counters are distinct from wire/delivery claims.
 
-Authorization returning a permit does **not** mean a request was dispatched.
-`QUEUED` can remain the evidence disposition after admission and before commit.
-`commit` must be immediately adjacent to the adapter's actual continuation;
-authorization is not a substitute for that final check. A failed pre-dispatch
-commit permits the caller to close its conclusively-unsent permit.
+## Owned raw-loopback harness design
 
-`controller.response()` only captures evidence. It does not own or close a permit.
-The caller closes it after a simulated/observed actual completion, or after
-conclusively ruling out dispatch. Pause/config/project changes, evidence clear,
-ordinary timeouts and controller close never release an already-running permit.
-No test treats a timer or lost response as proof of completion.
+Each `ProxyLoopbackTest` harness owns a bounded **raw ServerSocket** on
+127.0.0.1 / OS-assigned ephemeral port (byte-address construction, no DNS/wildcard).
+It no longer uses generic URI/JDK HttpServer request parsing as a hidden path
+sanitizer. The bounded request-line parser observes exact origin target spelling,
+ordered captured headers and body, including malformed-percent pentest inputs.
+It is a synthetic fixture parser, **not a general production HTTP proxy**.
 
-A local block decision sets status 451 but does not invent a captured response;
-`localResponse()` records that separately. An upstream callback with HTTP 403 or
-451 remains `FORWARDED`, not `BLOCKED`. JSON/HAR provenance distinguishes
-`LOCAL_BLOCK` from `RESPONSE_CALLBACK`. `FORWARDED` alone remains
-`NATIVE_RELEASE_NOT_PROVEN_DELIVERY`.
+A separate original fixture owns method/target/ordered headers/body; controller
+gets only immutable RequestData. After `prepare -> authorize -> commitDetailed`,
+transport connects to the **independently pinned owned address/port**, never an
+untrusted URL, Host, redirect, proxy environment or DNS result. No retries,
+fallback-to-direct or external destinations are supported.
 
-Evidence has its own fixed reason vocabulary. Newer runtime categories not in
-that vocabulary (for example `PAUSED`) are conservatively represented there as
-`OUTCOME_RECORDED`; the categorical admission reason and `BLOCKED` disposition
-remain distinct. Tests do not confuse that fallback with a native/target error
-or manufacture an unsupported exact evidence reason.
+The fixture parser bounds lines/headers/body, uses one Content-Length and no
+Transfer-Encoding. Reply reader bounds64 headers/16KiB header text/64KiB body.
+Connect/read deadlines are2/4seconds and latches/worker waits finite. Payloads are
+synthetic and request fixtures bounded to1MiB.6MiB/oversized capture behavior lives
+in separate native mocks/Python fixtures, not this small response reader.
 
-## Owned-loopback harness design
+### Non-arrival and fidelity assertions
 
-Each harness instance owns a fresh JDK `HttpServer` bound to **127.0.0.1 on an
-OS-assigned ephemeral port**, with no wildcard bind. The numeric address is
-constructed from bytes, without DNS. Only this harness's raw-socket transport
-opens a connection; `GuardController` itself still performs no network I/O.
+- Explicit authored dangerous METHOD/PATH/QUERY/HEADER/BODY/JSON/FORM rules,
+  empty scope/blockScope, denied ASK and adjacent stale commit produce **zero
+  socket opens / zero additional owned hits**. An earlier admitted held request
+  remains one real hit; tests do not misreport that as zero total traffic.
+- Allowed all-path spellings, fuzzed Host and unsupported optional content reach
+  the pinned fixture with exact request target/header values/body bytes. This is
+  no longer an automatic unsupported-body/malformed-path block test.
+- ASK opens no socket until the one-shot human simulation allows it. One allowed
+  original fixture produces exactly one request.
+- Allowed Authorization/Cookie/Proxy-Authorization/API-key, ordinary duplicates,
+  JSON/form/text bytes and synthetic response/Set-Cookie are compared unchanged;
+  masked evidence is separate. Raw fixture equality is **not Montoya/native wire
+  identity**, HTTP2 framing, TLS bytes or another extension's mutation proof.
+- Six workers send12 safe requests through one shared controller at global/host5RPS
+  and concurrency2. First two handlers hold responses; two permits/four queued,
+  no third admission before completion. Max active owned handlers2, all12 complete,
+  active/queue end zero. Gaps use the package-private monotonic
+  `Permit.admittedAtNanos()` observation (>=200000000ns), not rescheduled caller or
+  server-arrival timestamps. Cross-host aliases/RR are separate RateGate tests.
+- A held real reply beyond deadline quarantines its host without reusing a permit;
+  only actual completion-owned close restores capacity. Other-host free-slot/global
+  stalled-slots behavior is tested separately in RateGate, not inferred from one
+  loopback host.
 
-The transport uses a separate original synthetic request fixture for its method,
-request target, ordered headers and body. The controller receives only the
-immutable `RequestData` inspection copy. After `prepare -> authorize -> commit`,
-the fixture is serialized to our pinned numeric address and port. The destination
-is **never derived from an untrusted URL, redirect, DNS result or proxy setting**;
-an independent endpoint assertion rejects mismatches. There is no redirect,
-retry, fallback-to-direct or outside destination support.
+Permits remain through full response read **and** a conservative test-only owned
+handler-completion rendezvous, preventing trailing cleanup from inflating fixture
+concurrency. `controller.response()` observes/captures but never owns permit close.
+A post-commit I/O error deliberately keeps its uncertain permit. Teardown closes
+owned sockets, releases latches, joins owned acceptor/handlers/callers with finite
+deadlines, then closes remaining synthetic permits only after owned work quiesces.
+No installed watcher/service/background process is left behind.
 
-The reply reader is intentionally only a bounded fixture reader: HTTP/1.1 with a
-single Content-Length, maximum 64 response headers / 16 KiB header text / 64 KiB
-body. It is not a general HTTP proxy/parser. Connect/read deadlines are 2/4
-seconds; response-hold and future waits are finite. All fixture request bodies
-are small and synthetic.
+## Native adapter tests are a separate synthetic layer
 
-### Non-arrival assertions
+`ProxyGuardHandlerTest`, `NativeCaptureTest`, `ProxyV2Test`, `ListenerObserverTest`,
+`BurpLifecycleTest` use pinned Montoya mocks and real component dependencies.
+They cover original request/response/annotation identity, actual-service capture,
+optional flags/actual bytes, final exact reasons/typed451, local factory no-spend,
+message ID collision, callback/correlation bounds and reentrant unload/registration.
+Observer is registered before HttpHandler and deregistered on error/close, with
+late handles cleaned. `javap` confirms API presence only.
 
-- Dangerous DELETE methods, literal/mixed-case/multiply-percent-encoded URL
-  actions, JSON/Unicode JSON/form/text body actions: **zero upstream hits and
-  zero socket opens** for every denied fixture.
-- Malformed JSON/percent encoding, unsupported binary/multipart/content encoding
-  and WebSocket upgrades remain blocked even with MONITOR default.
-- Empty allowlist, explicit block scope and a denied human approval also have
-  zero hits. ASK performs no connection before the human decision; approving
-  one safe fixture results in exactly one owned-server request.
-- A revision change between authorization and final commit opens no socket.
-- Policy/pause/close while a second request is queued adds **zero additional
-  hits**. The earlier already-running request still has its permit and is allowed
-  to complete; its existing one hit must not be misreported as zero total hits.
-- An unanswered request beyond its budget quarantines all new admission without
-  opening another socket, even with spare concurrency. Its permit remains active
-  until the held, real owned-server reply is read. A late completion restores
-  admission; no timeout/reset/retry releases it.
+**Neither mocks nor listener-registry tests prove the real product's observer /
+HttpHandler message IDs are shared or ordered as assumed**, nor actual two-listener
+no-capture, native response correlation or final exact-JAR behavior. Future native
+acceptance must record those facts rather than infer them from these suites.
 
-### Allowed fidelity and shared budget assertions
+## Historical controller runs (2026-11-03)
 
-The owned server observes the allowed method, exact request target, repeated
-ordinary header values, Cookie/Authorization/Proxy-Authorization/API-key values,
-and **identical body bytes** for JSON, URL-encoded form and UTF-8 text fixtures.
-The harness also receives the original synthetic response body and Set-Cookie
-value; evidence copies are masked separately. JDK `HttpServer` normalizes header
-names, so these assertions are about **observed values/duplicates and body
-bytes**, not preservation of header-name casing, wire ordering, HTTP/2 framing,
-TLS bytes or native Burp object identity.
+The original controller task passed72 controller +27 loopback =99 cases in five
+forced-rebuild repeats. A concurrent full521 run had two lifecycle failures while
+those99 passed; later integration fixed them and full584 passed. These are
+**historical** results of the earlier controller/global quarantine/default-body
+semantics, not current v2 full-suite counts. Subsequent PAUSED/reason fixes preserved
+exact finite categories instead of the old generic evidence fallback.
 
-One test starts **six workers together**, each sending two allowed requests
-through **one controller** with global/per-host **5 RPS** and concurrency **2**.
-The first two owned handlers deliberately withhold their responses. While both
-are unanswered, the gate has two active permits and four queued workers, with
-no third admission or completion. After releasing responses:
+Original fixes included strict primitive policy decoding, oversized whitespace
+bounds, uncertain-save recovery latching and categorical project lookup errors.
+Production now routes strict storage through PolicyCodec and typed lifecycle.
+Those fixes never justified resetting true permits or authentication state.
 
-- all 12 requests/replies complete;
-- the maximum active owned-handler count is exactly 2;
-- all successive gate admission timestamps are at least **200,000,000 ns** apart;
-- active and queued gauges return to zero.
+## Remaining limits
 
-Strict gaps use `Permit.admittedAtNanos()` (the package-private monotonic
-observation already provided by RateGate), **not** a timestamp after thread
-rescheduling, socket writes, or server receipt. Both budgets are 5 on the same
-127.0.0.1 host; cross-host/canonical-alias gate coverage lives separately in
-`RateGateTest` and [RATE_APPROVAL.md](RATE_APPROVAL.md).
-
-The harness keeps each permit through the complete response read **and** a
-conservative test-only rendezvous confirming that its owned server handler has
-finished. Thus the observed server concurrency cannot be distorted by a race
-between native reply receipt and trailing handler cleanup. This is stronger
-local fixture coordination, not an assumed capability of Burp/native callbacks.
-A post-commit I/O failure intentionally retains its uncertain permit; teardown
-releases any remaining permit only after closing owned sockets and terminating
-all owned transport/handler work.
-
-Executors are joined with finite deadlines, response latches are released in
-cleanup, the controller is closed before cancelling waits, open sockets are
-closed, and `HttpServer.stop(0)` is called. No watcher/service is installed.
-
-## Reproduced controller fixes and recovery behavior
-
-Tests were added and run **before** the controller changes. Reproductions showed:
-
-1. The generic persisted JSON read could coerce a null/missing scope port to
-   `0` (**any port**) or truncate a fractional port/RPS. Oversized whitespace also
-   skipped the prior JSON size check. The controller now uses an immutable reader
-   inheriting the shared duplicate/unknown/trailing/depth protections, enables
-   `FAIL_ON_NULL_FOR_PRIMITIVES`, disables `ACCEPT_FLOAT_AS_INT`, and checks the
-   2 Mi-character document bound **before** accepting blank input. It does not
-   mutate the shared mapper or change the JSON/model API.
-2. A persistence save could write a stricter policy and then throw while the
-   controller kept its older permissive cached policy. A generic Resume could
-   unpause that cache, and normal same-project refresh skipped reloading it.
-   The controller now latches **recovery required** on failed/ambiguous load,
-   unavailable project, uncertain save, or project lookup/switch after saving.
-   Resume throws the fixed category `PROJECT_POLICY_RELOAD_REQUIRED` while that
-   latch remains set. Same-project refresh retries when recovering. A successful
-   validated reload (including a new revision) or an explicit validated human
-   policy save clears the latch; neither automatically unpauses. The human can
-   then explicitly resume. Failed reloads remain default-deny and paused.
-3. Native project lookup exceptions during pre/post-save checks previously
-   escaped unchanged. Safe lookup now returns a mismatch categorically:
-   `STALE_POLICY_DRAFT` before saving, or `PROJECT_CHANGED` with a recovery-required
-   pause after saving. No raw native exception text/cause is exposed there.
-
-These changes do not reset a gate, close outstanding permits, change
-credentials, or start/retry traffic. Recovery of **policy persistence** is not
-recovery of uncertain native in-flight operations; see
-[RATE_APPROVAL.md](RATE_APPROVAL.md) for quarantine and quiescence obligations.
-
-## Remaining independent verification
-
-- Native Montoya capture/continuation/spoof/drop, response correlation, tool
-  filtering, same request/response/annotation identity and extension lifecycle
-  require the adapter suite and separate manual Burp smoke. This harness neither
-  invokes the native adapter nor claims those checks passed.
-- In-memory project fixtures establish the controller's observed project/revision
-  checks, not atomicity of Burp's project persistence/switch implementation.
-  `ProjectAccess.current/load/save` are separate operations; an unobserved native
-  switch/ABA at that boundary cannot be ruled out by this fixture.
-- No actual HTTP proxy listener, browser/CAIRN execution, proxy environment
-  inheritance, HTTPS/CA validation, CONNECT tunnel, HTTP/2 native normalization,
-  WebSocket frame, TLS pass-through, or real upstream application was exercised.
-- Direct sockets/egress, other extensions, traffic absent from Proxy callbacks,
-  on-wire arrival pacing and mandatory network enforcement remain outside this
-  evidence. Prompt/proxy configuration alone does not establish a firewall.
-- Authentication/session refresh, login/logout workflows and credential validity
-  were deliberately not exercised. Fabricated auth fields are merely carried
-  through unchanged to an owned local fixture.
+No actual HTTP Proxy listener, installed Montoya session, HTTPS/CA/CONNECT/HTTP2,
+opaque TLS/WebSocket frames, live CAIRN/Pi/model/report E2E, egress enforcement,
+Professional disk project, native project-switch atomicity, all-scale desktop
+acceptance or final implementation audit is established here. Fabricated auth
+fields are fidelity/privacy fixtures, not login/session tests. This documentation
+leaves native/audit/release work **in progress**, not approved or complete.

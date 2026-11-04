@@ -19,12 +19,16 @@ import socket
 import ssl
 import threading
 import time
-from urllib.parse import parse_qs, urlsplit
-from uuid import UUID
+from urllib.parse import parse_qs
+from uuid import UUID, uuid4
 
 SYNTHETIC_AUTH = "Bearer synthetic-native-fixture-not-a-real-token"
 SYNTHETIC_COOKIE = "fixture_session=synthetic-native-cookie"
 BODY = b'{"note":"harmless fixture","password":"synthetic-native-password"}'
+LARGE_BYTES = 6 * 1024 * 1024
+PENTEST_PATHS = ("/c/;/main.do", "/c/%2e/main.do", "/c/%252e/main.do", "/c/%25252e/main.do",
+                 "/c/./main.do", "/c/a/../main.do", "/c/;x/main.do", "/c/%3b/main.do", "/c/%253b/main.do",
+                 "/c%2fmain.do", "/c%252fmain.do", "/c\\\\main.do", "//c///main.do", "/c/%ZZ/main.do?bad=%ZZ")
 
 
 def loopback(value: str) -> str:
@@ -54,12 +58,15 @@ def fixture(state):
 
         def handle_fixture(self):
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 <= length <= 65536:
+            if not 0 <= length <= 1024 * 1024 + 4096:
                 self.send_error(413)
                 return
             body = self.rfile.read(length)
-            event = {"at": time.monotonic(), "host": self.server.server_address[0],
-                     "method": self.command, "path": self.path,
+            # BaseHTTPRequestHandler normalizes a leading // in self.path. Keep the actual bounded
+            # request-line bytes for equality assertions, including malformed-percent targets.
+            target = self.raw_requestline.split(b" ", 2)[1].decode("ascii")
+            event = {"at": time.monotonic(), "host": self.server.server_address[0], "host_header": self.headers.get("Host"),
+                     "method": self.command, "path": target, "request_target": target,
                      "authorization": self.headers.get("Authorization"),
                      "cookie": self.headers.get("Cookie"), "body": body}
             with state.lock:
@@ -70,14 +77,16 @@ def fixture(state):
                 state.active += 1
                 state.peak = max(state.peak, state.active)
             try:
-                query = parse_qs(urlsplit(self.path).query)
-                if urlsplit(self.path).path == "/hold":
+                path, _, query_text = target.partition("?")
+                query = parse_qs(query_text)
+                if path == "/hold":
                     time.sleep(min(3.0, max(0, float(query.get("seconds", ["1.5"])[0]))))
-                response = json.dumps({"fixture": "owned-loopback", "method": self.command,
-                                       "path": self.path, "body": body.decode("utf-8"),
-                                       "authorization": event["authorization"],
-                                       "cookie": event["cookie"]}, separators=(",", ":")).encode()
-                self.send_response(200)
+                response = (b"L" * LARGE_BYTES if path == "/large" else
+                    json.dumps({"fixture": "owned-loopback", "method": self.command,
+                                "path": target, "host_header": event["host_header"], "body": body.decode("utf-8", errors="replace"),
+                                "body_hex": body.hex(), "authorization": event["authorization"],
+                                "cookie": event["cookie"]}, separators=(",", ":")).encode())
+                self.send_response(503 if path == "/status5xx" else 200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("X-Fixture", "owned-loopback")
                 self.send_header("Set-Cookie", "fixture_response=synthetic-native-response; HttpOnly")
@@ -99,7 +108,7 @@ class Run:
         self.args, self.state = args, state
         self.results = []
 
-    def request(self, path="/safe", method="GET", body=None, headers=None, second=False):
+    def request(self, path="/safe", method="GET", body=None, headers=None, second=False, proxy_port=None):
         host, port = ("127.0.0.2", self.args.second_port) if second else ("127.0.0.1", self.args.port)
         if self.args.https:
             assert not second, "Two-host pacing is a separate HTTP experiment"
@@ -107,12 +116,15 @@ class Run:
         # Hardcoded loopback targets only. CLI cannot redirect traffic externally.
         headers = dict(headers or {})
         headers.setdefault("Connection", "close")
-        connection = http.client.HTTPConnection(loopback(self.args.proxy_host), self.args.proxy_port, timeout=40)
+        selected_proxy = self.args.proxy_port if proxy_port is None else proxy_port
+        # http.client sends this target as-is; do not replace with a URL-normalizing client. For curl
+        # reproductions use --path-as-is. Clients/fixtures never configure or call Burp admin APIs.
+        connection = http.client.HTTPConnection(loopback(self.args.proxy_host), selected_proxy, timeout=40)
         try:
             if self.args.https:
                 # A human must explicitly export the disposable instance's PUBLIC CA.
                 connection = http.client.HTTPSConnection(
-                    loopback(self.args.proxy_host), self.args.proxy_port, timeout=40,
+                    loopback(self.args.proxy_host), selected_proxy, timeout=40,
                     context=ssl.create_default_context(cafile=self.args.burp_ca))
                 connection.set_tunnel(host, port)
                 target = path
@@ -131,6 +143,12 @@ class Run:
         assert payload["source"] == "cairn-proxy-guard"
         assert payload["outcome"] == "blocked" and payload["retryable"] is False
         UUID(payload["evidenceId"])
+        assert payload["local"] is True
+        assert payload["guardState"] in {"PROTECTED", "PAUSED_BY_OPERATOR", "POLICY_INVALID", "POLICY_SAVE_UNCERTAIN",
+            "PROJECT_UNVERIFIED", "SHUTDOWN", "CIRCUIT_OPEN", "OVERLAY_BLOCK", "INTENT_BUDGET", "LISTENER_UNVERIFIED", "CAPACITY", "IN_FLIGHT_STALLED"}
+        assert type(payload["policyRevision"]) is int and payload["policyRevision"] >= 0
+        if "overlayId" in payload:
+            UUID(payload["overlayId"])
         return payload["reason"]
 
     def case(self, name, action):
@@ -147,12 +165,102 @@ class Run:
         assert len(self.state.snapshot()) == before, "Blocked request reached fixture"
         return reason
 
+    def assert_arrives(self, path="/safe", method="GET", body=None, headers=None, second=False, proxy_port=None):
+        before = len(self.state.snapshot())
+        kwargs = dict(path=path, method=method, body=body, headers=headers, second=second)
+        if proxy_port is not None:
+            kwargs["proxy_port"] = proxy_port
+        response = self.request(**kwargs)
+        assert response[0] == 200 and response[1]["X-Fixture"] == "owned-loopback"
+        events = self.state.snapshot()[before:]
+        assert len(events) == 1, "Expected exactly one owned socket handoff"
+        observed = events[0]
+        assert observed["path"] == path and observed["method"] == method, "Native target/method changed"
+        assert observed["body"] == (body or b""), "Native body bytes changed"
+        if headers and "Host" in headers:
+            assert observed["host_header"] == headers["Host"], "Fuzzed Host changed"
+        if not getattr(self.args, "https", False):
+            assert observed["host"] == ("127.0.0.2" if second else "127.0.0.1"), "Actual destination changed"
+        return response
+
+    def rawpaths(self):
+        """Requires all-path scope on actual first service; no custom path/body block rules."""
+        fuzzed_host = f"127.0.0.2:{self.args.second_port}"  # Also owned if proxy interprets Host differently.
+        for path in PENTEST_PATHS:
+            self.case("all-path raw request-target equality: " + path,
+                      lambda p=path: self.assert_arrives(path=p, headers={"Host": fuzzed_host}))
+        for name, body, headers in [
+            ("unsupported charset", b"\xff\x00fixture", {"Content-Type": "text/plain; charset=unsupported-fixture"}),
+            ("binary", b"\x00\xfffixture", {"Content-Type": "application/octet-stream"}),
+            ("multipart", b"--fixture\r\nopaque\r\n--fixture--", {"Content-Type": "multipart/form-data; boundary=fixture"}),
+            ("encoded", b"not-decompressed-by-guard", {"Content-Encoding": "gzip", "Content-Type": "text/plain"}),
+            ("malformed JSON", b'{"broken":', {"Content-Type": "application/json"}),
+            ("optional capture overflow", b"C" * (1024 * 1024 + 1), {"Content-Type": "application/octet-stream"}),
+        ]:
+            self.case("same native payload: " + name,
+                      lambda b=body, h=headers: self.assert_arrives(method="POST", body=b, headers=h))
+        if not self.args.https:
+            self.case("Host cannot authorize outside actual service", lambda: self.assert_block(
+                expected_reason="SCOPE_NOT_ALLOWED", second=True, headers={"Host": f"127.0.0.1:{self.args.port}"}))
+
+    def heavy(self):
+        """Human sets 5MiB response threshold and no other availability detector interference."""
+        def large():
+            before = len(self.state.snapshot())
+            response = self.request("/large")
+            assert response[0] == 200 and len(response[2]) == LARGE_BYTES and response[2] == b"L" * LARGE_BYTES
+            assert len(self.state.snapshot()) == before + 1
+        self.case("first owned6MiB response is untouched", large)
+        self.case("next same path quarantined locally", lambda: self.assert_block(expected_reason="HEAVY_ENDPOINT_AUTO_BLOCKED", path="/large"))
+        input("HUMAN: release this overlay in the automatic-block UI, then press Enter (script does not control Burp): ")
+        self.case("human release allows next untouched6MiB response", large)
+
+    def circuit(self):
+        """Human sets threshold5/window60s/open --open-seconds; health bypass disabled."""
+        for _ in range(5):
+            before = len(self.state.snapshot())
+            response = self.request("/status5xx")
+            assert response[0] == 503 and response[1]["X-Fixture"] == "owned-loopback"
+            assert len(self.state.snapshot()) == before + 1
+        self.case("five5xx open service circuit", lambda: self.assert_block(expected_reason="CIRCUIT_OPEN"))
+        time.sleep(self.args.open_seconds + .1)
+        before = len(self.state.snapshot())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.request, "/hold?seconds=1.5")
+            deadline = time.monotonic() + 5
+            while len(self.state.snapshot()) == before:
+                assert time.monotonic() < deadline, "Half-open request did not reach fixture"
+                time.sleep(.01)
+            self.case("single in-flight half-open lease", lambda: self.assert_block(expected_reason="CIRCUIT_OPEN"))
+            assert pending.result(timeout=5)[0] == 200
+        self.case("successful half-open closes circuit", lambda: self.assert_arrives())
+
+    def exempt(self):
+        """Human authors both BLOCK PATH=/broker and EXEMPT PATH=/broker; keep DELETE default."""
+        self.case("EXEMPT wins same-path BLOCK", lambda: self.assert_arrives(path="/broker"))
+        self.case("DELETE ordinary default still blocked", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
+
+    def intent(self):
+        """Human sets per-intent limit20; labels are untrusted accounting, not authorization."""
+        run_id = "fixture-" + uuid4().hex
+        headers = {"X-Cairn-Intent": "i048", "X-Cairn-Run": run_id}
+        for _ in range(20):
+            self.assert_arrives(headers=headers)
+        self.case("exact21st intent final handoff denied", lambda: self.assert_block(expected_reason="INTENT_BUDGET_EXCEEDED", headers=headers))
+        self.case("other intent unaffected", lambda: self.assert_arrives(headers=dict(headers, **{"X-Cairn-Intent": "other"})))
+
+    def listeners(self):
+        """Human protects only --proxy-port; both listeners must exist in disposable Burp."""
+        self.case("selected listener enforces DELETE default", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
+        self.case("known unselected listener forwards same DELETE", lambda: self.assert_arrives(method="DELETE", proxy_port=self.args.unselected_proxy_port))
+        print("HUMAN CHECK: unselected request created no history/raw capture, approval, watcher or intent entry; external clients cannot prove memory non-capture", flush=True)
+
     def empty(self):
         self.case("empty allowlist: local 451 and zero fixture hits",
                   lambda: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED"))
 
     def exact(self):
-        """Human URL form has allowed ONLY /safe, with the two default rules retained."""
+        """Human URL form allows ONLY /safe, with the v2 DELETE-method default retained."""
         def allowed_get_head():
             before = len(self.state.snapshot())
             for method in ("GET", "HEAD"):
@@ -168,7 +276,7 @@ class Run:
         ]:
             self.case(name, lambda k=kwargs: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED", **k))
         self.case("exact target retains DELETE rule", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
-        self.case("exact target retains decoded-query rule", lambda: self.assert_block(expected_reason="RULE_BLOCK", path="/safe?operation=%2564elete"))
+        self.case("v2 defaults do not block benign delete query text", lambda: self.assert_arrives(path="/safe?operation=%2564elete"))
         def preserved():
             status, headers, body = self.request("/safe", "POST", BODY,
                 {"Content-Type": "application/json", "Authorization": SYNTHETIC_AUTH, "Cookie": SYNTHETIC_COOKIE})
@@ -270,8 +378,8 @@ class Run:
             assert event["body"] == BODY and event["authorization"] == SYNTHETIC_AUTH
             assert event["cookie"] == SYNTHETIC_COOKIE and event["method"] == "POST"
         self.case("allowed POST: synthetic credentials/body/response values preserved", allowed)
+        self.case("DELETE method: local451 and no target hit", lambda: self.assert_block(expected_reason="RULE_BLOCK", method="DELETE"))
         for name, kwargs in [
-            ("DELETE method", {"method": "DELETE"}),
             ("mixed-case path", {"path": "/DeLeTe"}),
             ("percent-encoded path", {"path": "/%64%65lete"}),
             ("double-encoded query", {"path": "/safe?operation=%2564elete"}),
@@ -281,9 +389,7 @@ class Run:
             ("unsupported encoding", {"method": "POST", "body": b"fixture", "headers": {"Content-Type": "text/plain", "Content-Encoding": "gzip"}}),
             ("unsupported body", {"method": "POST", "body": b"fixture", "headers": {"Content-Type": "application/octet-stream"}}),
         ]:
-            reason = {"unsupported encoding": "UNSUPPORTED_CONTENT_ENCODING", "unsupported body": "UNSUPPORTED_BODY"}.get(name, "RULE_BLOCK")
-            self.case(name + ": local 451 and zero fixture hits",
-                      lambda k=kwargs, r=reason: self.assert_block(expected_reason=r, **k))
+            self.case(name + ": v2 defaults pass unchanged", lambda k=kwargs: self.assert_arrives(**k))
         self.case("scope mismatch: local 451 and zero fixture hits",
                   lambda: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED", path="/outside-fixture-scope"))
         self.case("explicit block scope: local 451 and zero fixture hits",
@@ -302,7 +408,7 @@ class Run:
         self.case("case-sensitive negative: uppercase header value passes", lambda: allowed(method="POST", headers={"X-Fixture-Action": "PURGE-7"}))
         self.case("ALLOW/MONITOR cannot override allow-scope mismatch", lambda: self.assert_block(expected_reason="SCOPE_NOT_ALLOWED", path="/outside-fixture-scope"))
         self.case("ALLOW/MONITOR cannot override explicit block scope", lambda: self.assert_block(expected_reason="SCOPE_BLOCKED", path="/scope-block"))
-        self.case("ALLOW/MONITOR cannot override unsupported inspection", lambda: self.assert_block(expected_reason="UNSUPPORTED_BODY", method="POST", body=b"fixture", headers={"Content-Type": "application/octet-stream"}))
+        self.case("unavailable optional body inspection is not automatic451", lambda: self.assert_arrives(method="POST", body=b"fixture", headers={"Content-Type": "application/octet-stream"}))
 
     def disabled(self):
         before = len(self.state.snapshot())
@@ -405,14 +511,61 @@ class Run:
                              "block_category": reason, "arrivals": len(self.state.snapshot())})
 
 
+def validate_incident(document):
+    """Offline shape/window/retention checks of a human-exported REDACTED incident, no Burp API."""
+    assert isinstance(document, dict)
+    window = document["window"]
+    assert set(window) == {"from", "to"}
+    assert all(type(window[k]) is int for k in window)
+    assert 0 < window["to"] - window["from"] <= 86_400_000
+    events = document["events"]
+    assert isinstance(events, list) and len(events) <= 4096
+    for event in events:
+        assert event["kind"] in {"HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN", "FANOUT_SUSPECTED"}
+        assert type(event["ts"]) is int and window["from"] <= event["ts"] < window["to"]
+        for key in ("bytes", "5xx", "distinctPaths"):
+            if key in event:
+                assert type(event[key]) is int and event[key] >= 0
+        for key in ("path", "host"):
+            if key in event:
+                assert isinstance(event[key], str) and len(event[key]) <= 16_384
+    for key in ("top5xx", "topBytes"):
+        assert isinstance(document[key], list) and len(document[key]) <= 20
+        for candidate in document[key]:
+            # Candidate IDs are keyed route hashes from ResponseWatcher, NOT overlay/evidence UUIDs.
+            identifier = candidate["id"]
+            assert isinstance(identifier, str) and len(identifier) == 64
+            assert all(char in "0123456789abcdef" for char in identifier)
+            for scalar in ("maxBytes", "p95Bytes", "count", "lastSeen", "count5xx"):
+                assert type(candidate[scalar]) is int and candidate[scalar] >= 0
+            for text in ("host", "path", "policyUrl"):
+                assert isinstance(candidate[text], str) and len(candidate[text]) <= 16_384
+    for flag in ("complete", "truncated", "approximate"):
+        assert type(document[flag]) is bool
+    assert document["approximate"] is True
+    assert document["complete"] is not document["truncated"]
+    assert isinstance(document["approximation"], dict)
+    retention = document["retention"]
+    assert retention["maxMillis"] == 86_400_000 and type(retention["startedAt"]) is int
+    for flag in ("eventsComplete", "observationsComplete", "eventsDropped", "observationsDropped", "clockRegressed"):
+        assert type(retention[flag]) is bool
+    encoded = json.dumps(document)
+    for secret in (SYNTHETIC_AUTH, SYNTHETIC_COOKIE, "synthetic-native-password", "synthetic-native-response"):
+        assert secret not in encoded, "Synthetic secret must not be in exported incident"
+    return {"events": len(events), "top5xx": len(document["top5xx"]), "topBytes": len(document["topBytes"])}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "passthrough", "passthrough-cancel", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine"])
+    parser.add_argument("--phase", required=True, choices=["empty", "exact", "examples", "passthrough", "passthrough-cancel", "default", "basic", "custom", "disabled", "host", "concurrency", "approve", "deny", "expire", "stale", "paused", "queue", "quarantine", "rawpaths", "heavy", "circuit", "exempt", "intent", "listeners", "incident"])
     parser.add_argument("--proxy-host", default="127.0.0.1", type=loopback)
     parser.add_argument("--proxy-port", default=8080, type=int)
     parser.add_argument("--port", default=18080, type=int)
     parser.add_argument("--second-port", default=18081, type=int)
     parser.add_argument("--expected-concurrent", default=5, type=int)
+    parser.add_argument("--unselected-proxy-port", default=8081, type=int)
+    parser.add_argument("--open-seconds", default=1.0, type=float, help="Must match human circuit open duration;1s in disposable test profile")
+    parser.add_argument("--incident-file", help="Human-exported redacted incident JSON, checked offline only")
     parser.add_argument("--https", action="store_true")
     parser.add_argument("--fixture-cert")
     parser.add_argument("--fixture-key")
@@ -420,6 +573,20 @@ def main():
     args = parser.parse_args()
     if not __debug__:
         parser.error("Smoke assertions must be enabled; do not use Python -O/PYTHONOPTIMIZE")
+    if args.phase == "incident":
+        if not args.incident_file:
+            parser.error("incident phase needs --incident-file; no fixture/client is started")
+        with open(args.incident_file, "rb") as source:
+            content = source.read(4 * 1024 * 1024 + 1)
+        if len(content) > 4 * 1024 * 1024:
+            parser.error("incident input exceeds bounded4MiB")
+        print(json.dumps({"offline_incident_schema": "PASS", **validate_incident(json.loads(content))}))
+        return
+    if not 1 <= args.open_seconds <= 3600 or any(not 1 <= p <= 65535 for p in
+            (args.proxy_port, args.unselected_proxy_port, args.port, args.second_port)):
+        parser.error("Invalid bounded duration/port")
+    if args.phase == "listeners" and args.unselected_proxy_port == args.proxy_port:
+        parser.error("Listener proof requires two distinct ports")
     if args.https and not all((args.fixture_cert, args.fixture_key, args.burp_ca)):
         parser.error("HTTPS requires fixture certificate/key and explicitly exported disposable Burp public CA")
     if args.https:

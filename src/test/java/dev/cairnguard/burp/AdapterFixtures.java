@@ -40,7 +40,7 @@ final class AdapterFixtures {
         @Override public void save(String value) { json = value; }
     }
     static GuardConfig config(Mode mode, int maxConcurrent, long requestTimeout) {
-        return new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(), List.of(), mode,
+        return new GuardConfig(2, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(), List.of(), mode,
                 new Limits(1_000, 1_000, Map.of(), maxConcurrent, 128, 500, 5_000, requestTimeout));
     }
     static GuardController controller() { return new GuardController(new MemoryProject(config(Mode.ALLOW, 5, 60_000))); }

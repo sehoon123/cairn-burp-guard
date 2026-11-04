@@ -5,13 +5,13 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import java.io.IOException;
 import dev.cairnguard.model.Json;
+import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.model.RequestData.Header;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -20,12 +20,13 @@ import java.util.Set;
 import java.util.function.Predicate;
 import static dev.cairnguard.policy.PolicySupport.*;
 
-/** A transient, completely inspected copy. Nothing in this type is logged or retained by the engine. */
+/** Transient, demand-driven inspection. Unavailable optional fields are never represented as evaluated. */
 final class RequestInspection {
     private static final JsonFactory JSON_FACTORY = Json.MAPPER.getFactory().copy();
 
     record Target(String scheme, Authority authority, List<String> paths, String url,
-                  String query, boolean hasQuery, String method, List<Header> headers, int headChars) {}
+                  String query, boolean hasQuery, String method, List<Header> headers,
+                  boolean routingComplete) {}
     record Named(List<String> names, List<String> values) {}
     record JsonMember(List<String> names, JsonValue value) {}
 
@@ -79,36 +80,44 @@ final class RequestInspection {
     }
 
     final List<String> method;
-    final List<String> url;
+    List<String> url = List.of();
     final List<String> path;
-    final List<Named> query;
-    final List<Named> headers;
-    final List<String> body;
-    final JsonValue json;
-    final List<Named> form;
-    final List<String> any;
+    List<Named> query = List.of();
+    List<Named> headers = List.of();
+    List<String> body = List.of();
+    JsonValue json = JsonValue.empty();
+    List<Named> form = List.of();
+    List<String> any = List.of();
+    private final Set<Field> available = EnumSet.of(Field.METHOD, Field.PATH);
+    private final Set<String> warnings = new LinkedHashSet<>();
+    private final Budget routingWork = new Budget();
+    private final Budget contentWork = new Budget();
 
-    private RequestInspection(List<String> method, List<String> url, List<String> path,
-                              List<Named> query, List<Named> headers, List<String> body,
-                              JsonValue json, List<Named> form) {
-        this.method = method;
-        this.url = url;
-        this.path = path;
-        this.query = query;
-        this.headers = headers;
-        this.body = body;
-        this.json = json;
-        this.form = form;
-        List<String> all = new ArrayList<>();
-        all.addAll(method);
-        all.addAll(url);
-        all.addAll(path);
-        addNamed(all, query);
-        addNamed(all, headers);
-        all.addAll(body);
-        json.flatten(all);
-        addNamed(all, form);
-        any = List.copyOf(all);
+    private RequestInspection(Target target) {
+        method = List.of(target.method);
+        path = target.paths;
+        if (!target.routingComplete) {
+            available.remove(Field.PATH);
+            warnings.add("PATH_INTERPRETATION_INCOMPLETE");
+        }
+    }
+
+    boolean available(Field field) { return available.contains(field); }
+    List<String> warnings() { return List.copyOf(warnings); }
+    Budget workBudget(Field field) {
+        return field == Field.METHOD || field == Field.PATH ? routingWork : contentWork;
+    }
+    void unavailable(Field field, String category) {
+        available.remove(field);
+        available.remove(Field.ANY);
+        warnings.add(field.name() + "_INSPECTION_UNAVAILABLE_" + category);
+    }
+    private void optional(Field field, Runnable inspection) {
+        try {
+            inspection.run();
+            available.add(field);
+        } catch (Failure e) { unavailable(field, e.getMessage()); }
+        catch (RuntimeException e) { unavailable(field, "INSPECTION_ERROR"); }
     }
 
     private static void addNamed(List<String> out, List<Named> named) {
@@ -118,113 +127,154 @@ final class RequestInspection {
         }
     }
 
-    /** Authority and scope paths are inspected before any body matching or decoding. */
+    /** Only actual service metadata and routing path views are mandatory scope inputs. */
     static Target target(RequestData request, Budget budget) {
         if (request == null) throw fail("INVALID_REQUEST");
         if (request.method() == null || request.method().length() > 32 || !token(request.method()))
             throw fail("INVALID_METHOD");
-        String url = request.url();
-        if (url == null || url.length() > MAX_URL || !cleanUnicode(url, false)) throw fail("INVALID_URI");
-        URI uri;
-        try { uri = new URI(url); }
-        catch (URISyntaxException e) { throw fail("INVALID_URI"); }
-        if (uri.isOpaque() || uri.getScheme() == null || uri.getRawFragment() != null
-                || uri.getRawUserInfo() != null) throw fail("INVALID_URI");
-        String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
-        if (!scheme.equals("http") && !scheme.equals("https")) throw fail("UNSUPPORTED_SCHEME");
-        int defaultPort = scheme.equals("https") ? 443 : 80;
-        Authority authority = authority(uri.getRawAuthority(), defaultPort);
-        if (!authority.host().equals(host(request.host())) || request.port() != authority.port()
-                || request.secure() != scheme.equals("https")) throw fail("AUTHORITY_MISMATCH");
         if (request.port() < 1 || request.port() > 65_535) throw fail("INVALID_AUTHORITY");
-
-        List<Header> headers = request.headers();
-        if (headers == null || headers.size() > MAX_HEADERS) throw fail("INVALID_HEADERS");
-        int headChars = url.length() + request.method().length();
-        int hosts = 0;
-        Set<String> unique = new HashSet<>();
-        for (Header header : headers) {
-            if (header == null || header.name() == null || header.name().length() > 256 || !token(header.name())
-                    || header.value() == null || header.value().length() > MAX_HEADER_CHARS
-                    || !cleanUnicode(header.value(), true)
-                    || header.value().indexOf('\r') >= 0 || header.value().indexOf('\n') >= 0)
-                throw fail("INVALID_HEADERS");
-            headChars += header.name().length() + header.value().length();
-            if (headChars > MAX_HEADER_CHARS) throw fail("REQUEST_TOO_LARGE");
-            String name = header.name().toLowerCase(Locale.ROOT);
-            if (name.equals("host")) {
-                if (++hosts > 1) throw fail("INVALID_HEADERS");
-                Authority observed = authority(header.value(), defaultPort);
-                if (!observed.equals(authority)) throw fail("AUTHORITY_MISMATCH");
-            }
-            if (name.equals("content-type") || name.equals("content-encoding") || name.equals("content-length")
-                    || name.equals("transfer-encoding")) {
-                if (!unique.add(name)) throw fail("INVALID_HEADERS");
-            }
-            if (name.equals("upgrade") || name.startsWith("sec-websocket-")) throw fail("WEBSOCKET_UNSUPPORTED");
-            if (name.equals("connection")) {
-                for (String part : parts(header.value(), ',')) {
-                    if (part.trim().equalsIgnoreCase("upgrade")) throw fail("WEBSOCKET_UNSUPPORTED");
-                }
-            }
-            if (name.equals("content-encoding") && !header.value().trim().equalsIgnoreCase("identity"))
-                throw fail("UNSUPPORTED_CONTENT_ENCODING");
-            // There is no raw transfer-decoder in this inspection-copy API.
-            if (name.equals("transfer-encoding")) throw fail("UNSUPPORTED_TRANSFER_ENCODING");
-        }
-
-        String rawPath = uri.getRawPath();
-        if (rawPath == null || rawPath.isEmpty()) rawPath = "/";
-        List<String> paths = views(rawPath, false, false, budget);
-        for (String path : paths) {
-            if (!path.startsWith("/") || path.indexOf('\\') >= 0 || path.indexOf('?') >= 0
-                    || path.indexOf('#') >= 0 || path.indexOf(';') >= 0)
-                throw fail("AMBIGUOUS_PATH");
-            for (String segment : parts(path, '/')) {
-                if (segment.equals(".") || segment.equals("..")) throw fail("AMBIGUOUS_PATH");
-            }
-        }
-        return new Target(scheme, authority, paths, url,
-                uri.getRawQuery() == null ? "" : uri.getRawQuery(), uri.getRawQuery() != null,
-                request.method(), headers, headChars);
+        String scheme = request.secure() ? "https" : "http";
+        Authority authority = new Authority(host(request.host()), request.port());
+        String suppliedUrl = request.url();
+        if (suppliedUrl == null) throw fail("INVALID_URI");
+        int question = suppliedUrl.indexOf('?');
+        String base = question < 0 ? suppliedUrl : suppliedUrl.substring(0, question);
+        if (base.length() > MAX_URL || !cleanUnicode(base, false)) throw fail("INVALID_URI");
+        int separator = base.indexOf("://");
+        if (separator <= 0) throw fail("INVALID_URI");
+        String suppliedScheme = base.substring(0, separator);
+        if (!suppliedScheme.equalsIgnoreCase("http") && !suppliedScheme.equalsIgnoreCase("https"))
+            throw fail("UNSUPPORTED_SCHEME");
+        // This is an HTTP request target, not a URL being navigated by this extension. A generic URI
+        // parser would ban malformed-percent pentest targets (and interpret # as a fragment).
+        // Only extract the untouched path here. Native capture MUST construct this URL from the
+        // actual service + request.path(), not a fuzzed Host-derived request.url().
+        int authorityStart = separator + 3;
+        int slash = base.indexOf('/', authorityStart);
+        if (authorityStart == base.length() || slash == authorityStart) throw fail("INVALID_URI");
+        String rawPath = slash < 0 ? "/" : base.substring(slash);
+        RoutingPaths routing = routingPaths(rawPath, budget);
+        boolean hasQuery = question >= 0;
+        // Oversized optional query data is unavailable, not a scope denial or a truncated match.
+        String query = hasQuery && suppliedUrl.length() - question - 1 > MAX_URL ? null
+                : hasQuery ? suppliedUrl.substring(question + 1) : "";
+        String actualBase = scheme + "://" + authority.host()
+                + (authority.port() == (request.secure() ? 443 : 80) ? "" : ":" + authority.port()) + rawPath;
+        String actualUrl = actualBase + (hasQuery && query != null ? "?" + query : "");
+        return new Target(scheme, authority, routing.paths(), actualUrl, query, hasQuery,
+                request.method(), request.headers(), routing.complete());
     }
 
-    static RequestInspection inspect(Target target, RequestData request, Budget budget) {
-        byte[] bytes = request.body(); // exactly one defensive body copy, after the hard scope gate
-        if (bytes.length > RequestData.MAX_INSPECT_BYTES
-                || (long) bytes.length + target.headChars > RequestData.MAX_INSPECT_BYTES)
-            throw fail("REQUEST_TOO_LARGE");
-        String contentType = null;
-        List<Named> headers = new ArrayList<>();
-        for (Header header : target.headers) {
-            List<String> values = views(header.value(), false, true, budget);
-            for (String value : values) {
-                if (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) throw fail("INVALID_HEADERS");
+    static RequestInspection inspect(Target target, RequestData request, Set<Field> demand) {
+        RequestInspection input = new RequestInspection(target);
+        if (!request.headersComplete()) input.warnings.add("HEADERS_INCOMPLETE");
+        if (!request.bodyComplete()) input.warnings.add("BODY_INCOMPLETE");
+        boolean any = demand.contains(Field.ANY);
+        if (any || demand.contains(Field.URL)) input.optional(Field.URL, () -> {
+            if (target.query == null) throw fail("REQUEST_TOO_LARGE");
+            input.url = urlViews(target, new Budget());
+        });
+        if (any || demand.contains(Field.QUERY)) input.optional(Field.QUERY, () -> {
+            if (target.query == null) throw fail("REQUEST_TOO_LARGE");
+            input.query = parameters(target.query, new Budget());
+        });
+        if (any || demand.contains(Field.HEADER)) input.optional(Field.HEADER, () -> {
+            validateHeaders(target.headers, request.headersComplete());
+            List<Named> headers = new ArrayList<>();
+            Budget budget = new Budget();
+            for (Header header : target.headers) {
+                headers.add(new Named(views(header.name(), false, false, budget),
+                        views(header.value(), false, true, budget)));
             }
-            headers.add(new Named(views(header.name(), false, false, budget), values));
-            if (header.name().equalsIgnoreCase("content-type")) contentType = header.value();
-            if (header.name().equalsIgnoreCase("content-length")) contentLength(header.value(), bytes.length);
+            input.headers = List.copyOf(headers);
+        });
+        boolean bodyWanted = any || demand.contains(Field.BODY) || demand.contains(Field.JSON) || demand.contains(Field.FORM);
+        if (bodyWanted) inspectBody(input, target, request, demand, any);
+        if (any) {
+            // ANY can preserve positive matches in an inspectable component. Its completeness is
+            // tracked separately so incomplete ANY (or any other field) can NEVER grant EXEMPT.
+            List<String> all = new ArrayList<>();
+            all.addAll(input.method);
+            if (input.available(Field.URL)) all.addAll(input.url);
+            all.addAll(input.path);
+            if (input.available(Field.QUERY)) addNamed(all, input.query);
+            if (input.available(Field.HEADER)) addNamed(all, input.headers);
+            if (input.available(Field.BODY)) all.addAll(input.body);
+            if (input.available(Field.JSON)) input.json.flatten(all);
+            if (input.available(Field.FORM)) addNamed(all, input.form);
+            input.any = List.copyOf(all);
+            if (input.available.containsAll(EnumSet.complementOf(EnumSet.of(Field.ANY)))) input.available.add(Field.ANY);
         }
-        Media media = mediaType(contentType);
-        List<String> body = List.of();
-        JsonValue json = JsonValue.empty();
-        List<Named> form = List.of();
-        if (bytes.length > 0) {
+        return input;
+    }
+
+    private static void validateHeaders(List<Header> headers, boolean complete) {
+        if (!complete) throw fail("CAPTURE_INCOMPLETE");
+        if (headers == null || headers.size() > MAX_HEADERS) throw fail("INVALID_HEADERS");
+        long chars = 0;
+        for (Header header : headers) {
+            if (header == null || header.name() == null || header.name().length() > 256
+                    || !cleanUnicode(header.name(), false) || header.value() == null
+                    || !cleanUnicode(header.value(), true)) throw fail("INVALID_HEADERS");
+            chars += (long) header.name().length() + header.value().length();
+            if (chars > MAX_HEADER_CHARS) throw fail("REQUEST_TOO_LARGE");
+        }
+    }
+
+    private static void inspectBody(RequestInspection input, Target target, RequestData request,
+                                    Set<Field> demand, boolean any) {
+        List<Field> wanted = new ArrayList<>();
+        for (Field field : List.of(Field.BODY, Field.JSON, Field.FORM))
+            if (any || demand.contains(field)) wanted.add(field);
+        byte[] bytes;
+        Media media;
+        String text;
+        boolean isJson;
+        boolean isForm;
+        try {
+            if (!request.bodyComplete()) throw fail("CAPTURE_INCOMPLETE");
+            // Check size BEFORE the defensive copy, including adversarial old Java fixtures.
+            if (request.bodyLength() > RequestData.MAX_INSPECT_BYTES) throw fail("REQUEST_TOO_LARGE");
+            bytes = request.body();
+            if (bytes.length == 0) {
+                input.available.addAll(wanted);
+                return;
+            }
+            validateHeaders(target.headers, request.headersComplete());
+            String contentType = null;
+            Set<String> seen = new HashSet<>();
+            for (Header header : target.headers) {
+                String name = header.name().toLowerCase(Locale.ROOT);
+                if (name.equals("content-type") || name.equals("content-encoding") || name.equals("transfer-encoding")) {
+                    if (!seen.add(name)) throw fail("INVALID_HEADERS");
+                    if (name.equals("content-type")) contentType = header.value();
+                    if (name.equals("content-encoding") && !header.value().trim().equalsIgnoreCase("identity"))
+                        throw fail("UNSUPPORTED_CONTENT_ENCODING");
+                    if (name.equals("transfer-encoding")) throw fail("UNSUPPORTED_TRANSFER_ENCODING");
+                }
+            }
+            media = mediaType(contentType);
             String type = media.name;
-            boolean isJson = type.equals("application/json") || type.equals("text/json")
+            isJson = type.equals("application/json") || type.equals("text/json")
                     || (type.startsWith("application/") || type.startsWith("text/")) && type.endsWith("+json");
-            boolean isForm = type.equals("application/x-www-form-urlencoded");
+            isForm = type.equals("application/x-www-form-urlencoded");
             if (!(type.isEmpty() || type.startsWith("text/") || isJson || isForm)) throw fail("UNSUPPORTED_BODY");
             if (media.ascii) for (byte b : bytes) if (b < 0) throw fail("INVALID_TEXT_ENCODING");
-            String text = utf8(bytes);
-            body = views(text, isForm, true, budget);
-            // Avoid bypassing Unicode-unescaping by merely omitting/mislabeling a JSON content type.
-            if (isJson || !isForm && looksJson(text)) json = json(text, budget);
-            if (isForm) form = parameters(text, budget);
+            text = utf8(bytes);
+        } catch (Failure e) {
+            for (Field field : wanted) input.unavailable(field, e.getMessage());
+            return;
+        } catch (RuntimeException e) {
+            for (Field field : wanted) input.unavailable(field, "INSPECTION_ERROR");
+            return;
         }
-        return new RequestInspection(views(target.method, false, false, budget),
-                urlViews(target, budget), target.paths, parameters(target.query, budget),
-                List.copyOf(headers), body, json, form);
+        if (wanted.contains(Field.BODY)) input.optional(Field.BODY, () -> input.body = views(text, isForm, true, new Budget()));
+        if (wanted.contains(Field.JSON)) input.optional(Field.JSON, () -> {
+            if (isJson || !isForm && looksJson(text)) input.json = json(text, new Budget());
+        });
+        if (wanted.contains(Field.FORM)) input.optional(Field.FORM, () -> {
+            if (isForm) input.form = parameters(text, new Budget());
+        });
     }
 
     private static List<String> urlViews(Target target, Budget budget) {
@@ -241,17 +291,6 @@ final class RequestInspection {
             }
         }
         return List.copyOf(result);
-    }
-
-    private static void contentLength(String value, int actual) {
-        if (value.isEmpty() || value.length() > 10) throw fail("INVALID_CONTENT_LENGTH");
-        long length = 0;
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            if (c < '0' || c > '9') throw fail("INVALID_CONTENT_LENGTH");
-            length = length * 10 + c - '0';
-        }
-        if (length != actual) throw fail("INVALID_CONTENT_LENGTH");
     }
 
     private record Media(String name, boolean ascii) {}

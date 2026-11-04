@@ -1,119 +1,374 @@
-# Isolated actual-Burp smoke checklist
+# Future owned native A–H checklist — unreleased v2
 
-Use a separate disposable Burp instance/project and an owned numeric-loopback HTTP server. Do not import a real browser profile, real credentials or a production project. Stop if licensing needs user input; never copy license/activation state or bypass checks. Keep raw logs/screenshots/profile data private and outside Git.
+**Procedure, not results. All current v2 native acceptance remains PENDING.**
+The latest real disposable Burp attempt stopped at its **first EULA screen**:
+no terms accepted, no extension loaded, no phase run. Do not convert that startup,
+Swing/Mockito/owned sockets, or a historical JAR's results into native PASS.
+Current hashes/rebuild/desktop/audit limits are in [VERIFICATION.md](VERIFICATION.md);
+actual historical observations are in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
 
-Record installed product version/build, exact distribution JAR SHA256, fixture protocol, test date, case results and limitations. Do not publish host paths or original runtime artifacts.
+Only a human/operator may perform this workflow under appropriate authorization.
+It is not a worker prompt, Burp control API or permission to accept terms, bypass
+activation, use a live project, change desktop/provider/credentials or publish a
+candidate. Stop at licensing/EULA/user-input blockers and report them. Never copy
+license/activation/profile/auth state from an existing installation.
 
-1. Load the distribution JAR. Confirm the independent tab/name and all six sections; no initialization exceptions. Empty allowlist must locally block.
-2. Configure only the fixture's loopback host/port/path. Disable Proxy's own interactive intercept in this disposable instance. Verify a safe HTTP request reaches the fixture once.
-3. Send DELETE, `/delete`, query/form/JSON `delete`, mixed case and percent/JSON-escaped variants. Confirm local451 marker/evidence ID **and zero fixture requests** for blocked cases.
-4. Exercise explicit method/header/body/AND/OR/regex rules and toggles. A hard scope denial must never be overridden by Allow/Monitor/Ask approval.
-5. Start at least six independent clients through the same Proxy. At global5RPS verify the observed fixture sequence and the native admission counters; document callback pacing versus arrival timing. Hold responses to check max concurrency, queue timeout and missing-response quarantine.
-6. ASK: verify unresolved requests do not arrive, approve one and observe one arrival; deny another and observe zero; let another expire and verify zero. Change policy while waiting and reject the stale decision. Inspect masked UI evidence, not raw secrets.
-7. Carry **synthetic** Cookie/Authorization and JSON/form data through an allowed request. Compare the fixture's values/body and returned response with intended values. Inspect JSON/HAR exports for masking/omission and local-versus-upstream provenance. Native Burp may independently normalize transport/hop-by-hop headers; do not misattribute that to extension mutation.
-8. HTTPS requires a fixture certificate and explicit temporary client trust, never global CA changes or insecure verification flags. Verify safe/blocked HTTPS paths through Burp MITM. Separately label untested HTTP/2 or TLS-pass-through paths.
-9. Unload/reload the extension and close only the disposable instance. No timer leak or already-started request completion should be invented. Unloaded extension is no protection. Remove only owned temporary artifacts after reviewing sanitized results.
+## Preconditions and recording
 
-CAIRN itself and forced network egress are separate acceptance tests. No Burp control API/extension is supplied to a worker by this checklist.
+1. Freeze intended source/lock/legal files, run clean Java/Python and isolated Swing
+   separately, resolve failures, build and independently reproduce the exact intended
+   JAR. Record source revision/manifest, full JAR SHA256, product/build/JVM, protocol,
+   date and per-case result/limitations. Revision3's Java1221 and isolated Swing27
+   each at scale1/2 (scale2 repeated) PASS, and locally repeated217730… JAR bytes,
+   are **not** actual Burp, independent implementation review or platform proof.
+2. Use a separate disposable HOME, config/data/cache/preferences/temp directories,
+   project and display, not an existing Burp instance. Use only **owned ephemeral loopback ports** and
+   synthetic payloads. Leave occupied user listeners/processes alone. No global
+   proxy/CA/desktop changes. Keep raw logs/screenshots/exports/profile material
+   private outside Git; only generic `$TMP` references/sanitized facts belong here.
+3. Human loads the hash-verified JAR through Extensions UI only after legitimate
+   product access. Verify extension identity,8 tabs, no initialization failure,
+   protected state and empty allowlist local451. Disable the disposable Proxy's
+   interactive intercept as appropriate. No extension probe/control endpoint.
+4. Inspect [INTERFACES.md](INTERFACES.md) and current source. Start with an actual
+   **new schema2 profile**, not an imported legacy fixture assumed equivalent.
+   New default: DELETE-method BLOCK only; no broad delete-string. Importing v1
+   retains all its rules and turns new detectors off until explicit human save.
+   Historical `guard.loopback-smoke.json`/old instructions are not an automatically
+   correct v2 all-feature profile. Do not silently delete a legacy/custom rule.
+5. Configure each phase's **minimal exact owned service/path scope and matching
+   settings** through human UI. Restore between phases; do not let circuit/heavy/
+   fanout/budget leftovers contaminate unrelated tests. Overlay expiry/release and
+   explicit intent reset are separate from saving detector settings. Record both.
+6. Compare original allowed target/Host/body/response at the owned fixture, not
+   redacted export. Compare native continuation identity separately from transport
+   equality. Native buffering/other extensions may alter later wire bytes; do not
+   attribute all product transport changes to this extension.
 
-## Modal / all-passthrough regression (2026-11-04)
+A local block requires **all**: expected categorical reason, guard marker/typed
+metadata and **zero additional fixture arrivals**. Upstream451/5xx is not a local
+block merely because of HTTP status. `FORWARDED`/handoff count is not delivery.
+Never reset a true native permit or lower a timeout to simulate completion.
 
-All changes below are in the disposable product UI, never via an API/worker. Record the final exact JAR hash. Earlier examples results do not cover this feature.
+## External fixture/client helper, not Burp automation
 
-1. Load into an empty-policy project. Run `--phase empty`. Open **모두 통과 (보호 끔)…**, read/scroll to the last warning, resize the modal, then cancel with Escape and verify the next `--phase empty` still blocks. Enter without selecting the affirmative button must also cancel. Separately resize actual Swing dialogs with14/28pt fonts using `desktopTest` on an isolated display; do not call those a Burp run.
-2. Keep the empty allowlist and both built-in guards. Set only basic limits to **1/1/1** and save. Explicitly confirm **모두 통과**. All tabs must retain the unprotected status/restore button. Run `--phase passthrough` (HTTP only): **8 cases / 13 requests**, all fixture200, covering unregistered path/second host, DELETE/encoded delete, malformed JSON, opaque body, unchanged synthetic auth/cookie/body and six concurrent held clients. Confirm only the OFF counter changes, not evidence/approval/permit count.
-3. Restore protection and run `--phase empty`; empty scope blocks again. Toggle OFF, use **새 요청 모두 차단**, run `--phase paused`. Resume and recheck scope. Reload the extension while OFF and confirm OFF is not restored, then verify protected empty scope again. Do not reset permits to simulate completion.
-4. Register exact `/ask`, create an ASK rule, keep protection ON. Run `--phase passthrough-cancel`: after its one-second no-arrival check, enable OFF through the human confirmation (do NOT approve). Expect `POLICY_CHANGED` and zero fixture arrivals. The old approval must disappear. Newly issued OFF requests can pass; restoring protection must require new approval for a new `/ask` request.
-5. If a protected native response is held, entering OFF must not decrement its permit. Its actual response still updates the original masked evidence. OFF-originated responses must not be recaptured after restore. Project change/save/factory races and shutdown have separate synthetic regressions; label any native case not actually exercised.
-6. Review/export only masked protected evidence and verify the OFF request/response contents are absent. Burp's own history remains outside extension control. Stop only the disposable instance/display/owned fixture processes and remove only their private artifacts.
+`scripts/native_burp_smoke.py` starts owned loopback echo fixtures and external
+Python clients only. It never starts/loads/configures/approves Burp or saves policy.
+Its incident phase reads a human-chosen export offline and starts no client/fixture.
+Do not give this operator helper or a Burp management connection to CAIRN workers.
 
-## Examples/shortcuts regression (earlier c071 artifact:13 logical cases)
-
-Use a clean disposable project and keep both built-in guards. If8080 belongs to another instance, select an unused loopback listener in the disposable product UI and append `--proxy-port <owned-listener-port>` to **every** phase command. Never stop or reconfigure a live instance. All configuration and decisions remain human UI actions.
-
-1. Open **사용 예시…**, read its three tabs, then close it. No policy revision should change. Run `python3 scripts/native_burp_smoke.py --phase empty`.
-2. Register exact `http://127.0.0.1:18080/safe` through the URL field: type → **Enter** → review preview → **저장하고 적용**. Enter must leave the draft open, not save it. Run `--phase exact` (6 logical cases). Test target-table double-click/Enter, then cancel without changing policy.
-3. Register the separate exact URL `http://127.0.0.1:18080/api/items`. In **규칙 만들기…**, create and explicitly save each recipe: **POST /api/items 승인 요청**, **JSON action=review 승인 요청**, **쿼리 operation=purge 차단**. First select and inspect the match/non-match preview: the original draft must stay unchanged until **예제로 폼 채우기**. Do not replace either built-in rule. Test rule-table opening and cancel.
-4. Open settings. Check **천천히 · 1/1/1** and **기본 · 5/5/5** fill only the three basic fields. Nothing is saved before **저장하고 적용**. For the recorded run, explicitly save1/1/1; retain default advanced settings and no host overrides. This does **not** measure pacing/concurrency.
-5. Run `--phase examples` (5 cases). GET `/api/items` arrives; POST `/api/items/1` is outside scope; `?operation=purge` gets `RULE_BLOCK`. Then two requests wait in turn: POST `/api/items` and JSON `{"action":"review"}` to `/safe`. Let each pass the script's one-second no-arrival check; use table Enter/double-click to review masked evidence, close, then separately choose **한 번만 승인**. Review-only navigation must not resolve the request. Do not change policy while waiting.
-6. In **개요**, pause new requests, run `--phase paused`, then resume. No fixture arrival is allowed while paused.
-7. Review masked traffic via Enter/double-click. Export full current-table JSON, then search POST, select its original synthetic-secret200 row and export selected HAR. Verify **14 JSON entries / 1 HAR entry**, mode0600 and absence of the four synthetic secret values.
-
-This subset is **4 phases / 13 logical cases / 14 requests = 6 upstream200 + 8 local451**. It does not rerun native denial/expiry/policy-change cancellation or the historical HTTPS/rate/concurrency/queue/quarantine matrix. Offline self-checks of `--phase examples` are not native observations. See [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md) for the exact current hash and historical separation.
-
-## Earlier guided-UI regression (a924 artifact:12 logical cases)
-
-The following limited workflow was exercised on the **previous** guided-UI JAR (`a924…b2cc`), not the current examples/shortcuts artifact. Record its exact hash; do not call the broader historical matrix below a current-build rerun. All configuration/decisions are local human UI actions, not script/worker controls.
-
-1. Load a clean disposable instance with the empty allowlist; run `python3 scripts/native_burp_smoke.py --phase empty`.
-2. In **개요 → 허용 대상 등록…**, enter `http://127.0.0.1:18080/safe`, choose **폼에 반영**, review the exact host/port/path preview and **저장하고 적용**. Retain both default rules. Run `--phase exact`: GET/HEAD and synthetic POST must arrive; `/safe/child`, `/safex`, DELETE and the encoded delete query must not.
-3. Register the separate exact URL `http://127.0.0.1:18080/ask`. In **규칙 만들기…**, choose **승인 요청**, make an AND group with URL path EXACT `/ask` and method EXACT `GET`, then save. Do not replace the two default guards.
-4. Run `--phase approve`, review the waiting entry in **승인 대기**, then approve once. Run `--phase deny` and choose **거절**. The external CLI waits while the human uses the product UI.
-5. In **설정 → 요청 제어 설정 변경… → 상세 설정 펼치기**, set approval limit to **4 seconds**, save, run `--phase expire` without deciding. Restore30 seconds, run `--phase stale`, and while waiting change a numeric setting and save; expect `POLICY_CHANGED` and zero arrivals.
-6. In **개요**, pause all new requests, run `--phase paused`, then resume. This is fail-closed pause, not a protection-OFF mode.
-7. In **요청 기록**, inspect separate masked request/response details. Export current-table JSON; search/select/bookmark the POST and export **선택한 요청만 / HAR**. Check entry counts, secret absence, omission/provenance labels and POSIX mode0600. Do not publish the exports or screenshots.
-
-An uncontaminated run has12 logical cases but13 requests:4 upstream200 and9 local451. No HTTPS/rate/concurrency/quarantine claim follows from this subset. See [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
-
-## Broader external fixture/client harness
-
-The following reproduces the broader matrix previously run on the old hash. It is also available for future acceptance work; it is **not evidence that every phase was rerun on the current build**.
-
-`scripts/native_burp_smoke.py` uses Python's standard library, creates owned loopback echo servers and sends **only synthetic fixture traffic** through an already configured local Proxy. Strings such as `delete`/`purge` have no operation behind them: the servers only echo data. The script never starts, loads, configures, approves, or controls Burp. All policy/approval actions below are made in the disposable product's human UI. Do not give this operator workflow to a CAIRN worker.
-
-1. Use an isolated, normally licensed/available Burp edition. A product-provided **Community Edition** selection is legitimate; copying Professional activation state or bypassing its activation is not. Use a temporary in-memory project if Community does not support a project file.
-2. Load the exact JAR and record its SHA256. Confirm Proxy Intercept is off and the listener is exclusively the disposable instance's loopback listener (defaults below: `127.0.0.1:8080`). No live project or global proxy settings are needed.
-3. With an empty allowlist run `python3 scripts/native_burp_smoke.py --phase empty`. The local451 must contain the fixed guard marker, categorical reason, UUID evidence ID, and `retryable:false`; the fixture must receive zero requests.
-4. [guard.loopback-smoke.json](../templates/examples/guard.loopback-smoke.json) is a **full example policy**, NOT an import/control endpoint. For this broader synthetic matrix, use **설정 → 고급: 정책 JSON 가져오기 / 복사…**. `jq '.rules |= .[0:2]' templates/examples/guard.loopback-smoke.json` prints the complete initial policy with only its two built-in guards and default limits. Review every target/field, manually paste the complete object and choose **전체 정책 저장**. Ordinary target/rule/settings work uses the guided forms instead; there are no per-list JSON editors or Apply ALL drafts button.
-5. Run `python3 scripts/native_burp_smoke.py --phase default`. Six clients/two numeric-loopback hosts share global5RPS; the controlled 1.5s hold case measures fixture concurrency. The harness records arrival timing, **not a guaranteed wire-admission clock**.
-6. Replace the advanced whole-policy text with the original **complete example document**, review it and save. Composite nodes deliberately include all record fields, including `caseSensitive:false`; missing primitive values are rejected. Run `--phase custom`. In **규칙**, select `fixture-composite`, choose **사용 / 중지** and confirm, then run `--phase disabled`; re-enable it with the same confirmed action. Each action saves directly, with no second global Apply. These checks distinguish actual BLOCK categories from scope/inspection failures and exercise negative/case-sensitive conditions.
-
-Additional phases require these explicit UI preconditions (other values remain at example defaults):
-
-| Phase | UI configuration/action | Expected result |
-|---|---|---|
-| `approve` | `fixture-ask` enabled; review pending `/ask`, choose **한 번만 승인** | No unresolved arrival; one after approval |
-| `deny` | Same, choose **거절** | `DENIED`, zero arrivals |
-| `expire` | Approval limit **4 seconds**; no decision | `APPROVAL_TIMEOUT`, zero arrivals |
-| `stale` | Approval limit30 seconds; while pending change queue limit to29 seconds and save | `POLICY_CHANGED`, zero arrivals |
-| `host` | Global5/default-host5; host-exception table: exact `127.0.0.1` and `127.0.0.2`, each2RPS | Two hosts independently limited to2RPS, still sharing global5 |
-| `queue` | Clear overrides; max concurrent1; queue limit **0.080 seconds**; response limit60 seconds | One fixture arrival, five `QUEUE_TIMEOUT` local blocks |
-| `quarantine` | Max concurrent1; queue limit30 seconds; response limit **0.500 seconds** | Probe blocked with `IN_FLIGHT_TIMEOUT` while first response is held; real completion permits a later request |
-| `paused` | **개요**: pause new Proxy requests | `PAUSED`, zero arrivals |
-
-These numeric fields are in **요청 제어 설정 변경…**; expand the advanced section for timeouts and host exceptions. UI time is in seconds, stored exactly in milliseconds. Restore example limits and unpause when finished. Pause changes revision: if an old editor is stale, close it, refresh and reopen from current values. Never lower the in-flight threshold to infer that an already sent request was cancelled.
-
-### Strict TLS variant
-
-The TLS tests use `localhost`, after checking it resolves **exclusively to loopback**, because the installed Burp's numeric-IP certificate did not satisfy strict IP-SAN verification. The test does not turn off chain/hostname verification or install a global CA. The harness refuses to label this single-host TLS variant as the two-host HTTP pacing experiment.
-
-- Retain the explicit `https`/`localhost:18080` allow/block entries from the example.
-- In the disposable Burp UI, Proxy settings → Import/export CA certificate → **Certificate in DER format**. Export **only the public certificate**, never the private key/keystore. This is not license or activation data.
-- Generate a temporary fixture certificate/key outside the checkout, with owner-only permissions. Use no real credentials:
+Choose unused owned ports and pass them **on every invocation**; defaults8080/
+8081/18080/18081 are examples, not permission to occupy them. For example, after
+human configuration (variables contain only the chosen owned ports):
 
 ```sh
-SMOKE_DIR="$(mktemp -d)"
-chmod 700 "$SMOKE_DIR"
-# Export Burp's PUBLIC certificate to "$SMOKE_DIR/disposable-burp-ca.der" in its UI first.
-openssl x509 -inform DER -in "$SMOKE_DIR/disposable-burp-ca.der" \
-  -out "$SMOKE_DIR/disposable-burp-ca.pem"
-(umask 077; openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -keyout "$SMOKE_DIR/fixture-key.pem" -out "$SMOKE_DIR/fixture-cert.pem" \
-  -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1')
-python3 scripts/native_burp_smoke.py --phase basic --https \
-  --fixture-cert "$SMOKE_DIR/fixture-cert.pem" --fixture-key "$SMOKE_DIR/fixture-key.pem" \
-  --burp-ca "$SMOKE_DIR/disposable-burp-ca.pem"
-python3 scripts/native_burp_smoke.py --phase custom --https \
-  --fixture-cert "$SMOKE_DIR/fixture-cert.pem" --fixture-key "$SMOKE_DIR/fixture-key.pem" \
-  --burp-ca "$SMOKE_DIR/disposable-burp-ca.pem"
+python3 scripts/native_burp_smoke.py --phase empty \
+  --proxy-port "$GUARDED_PORT" --port "$FIXTURE_PORT" --second-port "$SECOND_FIXTURE_PORT"
 ```
 
-These clients use CONNECT plus certificate-verified TLS with HTTP/1.1 inside the tunnel; HTTP/2 and opaque TLS pass-through remain separate, unverified cases. Keep generated keys, CA files, exports, screenshots and logs outside Git. Inspect masked JSON/HAR, test search/bookmarks and restore/unload/close only the owned disposable instance. The script closes its own servers on phase exit; the human is responsible for the Burp/profile/certificate cleanup.
+`--proxy-host` is numeric loopback. The two HTTP fixture hosts are127.0.0.1 /
+127.0.0.2; HTTPS uses explicitly verified loopback-only localhost. Fixture route
+names such as delete/purge have **no operation** behind them: servers echo only.
+Raw target equality uses the bounded received request line rather than a
+normalized framework path. Client/harness self-check PASS is **not native PASS**.
+Do not use Python `-O`/`PYTHONOPTIMIZE`; assertions must remain enabled.
 
-Harness self-checks are **offline unit checks, not native experiments**:
+## Baseline scope / latest path and optional-content regressions
+
+Before A–H, establish the changed pentest semantics on the exact candidate:
+
+- `empty`: empty allowlist -> `SCOPE_NOT_ALLOWED`, local451, zero arrivals.
+- `exact`: human exact `/safe` on first actual fixture service, DELETE-method only.
+  GET/HEAD + synthetic allowed POST arrive; `/safe/child` and `/safex` do not.
+  Encoded benign `delete` query text now arrives; it is **not a default substring
+  denial**. Preserve body/Authorization/Cookie unchanged at fixture.
+- `rawpaths`: explicit **all-path** scope on the first actual service only, no
+  conflicting custom rule/availability episode. Include exact `/c/;/main.do`,
+  `/c/%2e/main.do`, nested/encoded dot/matrix/separator variants and malformed
+  percent spellings. Verify exact target string at fixture; no unsolicited
+  `AMBIGUOUS_PATH` sanitizer or native target normalization by the extension.
+  If using curl instead of this helper, use `--path-as-is`.
+- Fuzz Host with the **second owned fixture service**, never a real/unowned host.
+  In-scope actual service with different Host must continue unchanged; spoofed
+  allowed Host must not authorize an out-of-scope actual service. HTTP proxies
+  may derive destination from Host; client URL alone does not prove native
+  `httpService`. If needed, use legitimately configured CONNECT+MITM with a pinned
+  actual service and verify that service through existing authorized product
+  observations. Do not report Host independence without proving actual destination.
+- Same rawpaths phase sends unsupported charset/binary/multipart/encoding,
+  malformed JSON and optional >1MiB capture payload. Otherwise in-scope traffic
+  must arrive unchanged, not automatically451. Enable a relevant explicit body/
+  header rule to verify fixed unavailable-inspection warnings rather than falsely
+  claiming parsing succeeded. Available explicit HEADER/BODY/JSON/FORM rules still
+  enforce their match. An unavailable condition must never grant EXEMPT.
+- Restricted path scope must still reject route escapes across bounded views;
+  matching blockScope still wins. Incomplete interpretation can pass explicit
+  all-path with warning, not prove restricted scope or path-dependent EXEMPT.
+  Strict authored probe/threshold route validation stays strict, unlike traffic.
+
+External clients cannot establish the extension's internal inspection-completeness
+or actual service source alone; pair fixture data with human UI/current source
+observations and label unobservable aspects as pending.
+
+## A — EXEMPT and default false positives
+
+Human creates ordinary BLOCK PATH `/broker` and matching narrow EXEMPT on the
+same in-scope owned service; retain default DELETE-method. `--phase exempt`
+expects broker arrival and DELETE at a non-exempt path blocked. Inspect outcome
+`exempt`, rule hits and unchanged native synthetic values.
+
+Also verify: out-of-scope actual service, operator pause, heavy/fanout/circuit,
+intent limit and rate/capacity still block an EXEMPT request as appropriate. An
+unavailable-content OR branch cannot lend EXEMPT through another known true branch.
+EXEMPT save warns that ordinary BLOCK/ASK are bypassed; cancel writes nothing.
+New-profile in-scope GET `/ui/bp/common/board/deleteInfoBoardComnt.do` and `undelete`
+text pass absent an authored block. This does **not** authorize an out-of-scope GET
+or silently remove an existing v1/customized rule. No session-broker/authentication
+service is implemented or tested; `/broker` is an echo route only.
+
+## B — ResponseWatcher / overlays
+
+### Heavy
+
+Human enables5MiB threshold,10minute TTL (or records explicit test TTL), allows
+`/large` on the owned service, and avoids unrelated detectors. `--phase heavy`:
+first **6MiB** response reaches client intact; next same path gives
+`HEAVY_ENDPOINT_AUTO_BLOCKED` with overlay ID and zero new fixture hit. Human
+releases that overlay in UI, then acknowledges the helper's prompt; a subsequent
+large response passes and can re-open protection. This is not an automated release.
+
+Inspect actual responseBytes=6291456 even though >copy bounds means raw/masked
+body omitted. No Content-Length/copy-size shortcut. Test TTL expiry, route-alias
+protection, another path's independence and explicit zero override separately.
+First-heavy detection is **post-response**; it cannot prevent/cut off the first
+large transfer or undo target work. Record these limitations.
+
+### Circuit / half-open
+
+Human configures five5xx in60seconds, open1second for the disposable test (or
+matches helper `--open-seconds`), health bypass disabled. `--phase circuit`
+observes five actual503s then `CIRCUIT_OPEN`, waits the chosen open time, observes
+one held GET half-open and concurrent denial, then successful close.
+
+The helper does **not** prove every state: separately check safe GET/HEAD-only,
+failed5xx/unknown/missing response reopen,30second per-service attempt cadence,
+late/duplicate response and old-epoch/released-episode ABA. Open expiry is not
+unprotected automatic recovery. If true permits are stalled, do not recycle them
+to force a half-open result; quiesce traffic or report the interference.
+Health GET may observe errors but must never heal circuit state.
+
+### Fanout, capacity and human controls
+
+With a small explicitly authored threshold/window, send distinct query-free paths
+to the owned service. Verify one incident per episode for WARN, service-local
+BLOCK, separate automatic global PAUSE; query-only variants are not distinct paths.
+Overlay list retains cause/created/expiry, selected/all release confirmations and
+reopen-on-new-detection. No persistent policy edit: compare a reviewed local policy
+export/hash before/after; no native console/control endpoint or profile/log export.
+Disabling a detector/same-project save/OFF does not erase active protection/debt.
+Capacity fence/no-active-eviction and all worst-case races may remain synthetic;
+label anything not run natively instead of extrapolating.
+
+## C — Typed local451 and optional health GET
+
+Preserve original five JSON keys **in order**:
+`source`, `outcome`, `reason`, `evidenceId`, `retryable:false`. Append enum-only
+`guardState`, `local:true`, nonnegative `policyRevision` and safe optional overlay
+UUID. Header `X-Cairn-Guard: blocked`, JSON/no-store distinguish it from target451.
+No URL/host/path/intent/run/credential/pattern/exception text in the local body.
+Compare actual reason from final commit (heavy/circuit/intent/listener etc.), not
+blanket `FINAL_CHECK_REJECTED`. Denial-factory failure must not continue upstream;
+ambiguous duplicate ID is drop-only to preserve older-flight ownership.
+
+Health default OFF. Through UI explicitly enable exact actual scheme/host/port/path
+GET exception, read side-effect warning, cancel once, then save deliberately.
+Only **no query / verified empty body / GET** can bypass operator pause/circuit.
+HEAD, body/query, different service/path or ambiguous authored routes are not
+health passthrough. Hard scope/lifecycle/invalid/save-uncertain/project/shutdown,
+ordinary BLOCK/ASK, heavy/fanout/rate/intent/capacity still apply. Allowed evidence
+outcome is `probe_allowed`; health response does not close a circuit. This observes
+client requests only, never extension-generated health polling.
+
+## D — Attribution / exact final-handoff budget
+
+Human sets perIntentMaxRequests20; no unrelated watcher failure. `--phase intent`
+sends20 with one synthetic(run,intent), requires21st `INTENT_BUDGET_EXCEEDED`,
+another intent passes. Inspect human raw tag columns/filter and masked export
+metadata; client tags remain unchanged and **untrusted**, not authenticated quotas.
+Missing intent is unbudgeted. Duplicate/invalid or incomplete captured headers
+reject when enabled; disabling accounting preserves debt, explicit human reset
+warns it grants fresh quota. Other run IDs are separate pairs.
+
+Reject an ASK, queue expiry, final watcher/lifecycle gate and local continuation/
+correlation factory failure without consuming new quota. Some local failure
+injection may be synthetic-only: do not add extension probes or claim native
+coverage without actually observing it. EXEMPT/health/half-open successful protected
+handoffs count; OFF/known-unselected do not. Native continuation is accounting
+boundary, not delivery; no refund after uncertain dispatch.
+
+## E — Candidate actions and raw history separation
+
+Human inspects maximum-descending candidates, max/p95/count/lastSeen/5xx and
+retention/truncation indicators. p95 is a **log2 upper-bound approximation**, count/
+max/5xx/lastSeen are exact for retained observations, not lifetime traffic.
+
+- Safe unchanged query-free actual-service `policyUrl` can open an **unsaved**
+  ordinary BLOCK draft; cancel must not save. A saved ordinary BLOCK is still
+  outranked by matching EXEMPT, unlike an automatic overlay.
+- Exact path NMiB threshold draft is separate from a rule, warns first-heavy
+  limitation, validates exact bytes and strict route.0 disables only that route's
+  size detection. Save leaves pre-existing overlay until expiry/release.
+- Ignore suppresses candidate display only, not policy/incident/active overlay.
+- Masked/changed/unrepresentable URL has no actionable policyUrl. Buttons must not
+  copy raw history into policy. Response-only synthetic grant echoed in earlier
+  path must remask watcher values and invalidate the draft, including older
+  pending endpoints. No raw getter for runtime watcher/export.
+
+Human history is **unmasked by request**, unlike older preview expectations:
+Authorization/Cookie/grant may appear **only in local bounded raw UI getters**,
+with UTF8/HEX/omitted/truncated inspection-copy labels. JSON/HAR/incident remain
+masked/sealed as appropriate. Test eviction/clear/project uncertainty and no late
+raw resurrection; clipboard/screenshots/private exports never enter Git.
+
+## F — Human incident / evidence export
+
+Choose a `[from,to)` window (max24hours) in human UI and export one owner-only
+file. Verify `window`, `events`, top20 `top5xx`/`topBytes`, numeric scalars,
+`complete`/`truncated`/`approximate`, retention/clock/ring-loss and approximation
+metadata. Startup/clear/out-of-retention/capacity loss cannot be claimed complete.
+No raw auth/cookie/grant/path reflections; no original response body in incidents.
+
+JSON/HAR uses sealed masked TrafficEntry, including actual responseBytes/warnings/
+state/outcome; stale retained selections use latest redaction. Full/selected/filtered
+counts, local451 vs callback status, unknown sizes/timings and missing-response
+labels must remain honest. Exports are inspection copies, not replay/wire proof.
+
+Optional offline helper after human export:
 
 ```sh
-python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 scripts/native_burp_smoke.py --phase incident \
+  --incident-file "$TMP/incident.json"
 ```
 
-Do not run the harness with `python -O` / `PYTHONOPTIMIZE`; it refuses optimized execution rather than silently disabling its checks. Observed results and gaps are recorded separately in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md).
+Watcher candidate IDs are lowercase64-character keyed route identifiers, not
+overlay/evidence UUIDs. The helper's old UUID assumption was fixed;27 harness tests
+and a network-free export produced by the actual217730… watcher JAR passed its
+offline validator with one event and nonempty top5xx/topBytes. This is producer/
+validator compatibility, **not a real Burp human export or native acceptance**.
+Never rewrite an export's IDs to manufacture PASS. Offline shape/known-synthetic-
+secret checking is not generic provenance validation or comprehensive DLP proof.
+
+## G — Shared pacing, eligible hosts and true permit lifetime
+
+For `default`/`host`/`concurrency`/`queue`/`quarantine`, configure matching scope and
+settings manually. The v2 basic/default helper now expects benign delete text and
+unsupported optional bodies to arrive; old preview expectations do not apply.
+
+- Global5/default-host5, six clients/two owned hosts: shared admission counters
+  and fixture arrival sequence; arrival timing is an observation, not strict
+  network-server-arrival pacing guarantee.
+- Host overrides2RPS on both exact fixture hosts retain global5. Host means
+  canonical host, not scheme/port. Slow host A must not hold ready B's turn when
+  genuine global capacity exists; no unconditional no-HOL promise under global
+  pacing/concurrency saturation.
+- Hold replies to reach maxConcurrent; verify no new admission beyond true slots.
+  Queue saturation/timeout gives local denial with zero added arrivals; unresolved
+  native operation is never decremented by a timer/reset/settings/close.
+- Host-local overdue work gives `IN_FLIGHT_TIMEOUT`; another host may use a real
+  free global slot. If stalled permits alone pin all maxConcurrent slots, every
+  host fails. Only matching actual late response closes its permit.
+- Inspect top64 host metrics/truncation and recent128-admission p95 wait, not target
+  throughput/latency. Larger-capacity/fairness cases not run natively remain labeled
+  synthetic-only.
+
+`quarantine` helper uses concurrency1, queue30seconds, request timeout0.500seconds
+and1.5second fixture hold. `queue` uses concurrency1/queue0.080seconds. Match these
+explicitly, then restore; do not confuse them with new-profile defaults60/30seconds.
+
+## H — Actual inbound listener restriction (critical pending gate)
+
+Human creates **two distinct owned inbound Proxy listeners** in the disposable
+instance. Start empty selection (all protected), then explicitly save only
+`$GUARDED_PORT` after the warning; `$UNSELECTED_PORT` is a different inbound port,
+not a fixture destination port.
+
+```sh
+python3 scripts/native_burp_smoke.py --phase listeners \
+  --proxy-port "$GUARDED_PORT" --unselected-proxy-port "$UNSELECTED_PORT" \
+  --port "$FIXTURE_PORT" --second-port "$SECOND_FIXTURE_PORT"
+```
+
+Same actual destination/payload: selected enforces DELETE default; known unselected
+forwards the unchanged DELETE. Check no new raw/masked contents, approval, watcher,
+budget, rate permit or response correlation for unselected traffic, only the
+separate saturating counter. Pause must not block known-unselected traffic.
+Unknown/missing/collision/expired/stale mapping must deny `LISTENER_UNVERIFIED`
+**before capture**, not silently protect/capture or bypass via destination fallback.
+
+**Prove, do not infer**, actual observer→HttpHandler message-ID correlation,
+received/to-be-sent ordering and listenerInterface representation on this product/
+JAR. `javap`/Mockito/registry unit tests only establish API/source compatibility.
+If existing authorized product observations cannot establish it, record that
+blocker; do not add probes/control APIs, copy logs containing content or call this
+H PASS. External clients alone cannot prove in-memory no-capture. Test selection
+changes/project/generation and observer unload/late callbacks without reusing
+ambiguous IDs/permits. Global OFF comes before listener mapping.
+
+## OFF / retained pause / old flights / migration / dialogs
+
+These cross-cut A–H; they are not a separate approval bypass:
+
+1. Empty scope, open OFF confirmation: scroll to last warning, resize, Escape/close
+   and default Enter cancel. Recheck empty blocks. Then explicitly confirm OFF;
+   persistent warning/restore controls remain across all8 tabs.
+2. Set protected1/1/1; `--phase passthrough` tests HTTP-only8 cases/13 requests,
+   including scope/DELETE/opaque bodies/synthetic values and six held clients.
+   Only OFF count changes, no new content/raw/evidence/permit. Restore and recheck
+   scope. Scope/binary tolerance in protected v2 must not be misattributed to OFF.
+3. Pause first, enter OFF, restore ON: **old operator pause is retained** until
+   explicit Resume. While OFF `paused=false` does not erase `operatorPaused`.
+   Heavy/circuit/intent debt/stalled native permits remain across OFF/save/ON.
+4. `--phase passthrough-cancel`: old ASK's unresolved check, then human OFF (not
+   Approve). Old request rejects `POLICY_CHANGED`, zero fixture hits; new OFF may
+   pass. Restore requires fresh approval. Protected Prepared never inherits OFF.
+5. Hold an old protected response: entering OFF does not close its permit. Actual
+   response updates its old bounded raw/masked record if still valid; OFF-origin
+   responses never become captured after ON. Stop traffic and independently
+   quiesce OFF connections before relying on protected concurrency.
+6. Project/restart/uncertainty resets OFF and raw ownership, never true permit
+   completion. Successful same-project save preserves OFF; uncertain save blocks.
+   Stale modal/project/revision/tokens reject, not silently refreshed authorization.
+7. Load synthetic strict v1 policy: banner/original/migrated comparison, new
+   detectors OFF, legacy rules retained, no read-time save. Cancel unchanged.
+   Original-policy export is operator-authored data, **not masked traffic**.
+   Optional exact legacy removal unchecked by default; customized/disabled rules
+   remain. Explicit v2 save warns old preview cannot read it; backup original for
+   deliberate rollback. No automatic downgrade or implicit deletion.
+8. Exercise EXEMPT/listener/health/threshold/release/ignore/reset/clear/overwrite
+   confirmations, editable settings and stale CAS. Dialogs plain/selectable/
+   scrollable/resizable; safe default cancel, action area reachable. Guide/Enter/
+   double-click/recipe filling never saves or decides implicitly. Real isolated
+   Isolated Swing scale1/2 success does not clear pending native LAF/layout checks.
+
+## HTTPS and cleanup boundaries
+
+HTTPS needs an owned fixture certificate/key and explicit **temporary client trust**
+of the disposable Burp's **public CA only**. Never export a private CA key/keystore,
+copy activation data, disable hostname/chain verification or alter global trust.
+Verify localhost resolves exclusively to loopback. Pass `--https --fixture-cert
+"$TMP/fixture-cert.pem" --fixture-key "$TMP/fixture-key.pem" --burp-ca
+"$TMP/disposable-public-ca.pem"` with matching human https scope. Use `basic` rather
+than two-host `default`/`host`/`passthrough` TLS variants; HTTP2/opaque CONNECT/TLS
+pass-through are separate unverified cases. Historical strict localhost TLS success
+does not prove numeric-IP SAN or v2 HTTPS compatibility.
+
+After tests recheck JAR hash, human policy state and sanitized per-case outcomes.
+Exit only the disposable instance through UI when possible; stop/join only owned
+fixture/display/window-manager processes and remove only owned private artifacts.
+Do not invent completion/cancel of already-started requests on unload. Unloaded
+extension is no protection. Leave licensing/native/audit/release blockers explicit.
+
+CAIRN/Pi/model/report-file E2E, mandatory egress, Professional disk projects,
+other extensions' final wire changes, authentication/session coordination and
+production reliability certification are outside this checklist's evidence.
+Historical12/13/54 native scenarios remain per-artifact records, not v2 results.

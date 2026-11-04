@@ -71,6 +71,17 @@ class ConditionEditorTest {
         });
     }
 
+    @Test void bodyHelpDoesNotPromiseAutomaticUnsupportedPayloadBlock() throws Exception {
+        edt(() -> {
+            ConditionEditor editor = new ConditionEditor(leaf(Field.BODY, "", Match.CONTAINS, "safe", true));
+            String hint = get(editor, "condition.hint", JTextArea.class).getText();
+            assertTrue(hint.contains("자동 차단하지 않습니다"));
+            assertTrue(hint.contains("검사 경고"));
+            assertFalse(hint.contains("별도로 차단"));
+            return null;
+        });
+    }
+
     @Test void editingValueDoesNotMutateAnUntouchedNullSelector() throws Exception {
         edt(() -> {
             ConditionEditor editor = new ConditionEditor(leaf(Field.PATH, null, Match.EXACT, "/old", true));

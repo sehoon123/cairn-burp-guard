@@ -320,6 +320,178 @@ class EvidenceStoreTest {
         assertEquals(120, store.snapshot().size());
     }
 
+    @Test void schemaTwoMetadataSurvivesEveryMutationAndHarWithoutChangingDispositionVocabulary() throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("p", "fixture", request("https://fixture.test/route",
+                List.of(new Header("X-Cairn-Intent", "i048"), new Header("X-Cairn-Run", "run:alpha")), ""),
+                new Decision(Mode.EXEMPT, "RULE_EXEMPT", List.of(), List.of("BODY_INSPECTION_UNAVAILABLE_UNSUPPORTED_CHARSET")), 9);
+        assertEquals("pending", only(store).outcome());
+        assertEquals(-1, only(store).responseBytes());
+        String overlay = "a5bd8ee4-97b7-438d-b07b-e5366533046e";
+        store.context(id, "exempt", "PROTECTED", overlay);
+        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", null);
+        store.responseBytes(id, 6L * 1024 * 1024);
+        store.response(id, 200, List.of(), new byte[0]);
+        store.bookmark(id, true);
+        TrafficEntry e = only(store);
+        assertEquals("FORWARDED", e.disposition());
+        assertEquals("exempt", e.outcome());
+        assertEquals("PROTECTED", e.guardState());
+        assertEquals(overlay, e.overlayId());
+        assertEquals("i048", e.intentId());
+        assertEquals("run:alpha", e.runId());
+        assertEquals(6L * 1024 * 1024, e.responseBytes());
+        assertEquals(List.of("BODY_INSPECTION_UNAVAILABLE_UNSUPPORTED_CHARSET"), e.inspectionWarnings());
+        assertTrue(e.bookmarked());
+        JsonNode json = Json.MAPPER.readTree(store.exportJson(store.snapshot()));
+        assertEquals(2, json.path("schemaVersion").asInt());
+        JsonNode har = Json.MAPPER.readTree(store.exportHar(store.snapshot()));
+        for (JsonNode metadata : List.of(json.at("/entries/0"), har.at("/log/entries/0/_cairnGuard"))) {
+            assertEquals("exempt", metadata.path("outcome").asText());
+            assertEquals("PROTECTED", metadata.path("guardState").asText());
+            assertEquals(overlay, metadata.path("overlayId").asText());
+            assertEquals(e.responseBytes(), metadata.path("responseBytes").asLong());
+            assertEquals(e.inspectionWarnings().getFirst(), metadata.path("inspectionWarnings").get(0).asText());
+        }
+        assertThrows(UnsupportedOperationException.class, () -> e.inspectionWarnings().clear());
+    }
+
+    @Test void validAndMissingAttributionIsDisplayedAndDuplicatesAreNotCopied() {
+        EvidenceStore store = new EvidenceStore();
+        store.begin("p", "p", empty(), ALLOW, 1);
+        assertEquals("-", only(store).intentId());
+        assertEquals("-", only(store).runId());
+        String id = store.begin("p", "p", request("https://fixture.test/", List.of(new Header("X-Cairn-Intent", "i048"),
+                new Header("X-Cairn-Run", "run-1")), ""), ALLOW, 1);
+        store.context(id, "probe_allowed", "PROTECTED", "");
+        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", null);
+        store.response(id, 204, List.of(), new byte[0]);
+        store.bookmark(id, true);
+        assertEquals("i048", only(store).intentId());
+        assertEquals("run-1", only(store).runId());
+        assertEquals("probe_allowed", only(store).outcome());
+        store.begin("p", "p", request("https://fixture.test/", List.of(new Header("X-Cairn-Intent", "a"),
+                new Header("x-cairn-intent", "a")), ""), ALLOW, 1);
+        assertEquals("?", only(store).intentId());
+    }
+
+    @ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings = {"Authorization", "Cookie", "X-Broker-Grant"})
+    void secretReflectedIntoIntentRunPathAndStructuredCopiesNeverExports(String header) {
+        String secret = "synthetic-reflected-label-753951";
+        String value = header.equals("Authorization") ? "Bearer " + secret : header.equals("Cookie") ? "sid=" + secret : secret;
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("p", "p", request("https://fixture.test/echo/" + secret,
+                List.of(new Header(header, value), new Header("X-Cairn-Intent", secret), new Header("X-Cairn-Run", "run-" + secret),
+                        new Header("Content-Type", "application/json")), "{\"echo\":\"" + secret + "\"}"), ALLOW, 1);
+        store.context(id, "exempt", "PROTECTED", "");
+        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", null);
+        store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
+                ("{\"grant\":\"" + secret + "\",\"mirror\":\"" + secret + "\"}").getBytes(StandardCharsets.UTF_8));
+        store.bookmark(id, true);
+        String masked = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot()) + Json.write(store.stats());
+        assertFalse(masked.contains(secret));
+        assertTrue(only(store).intentId().contains(Redactor.REDACTED));
+        assertTrue(only(store).runId().contains(Redactor.REDACTED));
+        assertTrue(store.rawRequest(id).contains(secret));
+        assertTrue(store.rawResponse(id).contains(secret));
+        assertEquals(secret, store.rawCaptureInfo(id).get("intentId"));
+    }
+
+    @Test void responseGrantIssuanceRemasksTagsPathAndOverlayIncludingStaleSelections() {
+        String secret = "9437cd9e-f397-4187-8e4d-f0d9d34ac726";
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("p", "p", request("https://fixture.test/" + secret,
+                List.of(new Header("X-Cairn-Intent", secret), new Header("X-Cairn-Run", secret)), ""), ALLOW, 1);
+        store.context(id, "half_open", "CIRCUIT_OPEN", secret);
+        List<TrafficEntry> stale = store.snapshot();
+        store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
+                ("{\"brokerGrant\":\"" + secret + "\",\"echo\":\"" + secret + "\"}").getBytes(StandardCharsets.UTF_8));
+        assertFalse(Json.write(store.snapshot()).contains(secret));
+        assertFalse(store.exportJson(stale).contains(secret));
+        assertFalse(store.exportHar(stale).contains(secret));
+        assertEquals(Redactor.REDACTED, only(store).overlayId());
+        assertEquals("half_open", only(store).outcome());
+        assertTrue(store.rawUrl(id).contains(secret));
+    }
+
+    @Test void allNewMetadataParticipatesInProvenanceAndUnsealedRecordsAreRejected() {
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("p", "p", empty(), ALLOW, 1);
+        store.context(id, "forwarded", "PROTECTED", "7254314f-0495-438a-88ed-a972b701fba1");
+        TrafficEntry e = only(store);
+        List<TrafficEntry> forged = List.of(
+                withMetadata(e, "forged-intent", e.runId(), e.outcome(), e.guardState(), e.overlayId(), e.responseBytes(), e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), "forged-run", e.outcome(), e.guardState(), e.overlayId(), e.responseBytes(), e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), e.runId(), "exempt", e.guardState(), e.overlayId(), e.responseBytes(), e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), e.runId(), e.outcome(), "SHUTDOWN", e.overlayId(), e.responseBytes(), e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), e.runId(), e.outcome(), e.guardState(), "", e.responseBytes(), e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), e.runId(), e.outcome(), e.guardState(), e.overlayId(), 987654, e.inspectionWarnings()),
+                withMetadata(e, e.intentId(), e.runId(), e.outcome(), e.guardState(), e.overlayId(), e.responseBytes(), List.of("BODY_INCOMPLETE")));
+        for (TrafficEntry invalid : forged) {
+            assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(invalid)));
+            assertThrows(IllegalArgumentException.class, () -> store.exportHar(List.of(invalid)));
+        }
+        TrafficEntry unsealed = new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(),
+                e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), "");
+        assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(unsealed)));
+        assertDoesNotThrow(() -> store.exportJson(List.of(e)));
+    }
+
+    private static TrafficEntry withMetadata(TrafficEntry e, String intent, String run, String outcome, String guard,
+                                             String overlay, long bytes, List<String> warnings) {
+        return new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(), e.disposition(),
+                e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(),
+                e.provenanceSeal(), intent, run, outcome, guard, overlay, bytes, warnings);
+    }
+
+    @Test void arbitraryContextWarningsAndInvalidOverlayAreNeverFreeTextExportChannels() {
+        String secret = "synthetic-untrusted-metadata-2468";
+        EvidenceStore store = new EvidenceStore();
+        String id = store.begin("p", "p", empty(), new Decision(Mode.ALLOW, "ALLOW", List.of(), List.of(secret)), 1);
+        store.context(id, secret, secret, secret);
+        assertEquals("pending", only(store).outcome());
+        assertEquals("", only(store).guardState());
+        assertEquals("", only(store).overlayId());
+        assertEquals(List.of("INSPECTION_UNAVAILABLE"), only(store).inspectionWarnings());
+        assertFalse(store.exportJson(store.snapshot()).contains(secret));
+        assertFalse(store.exportHar(store.snapshot()).contains(secret));
+        store.outcome(id, "BLOCKED", "CIRCUIT_OPEN", 451);
+        store.context(id, "exempt", "CIRCUIT_OPEN", "");
+        assertEquals("blocked", only(store).outcome());
+    }
+
+    @Test void warningsAreCategoricalBoundedAndCannotHideCaptureIncompleteness() {
+        EvidenceStore store = new EvidenceStore();
+        RequestData partial = new RequestData("POST", "https://fixture.test/", "fixture.test", 443, true,
+                List.of(), new byte[0], false, false);
+        store.begin("p", "p", partial, new Decision(Mode.ALLOW, "ALLOW", List.of(),
+                java.util.Collections.nCopies(1000, "untrusted-warning-secret")), 1);
+        TrafficEntry entry = only(store);
+        assertTrue(entry.truncated());
+        assertTrue(entry.inspectionWarnings().size() <= 32);
+        assertTrue(entry.inspectionWarnings().contains("HEADERS_INCOMPLETE"));
+        assertTrue(entry.inspectionWarnings().contains("BODY_INCOMPLETE"));
+        assertFalse(store.exportJson(store.snapshot()).contains("untrusted-warning-secret"));
+        assertFalse(store.exportHar(store.snapshot()).contains("untrusted-warning-secret"));
+    }
+
+    @Test void v2RuntimeReasonsAndFixedCountersRemainCategoricalAndCumulative() {
+        EvidenceStore store = new EvidenceStore();
+        for (String reason : List.of("RULE_EXEMPT", "HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN", "FANOUT_SUSPECTED",
+                "RESPONSE_WATCHER_CAPACITY", "INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED", "INTENT_BUDGET_CAPACITY", "LISTENER_UNVERIFIED")) {
+            String id = store.begin("p", "p", empty(), Decision.blocked(reason), 1);
+            store.outcome(id, "BLOCKED", reason, 451);
+            store.outcome(id, "BLOCKED", reason, 451);
+            store.bookmark(id, true);
+            assertEquals(reason, only(store).reason());
+            Map<?, ?> counters = (Map<?, ?>) store.stats().get("reasonCounters");
+            assertEquals(1L, counters.get(reason));
+            assertThrows(UnsupportedOperationException.class, counters::clear);
+        }
+        store.clear();
+        assertEquals(1L, ((Map<?, ?>) store.stats().get("reasonCounters")).get("CIRCUIT_OPEN"));
+    }
+
     @Test void statsHaveFixedCredentialFreeKeysAndUnknownMessagesAreNeverRetained() {
         EvidenceStore store = new EvidenceStore();
         Map<String, Object> before = store.stats();

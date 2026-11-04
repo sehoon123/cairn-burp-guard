@@ -1,5 +1,6 @@
 package dev.cairnguard.runtime;
 
+import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Limits;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -98,42 +99,69 @@ class RateGateTest {
         }
     }
 
-    @Test void fifoRetainsHeadOfLineAcrossHostsAndDoesNotCatchUpInABurst() throws Exception {
+    @Test void slowAHeadDoesNotBlockFastBAndReadyASoonGetsItsRoundRobinTurn() throws Exception {
         FakeTime time = new FakeTime(0);
-        Limits limits = limits(1_000, 1, 5, 10, 5_000, 10_000);
-        List<Integer> order = Collections.synchronizedList(new ArrayList<>());
+        Limits limits = new Limits(1_000, 1_000, Map.of("slow.test", 1), 3, 10, 5_000, 1_000, 10_000);
         ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
         try (RateGate gate = new RateGate(limits, time, 16)) {
             try {
                 gate.acquire("slow.test", () -> true).close();
-                List<Future<Long>> results = new ArrayList<>();
-                for (int i = 0; i < 6; i++) {
-                    int index = i;
-                    String host = i == 0 ? "slow.test" : "fast-" + i + ".test";
-                    results.add(workers.submit(() -> {
-                        try (RateGate.Permit permit = gate.acquire(host, () -> true)) {
-                            order.add(index);
-                            return permit.admittedAtNanos();
-                        }
-                    }));
-                    int count = i + 1;
+                Future<Long> slow = admission(workers, gate, "slow.test");
+                waitFor(() -> number(gate, "queued") == 1);
+                List<Future<Long>> fast = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    fast.add(admission(workers, gate, "fast.test"));
+                    int count = i + 2;
                     waitFor(() -> number(gate, "queued") == count);
                 }
                 time.advanceMillis(1);
                 gate.update(limits);
-                assertEquals(1, number(gate, "admitted"));
-                assertTrue(results.stream().noneMatch(Future::isDone));
-                time.advanceMillis(999);
+                assertEquals(1_000_000L, get(fast.get(0)));
+                assertFalse(slow.isDone(), "slow host still owes its own cadence");
+                time.advanceMillis(1);
                 gate.update(limits);
-                assertEquals(1_000_000_000L, get(results.getFirst()));
-                for (int i = 1; i < results.size(); i++) {
-                    assertFalse(results.get(i).isDone(), "no idle catch-up credit");
+                assertEquals(2_000_000L, get(fast.get(1)));
+                // Both heads become eligible after this idle jump. Slow retained its RR turn,
+                // despite fast's backlog; neither host receives catch-up burst credit.
+                time.advanceMillis(998);
+                gate.update(limits);
+                assertEquals(1_000_000_000L, get(slow));
+                assertFalse(fast.get(2).isDone());
+                time.advanceMillis(1);
+                gate.update(limits);
+                assertEquals(1_001_000_000L, get(fast.get(2)));
+                assertEquals(0, number(gate, "queued"));
+            } finally { gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void eligibleHeadsRoundRobinWithoutStarvingAnyHostAndPreserveEachHostFifo() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = limits(1_000, 1_000, 1, 12, 5_000, 10_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            RateGate.Permit pin = gate.acquire("pin.test", () -> true);
+            try {
+                Map<String, Future<Long>> waiting = new HashMap<>();
+                for (String host : List.of("a", "b", "c")) {
+                    for (int i = 0; i < 3; i++) {
+                        waiting.put(host + i, admission(workers, gate, host + ".test"));
+                        int count = waiting.size();
+                        waitFor(() -> number(gate, "queued") == count);
+                    }
+                }
+                time.advanceMillis(1);
+                pin.close();
+                int slot = 1;
+                for (String label : List.of("a0", "b0", "c0", "a1", "b1", "c1", "a2", "b2", "c2")) {
+                    assertEquals(slot * 1_000_000L, get(waiting.get(label)), label);
+                    assertEquals(slot + 1, number(gate, "admitted"));
                     time.advanceMillis(1);
                     gate.update(limits);
-                    assertEquals(1_000_000_000L + i * 1_000_000L, get(results.get(i)));
+                    slot++;
                 }
-                assertEquals(List.of(0, 1, 2, 3, 4, 5), order);
-            } finally { gate.close(); workers.close(); }
+                assertEquals(0, number(gate, "queued"));
+            } finally { pin.close(); gate.close(); workers.close(); }
         }
     }
 
@@ -161,7 +189,7 @@ class RateGateTest {
         }
     }
 
-    @Test void timedOutPermitsQuarantineWithoutRecyclingAndOnlyActualCloseClearsThem() throws Exception {
+    @Test void stalledHostKeepsItsPermitButOtherHostsUseRealFreeSlotsUntilAllSlotsArePinned() throws Exception {
         FakeTime time = new FakeTime(0);
         Limits limits = limits(1_000, 1_000, 2, 10, 5_000, 100);
         ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
@@ -174,25 +202,80 @@ class RateGateTest {
                 waitFor(() -> number(gate, "queued") == 1);
                 time.advanceMillis(99);
                 gate.update(limits);
-                assertEquals("IN_FLIGHT_TIMEOUT", get(waiting));
+                assertFalse(waiting.isDone(), "one stalled slot is not a global quarantine");
                 assertEquals(2, number(gate, "active"));
                 assertEquals(1, number(gate, "stalled"));
                 assertEquals(1, number(gate, "timedOut"));
-                rejected(gate, "new.test", "IN_FLIGHT_TIMEOUT");
-                first.close(); // synthetic late native completion, NOT an automatic timeout release
+                rejected(gate, "one.test", "IN_FLIGHT_TIMEOUT");
+                second.close(); // actual completion frees the OTHER slot; first stays pinned
+                assertEquals("ADMITTED", get(waiting));
                 assertEquals(1, number(gate, "active"));
-                assertEquals(0, number(gate, "stalled"));
-                RateGate.Permit third = gate.acquire("three.test", () -> true);
-                time.advanceMillis(1);
                 assertEquals(1, number(gate, "stalled"));
+                time.advanceMillis(1);
+                RateGate.Permit third = gate.acquire("three.test", () -> true);
+                time.advanceMillis(100);
+                assertEquals(2, number(gate, "stalled"));
+                rejected(gate, "new.test", "IN_FLIGHT_TIMEOUT"); // every global slot is pinned
                 gate.close();
                 assertEquals(2, number(gate, "active"));
+                assertEquals(2, number(gate, "stalled"));
+                first.close(); // synthetic late native completion, NEVER automatic recycling
+                assertEquals(1, number(gate, "active"));
                 assertEquals(1, number(gate, "stalled"));
-                second.close();
                 third.close();
                 assertEquals(0, number(gate, "active"));
                 assertEquals(0, number(gate, "stalled"));
             } finally { gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void queuedStalledHostIsCancelledWhileOtherHostWaitsForNonStalledCompletion() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = limits(1_000, 1_000, 3, 10, 5_000, 100);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            RateGate.Permit a = gate.acquire("a.test", () -> true);
+            time.advanceMillis(50);
+            RateGate.Permit b = gate.acquire("b.test", () -> true);
+            time.advanceMillis(1);
+            RateGate.Permit c = gate.acquire("c.test", () -> true);
+            try {
+                Future<String> sameHost = workers.submit(() -> outcome(gate, "a.test", () -> true));
+                waitFor(() -> number(gate, "queued") == 1);
+                Future<String> otherHost = workers.submit(() -> outcome(gate, "d.test", () -> true));
+                waitFor(() -> number(gate, "queued") == 2);
+                time.advanceMillis(49);
+                gate.update(limits);
+                assertEquals("IN_FLIGHT_TIMEOUT", get(sameHost));
+                assertFalse(otherHost.isDone());
+                assertEquals(3, number(gate, "active"));
+                assertEquals(1, number(gate, "stalled"));
+                b.close();
+                assertEquals("ADMITTED", get(otherHost));
+                assertEquals(2, number(gate, "active"));
+                assertEquals(1, number(gate, "stalled"));
+            } finally { a.close(); b.close(); c.close(); gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void increasingConcurrencyAllowsOtherHostsWithoutUnstallingOrRecyclingNativePermit() throws Exception {
+        FakeTime time = new FakeTime(0);
+        try (RateGate gate = new RateGate(limits(1_000, 1_000, 1, 0, 1_000, 50), time, 8)) {
+            RateGate.Permit a = gate.acquire("a.test", () -> true);
+            try {
+                time.advanceMillis(50);
+                rejected(gate, "b.test", "IN_FLIGHT_TIMEOUT");
+                gate.update(limits(1_000, 1_000, 2, 0, 1_000, 600_000));
+                rejected(gate, "a.test", "IN_FLIGHT_TIMEOUT");
+                RateGate.Permit b = gate.acquire("b.test", () -> true);
+                assertEquals(2, number(gate, "active"));
+                assertEquals(1, number(gate, "stalled"));
+                b.close();
+                gate.update(limits(1_000, 1_000, 1, 0, 1_000, 600_000));
+                rejected(gate, "c.test", "IN_FLIGHT_TIMEOUT");
+                assertEquals(1, number(gate, "active"));
+                assertEquals(1, number(gate, "timedOut"));
+            } finally { a.close(); }
         }
     }
 
@@ -217,9 +300,13 @@ class RateGateTest {
             time.advanceMillis(51);
             gate.update(limits(1_000, 1_000, 2, 0, 1_000, 600_000));
             assertEquals(1, number(gate, "stalled"));
-            rejected(gate, "two.test", "IN_FLIGHT_TIMEOUT");
-            permit.close();
+            rejected(gate, "one.test", "IN_FLIGHT_TIMEOUT");
             gate.acquire("two.test", () -> true).close();
+            assertEquals(1, number(gate, "active"));
+            assertEquals(1, number(gate, "stalled"));
+            permit.close();
+            time.advanceMillis(1);
+            gate.acquire("one.test", () -> true).close();
         }
     }
 
@@ -231,7 +318,9 @@ class RateGateTest {
             gate.update(limits(1_000, 1_000, 2, 0, 1_000, 20));
             assertEquals(1, number(gate, "active"));
             assertEquals(1, number(gate, "stalled"));
-            rejected(gate, "two.test", "IN_FLIGHT_TIMEOUT");
+            rejected(gate, "one.test", "IN_FLIGHT_TIMEOUT");
+            gate.acquire("two.test", () -> true).close();
+            assertEquals(1, number(gate, "active"));
             permit.close();
         }
     }
@@ -515,6 +604,10 @@ class RateGateTest {
                 }
                 waitFor(() -> number(gate, "queued") == 4_095);
                 assertEquals(4_096, number(gate, "hosts"));
+                assertEquals(64, metrics(gate).size());
+                assertEquals(Boolean.TRUE, gate.snapshot().get("hostMetricsTruncated"));
+                assertEquals(4_032, number(gate, "hostMetricsOmitted"));
+                assertEquals("active.test", metrics(gate).getFirst().get("host"));
                 rejected(gate, "overflow.test", "HOST_CAPACITY");
                 assertEquals(4_096, number(gate, "hosts"));
                 gate.close();
@@ -573,6 +666,8 @@ class RateGateTest {
         invalid.add(new Limits(5, 5, Map.of("example.test", 5, "EXAMPLE.TEST.", 6), 5, 100, 1_000, 1_000, 1_000));
         invalid.add(new Limits(5, 5, Map.of("[::1]", 5, "0:0:0:0:0:0:0:1", 6), 5, 100, 1_000, 1_000, 1_000));
         invalid.add(new Limits(5, 5, Map.of("*.example.test", 5), 5, 100, 1_000, 1_000, 1_000));
+        invalid.add(new Limits(5, 5, Map.of(), 5, 100, 1_000, 1_000, 1_000,
+                -1, 600_000, null, null, 0, false, List.of(), List.of()));
         Map<String, Integer> excess = new HashMap<>();
         for (int i = 0; i < 257; i++) excess.put("host-" + i + ".test", 5);
         invalid.add(new Limits(5, 5, excess, 5, 100, 1_000, 1_000, 1_000));
@@ -588,14 +683,18 @@ class RateGateTest {
         }
     }
 
-    @Test void inclusiveLimitEndpointsAreAcceptedAndSnapshotsContainOnlyFixedSafeMetadata() {
+    @Test void inclusiveLimitEndpointsAreAcceptedAndSnapshotsRetainNumericCompatibilityAndBoundedRows() {
         for (Limits limits : List.of(limits(1, 1, 1, 0, 1, 1),
-                new Limits(1_000, 1_000, Map.of(), 100, 10_000, 600_000, 600_000, 600_000))) {
+                new Limits(1_000, 1_000, Map.of(), 100, 10_000, 600_000, 600_000, 600_000),
+                GuardConfig.defaults().limits())) {
             try (RateGate gate = new RateGate(limits)) {
                 assertEquals(limits.globalRps(), number(gate, "globalRps"));
                 assertEquals(limits.perHostRps(), number(gate, "perHostRps"));
                 assertEquals(limits.maxConcurrent(), number(gate, "maxConcurrent"));
-                assertTrue(gate.snapshot().values().stream().allMatch(value -> value instanceof Number || value instanceof Boolean));
+                assertInstanceOf(Number.class, gate.snapshot().get("hosts"));
+                assertEquals(List.of(), metrics(gate));
+                assertEquals(Boolean.FALSE, gate.snapshot().get("hostMetricsTruncated"));
+                assertEquals(0, number(gate, "hostMetricsOmitted"));
                 assertThrows(UnsupportedOperationException.class, () -> gate.snapshot().put("host", "not-allowed"));
             }
         }
@@ -704,6 +803,197 @@ class RateGateTest {
         }
     }
 
+    @Test void cancellingHostHeadPreservesItsNextWaiterAndOtherHostsRoundRobinTurn() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = limits(1_000, 1_000, 1, 10, 5_000, 10_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            RateGate.Permit pin = gate.acquire("pin.test", () -> true);
+            AtomicBoolean current = new AtomicBoolean(true);
+            try {
+                Future<String> cancelled = workers.submit(() -> outcome(gate, "a.test", current::get));
+                waitFor(() -> number(gate, "queued") == 1);
+                Future<Long> nextA = admission(workers, gate, "a.test");
+                waitFor(() -> number(gate, "queued") == 2);
+                Future<Long> b = admission(workers, gate, "b.test");
+                waitFor(() -> number(gate, "queued") == 3);
+                current.set(false);
+                gate.update(limits);
+                assertEquals("POLICY_CHANGED", get(cancelled));
+                assertEquals(2, number(gate, "queued"));
+                assertEquals(1, metric(gate, "a.test").get("queued"));
+                time.advanceMillis(1);
+                pin.close();
+                assertEquals(1_000_000L, get(nextA));
+                assertFalse(b.isDone());
+                time.advanceMillis(1);
+                gate.update(limits);
+                assertEquals(2_000_000L, get(b));
+                assertEquals(0, number(gate, "queued"));
+            } finally { pin.close(); gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void soleHostMayFillQueueButCompetitorReclaimsHalfAndCancellationRelaxesBound() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = limits(1_000, 1_000, 1, 6, 5_000, 10_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            RateGate.Permit pin = gate.acquire("pin.test", () -> true);
+            AtomicBoolean bCurrent = new AtomicBoolean(true);
+            try {
+                List<Future<String>> a = new ArrayList<>();
+                for (int i = 0; i < 6; i++) {
+                    a.add(workers.submit(() -> outcome(gate, "a.test", () -> true)));
+                    int count = i + 1;
+                    waitFor(() -> number(gate, "queued") == count);
+                }
+                rejected(gate, "a.test", "QUEUE_FULL");
+                List<Future<String>> b = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    b.add(workers.submit(() -> outcome(gate, "b.test", bCurrent::get)));
+                    int count = i + 4;
+                    waitFor(() -> number(gate, "queued") == count);
+                }
+                assertEquals(3, metric(gate, "a.test").get("queued"));
+                assertEquals(3, metric(gate, "b.test").get("queued"));
+                for (int i = 0; i < 3; i++) assertFalse(a.get(i).isDone(), "oldest host waiters survive");
+                for (int i = 3; i < 6; i++) assertEquals("QUEUE_FULL", get(a.get(i)));
+                rejected(gate, "b.test", "QUEUE_FULL");
+                bCurrent.set(false);
+                gate.update(limits);
+                for (Future<String> result : b) assertEquals("POLICY_CHANGED", get(result));
+                for (int i = 0; i < 3; i++) {
+                    a.add(workers.submit(() -> outcome(gate, "a.test", () -> true)));
+                    int count = i + 4;
+                    waitFor(() -> number(gate, "queued") == count);
+                }
+                assertEquals(6, metric(gate, "a.test").get("queued"));
+                gate.close();
+                for (int i : List.of(0, 1, 2, 6, 7, 8)) assertEquals("SHUTDOWN", get(a.get(i)));
+                assertEquals(1, number(gate, "active"));
+            } finally { pin.close(); gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void oddCompetingQueueBoundRoundsUpAndLiveShrinkDropsOnlyNewestHostExcess() throws Exception {
+        FakeTime time = new FakeTime(0);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits(1_000, 1_000, 1, 10, 5_000, 10_000), time, 8)) {
+            RateGate.Permit pin = gate.acquire("pin.test", () -> true);
+            try {
+                List<Future<String>> a = new ArrayList<>();
+                for (int i = 0; i < 4; i++) {
+                    a.add(workers.submit(() -> outcome(gate, "a.test", () -> true)));
+                    int count = i + 1;
+                    waitFor(() -> number(gate, "queued") == count);
+                }
+                Future<String> b = workers.submit(() -> outcome(gate, "b.test", () -> true));
+                waitFor(() -> number(gate, "queued") == 5);
+                gate.update(limits(1_000, 1_000, 1, 5, 5_000, 10_000));
+                assertEquals("QUEUE_FULL", get(a.get(3)));
+                assertEquals(3, metric(gate, "a.test").get("queued")); // ceil(5/2)
+                assertEquals(1, metric(gate, "b.test").get("queued"));
+                rejected(gate, "a.test", "QUEUE_FULL");
+                assertEquals(4, number(gate, "queued"));
+                gate.close();
+                for (int i = 0; i < 3; i++) assertEquals("SHUTDOWN", get(a.get(i)));
+                assertEquals("SHUTDOWN", get(b));
+            } finally { pin.close(); gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void liveHostRateIncreaseRetainsOldDebtWhileOtherHostHeadsRemainEligible() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits slow = new Limits(1_000, 1_000, Map.of("a.test", 1), 2, 10, 5_000, 1_000, 10_000);
+        Limits faster = limits(1_000, 1_000, 2, 10, 5_000, 10_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(slow, time, 8)) {
+            try {
+                gate.acquire("a.test", () -> true).close();
+                Future<Long> a = admission(workers, gate, "a.test");
+                waitFor(() -> number(gate, "queued") == 1);
+                time.advanceMillis(10);
+                gate.update(faster);
+                assertEquals(1_000, metric(gate, "a.test").get("rps"));
+                assertFalse(a.isDone(), "old one-second host debt cannot be erased");
+                gate.acquire("b.test", () -> true).close(); // immediate eligible host skips A
+                time.advanceMillis(989);
+                gate.update(faster);
+                assertFalse(a.isDone());
+                time.advanceMillis(1);
+                gate.update(faster);
+                assertEquals(1_000_000_000L, get(a));
+            } finally { gate.close(); workers.close(); }
+        }
+    }
+
+    @Test void hostMetricsAreCanonicalImmutableAndReflectQueuedFlightRateAndWait() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = new Limits(1_000, 1_000, Map.of("EXAMPLE.TEST.", 25), 2, 10, 5_000, 1_000, 10_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            RateGate.Permit first = gate.acquire("Example.Test.", () -> true);
+            time.advanceMillis(1);
+            RateGate.Permit second = gate.acquire("other.test", () -> true);
+            RateGate.Permit third = null;
+            try {
+                Future<RateGate.Permit> waiting = workers.submit(() -> gate.acquire("EXAMPLE.TEST", () -> true));
+                waitFor(() -> number(gate, "queued") == 1);
+                Map<String, Object> row = metric(gate, "example.test");
+                assertEquals(25, row.get("rps"));
+                assertEquals(1, row.get("inFlight"));
+                assertEquals(1, row.get("queued"));
+                assertEquals(0L, row.get("p95WaitMillis"));
+                assertThrows(UnsupportedOperationException.class, () -> row.put("host", "changed"));
+                assertThrows(UnsupportedOperationException.class, () -> metrics(gate).add(Map.of()));
+                time.advanceNanos(50_000_001);
+                second.close();
+                third = get(waiting);
+                Map<String, Object> after = metric(gate, "example.test");
+                assertEquals(2, after.get("inFlight"));
+                assertEquals(0, after.get("queued"));
+                assertEquals(51L, after.get("p95WaitMillis")); // nanoseconds round up, never underreport
+                assertEquals(2, number(gate, "hosts"));
+                assertEquals(Boolean.FALSE, gate.snapshot().get("hostMetricsTruncated"));
+            } finally {
+                first.close(); second.close(); if (third != null) third.close();
+                gate.close(); workers.close();
+            }
+        }
+    }
+
+    @Test void p95UsesOnlyBoundedRecentAdmissionsNotAnUnboundedLifetimeHistory() throws Exception {
+        FakeTime time = new FakeTime(0);
+        Limits limits = limits(1_000, 1_000, 1, 10, 5_000, 600_000);
+        ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
+        try (RateGate gate = new RateGate(limits, time, 8)) {
+            try {
+                for (int i = 0; i < 64; i++) {
+                    RateGate.Permit pin = gate.acquire("pin.test", () -> true);
+                    try {
+                        Future<Long> waiting = admission(workers, gate, "sample.test");
+                        waitFor(() -> number(gate, "queued") == 1);
+                        time.advanceMillis(10);
+                        pin.close();
+                        get(waiting);
+                        time.advanceMillis(1);
+                    } finally { pin.close(); }
+                }
+                assertEquals(10L, metric(gate, "sample.test").get("p95WaitMillis"));
+                for (int i = 0; i < 128; i++) {
+                    time.advanceMillis(1);
+                    gate.acquire("sample.test", () -> true).close();
+                    if (i == 120) assertEquals(10L, metric(gate, "sample.test").get("p95WaitMillis"));
+                    if (i == 121) assertEquals(0L, metric(gate, "sample.test").get("p95WaitMillis"));
+                }
+                // Lifetime p95 would still be 10ms; the 128-entry recent ring is now all zero.
+                assertEquals(0L, metric(gate, "sample.test").get("p95WaitMillis"));
+                assertEquals(256, number(gate, "admitted"));
+            } finally { gate.close(); workers.close(); }
+        }
+    }
+
     private static List<Sample> exerciseWorkers(RateGate gate, List<String> workerHosts, int count) throws Exception {
         CountDownLatch ready = new CountDownLatch(workerHosts.size());
         CountDownLatch start = new CountDownLatch(1);
@@ -746,6 +1036,18 @@ class RateGateTest {
     }
     private static Limits limits(int global, int host, int concurrent, int queued, long queueMillis, long requestMillis) {
         return new Limits(global, host, Map.of(), concurrent, queued, queueMillis, 1_000, requestMillis);
+    }
+    private static Future<Long> admission(ExecutorService workers, RateGate gate, String host) {
+        return workers.submit(() -> {
+            try (RateGate.Permit permit = gate.acquire(host, () -> true)) { return permit.admittedAtNanos(); }
+        });
+    }
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> metrics(RateGate gate) {
+        return (List<Map<String, Object>>) gate.snapshot().get("hostMetrics");
+    }
+    private static Map<String, Object> metric(RateGate gate, String host) {
+        return metrics(gate).stream().filter(row -> row.get("host").equals(host)).findFirst().orElseThrow();
     }
     private static long number(RateGate gate, String key) { return ((Number) gate.snapshot().get(key)).longValue(); }
     private static void rejected(RateGate gate, String host, String reason) {

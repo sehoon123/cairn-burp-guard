@@ -364,7 +364,9 @@ class ScopeEditorTest {
                 ScopeEntry entry = editor.value();
                 assertTrue(matches(entry, literal));
                 assertFalse(matches(entry, literal + "/child"));
-                assertEquals(Mode.ALLOW, evaluate(entry, "https://example.test" + literal, "example.test", 443, true));
+                assertEquals(literal.startsWith("//") ? Mode.BLOCK : Mode.ALLOW,
+                        evaluate(entry, "https://example.test" + literal, "example.test", 443, true),
+                        "A restricted scope must cover internal routing aliases too; the native target is never rewritten.");
                 assertEquals(entry, new ScopeEditor(entry).value());
             }
             return null;

@@ -7,6 +7,7 @@ final class UiText {
     static String mode(String value) {
         if (value == null) return "—";
         return switch (value) {
+            case "EXEMPT" -> "EXEMPT 예외 (일반 차단 무시)";
             case "BLOCK" -> "차단";
             case "ASK" -> "승인 요청";
             case "ALLOW" -> "허용";
@@ -18,13 +19,35 @@ final class UiText {
     static String outcome(String value) {
         if (value == null) return "확인 필요";
         return switch (value) {
-            case "BLOCKED" -> "차단됨";
-            case "FORWARDED" -> "전송 해제";
-            case "PENDING" -> "검사 대기";
+            case "BLOCKED", "blocked" -> "차단됨";
+            case "FORWARDED", "forwarded" -> "전송 해제";
+            case "exempt" -> "EXEMPT 예외";
+            case "probe_allowed" -> "상태 확인 통과";
+            case "half_open" -> "회로 재확인";
+            case "PENDING", "pending" -> "검사 대기";
             case "AWAITING_APPROVAL" -> "승인 대기";
             case "QUEUED" -> "전송 대기";
             case "ERROR" -> "처리 오류";
             default -> "확인 필요";
+        };
+    }
+
+    static String guardState(String value) {
+        if (value == null) return "상태 미확인";
+        return switch (value) {
+            case "PROTECTED" -> "보호 중";
+            case "PAUSED_BY_OPERATOR" -> "운영자 일시중지";
+            case "POLICY_INVALID" -> "정책 유효성 실패";
+            case "POLICY_SAVE_UNCERTAIN" -> "정책 저장 불확실";
+            case "PROJECT_UNVERIFIED" -> "프로젝트 미확인";
+            case "SHUTDOWN" -> "종료";
+            case "CIRCUIT_OPEN" -> "5xx 회로 열림";
+            case "OVERLAY_BLOCK" -> "자동 안전 차단";
+            case "INTENT_BUDGET" -> "태그 예산 소진";
+            case "LISTENER_UNVERIFIED" -> "리스너 미확인";
+            case "CAPACITY" -> "처리 용량 제한";
+            case "IN_FLIGHT_STALLED" -> "응답 미확인 격리";
+            default -> "상세 상태 확인";
         };
     }
 
@@ -33,6 +56,16 @@ final class UiText {
         return switch (reason) {
             case "SCOPE_NOT_ALLOWED" -> "허용 대상에 포함되지 않는 요청입니다.";
             case "SCOPE_BLOCKED" -> "차단 대상으로 등록된 주소입니다.";
+            case "EXEMPT", "RULE_EXEMPT" -> "EXEMPT에 따라 일반 BLOCK·ASK를 무시했습니다. 범위와 자동 안전 제어는 유지됩니다.";
+            case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "대용량 응답을 관찰하여 이 경로를 임시 차단했습니다.";
+            case "CIRCUIT_OPEN" -> "5xx 회로가 열려 이 서비스의 새 요청을 차단했습니다.";
+            case "FANOUT_SUSPECTED" -> "짧은 시간에 서로 다른 경로가 확산되어 자동 안전 제어가 적용됐습니다.";
+            case "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "자동 안전 제어/태그 사용량을 안전하게 보관할 용량이 없습니다.";
+            case "INTENT_BUDGET_EXCEEDED" -> "같은 (Run, Intent)의 전송 예산을 소진했습니다.";
+            case "INTENT_TAG_INVALID", "INVALID_INTENT_TAG" -> "예산 사용 중 태그가 중복·잘못된 형식이거나 헤더 검사 불완전입니다.";
+            case "LISTENER_UNVERIFIED" -> "실제 인바운드 리스너를 확인하지 못해 내용 수집 없이 차단했습니다.";
+            case "PATH_INTERPRETATION_INCOMPLETE" -> "경로 해석이 불완전합니다. 모든 경로 범위는 원문 전송 가능하지만 제한 경로·경로 EXEMPT를 검증할 수 없습니다.";
+            case "HEADERS_INCOMPLETE", "BODY_INCOMPLETE", "HEADER_INSPECTION_UNAVAILABLE", "BODY_INSPECTION_UNAVAILABLE" -> "선택 헤더/본문 검사가 불완전하여 해당 조건을 평가하지 못했습니다 (형식 자체로 자동 차단하지 않음).";
             case "RULE_BLOCK" -> "차단 규칙에 해당합니다.";
             case "DEFAULT_BLOCK" -> "일치하는 규칙이 없어 기본 차단이 적용됐습니다.";
             case "RULE_MATCH" -> "등록한 규칙의 조건에 해당합니다.";
@@ -49,9 +82,10 @@ final class UiText {
             case "POLICY_CHANGED", "PROJECT_CHANGED", "FINAL_CHECK_REJECTED" -> "대기 중 정책 또는 프로젝트가 바뀌어 이전 요청을 차단했습니다.";
             case "SHUTDOWN", "CANCELLED" -> "종료 또는 취소된 요청입니다.";
             case "WEBSOCKET_UNSUPPORTED" -> "WebSocket 프레임은 안전 검사를 지원하지 않습니다.";
-            case "UNSUPPORTED_BODY", "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "UNSUPPORTED_CHARSET", "UNSUPPORTED_HTTP_VERSION" -> "안전하게 검사할 수 없는 본문·인코딩·프로토콜입니다.";
+            case "UNSUPPORTED_BODY", "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "UNSUPPORTED_CHARSET", "UNSUPPORTED_HTTP_VERSION" -> "선택 본문·인코딩·프로토콜 검사가 불가합니다. 형식만으로 자동 차단하지 않으며 검사 경고를 확인하세요.";
             case "REQUEST_TOO_LARGE", "INSPECTION_LIMIT", "ENCODING_DEPTH_EXCEEDED", "CAPTURE_LIMIT" -> "요청 크기 또는 검사 한도를 초과했습니다.";
-            case "AUTHORITY_MISMATCH", "INVALID_AUTHORITY", "INVALID_HOST", "HTTP2_INCONSISTENT", "AMBIGUOUS_PATH" -> "주소·경로·실제 연결 대상이 모호하거나 일치하지 않습니다.";
+            case "INVALID_AUTHORITY", "INVALID_HOST" -> "실제 연결 대상 메타데이터를 확인할 수 없습니다.";
+            case "AUTHORITY_MISMATCH", "HTTP2_INCONSISTENT", "AMBIGUOUS_PATH" -> "이전 버전의 검사 진단입니다. 현재 범위는 실제 목적지를 사용하며 Host fuzz나 모든 경로의 세미콜론/인코딩 자체를 자동 차단하지 않습니다.";
             case "MALFORMED_JSON", "AMBIGUOUS_JSON_KEYS", "MALFORMED_PERCENT_ENCODING", "INVALID_TEXT_ENCODING", "INVALID_CONTENT_LENGTH", "MALFORMED_CONTENT_TYPE", "INVALID_REQUEST", "INVALID_METHOD", "INVALID_URI", "INVALID_HEADERS", "UNSUPPORTED_SCHEME" -> "요청 형식이 올바르지 않거나 해석이 모호합니다.";
             case "INVALID_CONFIG" -> "현재 정책을 안전하게 해석할 수 없습니다.";
             case "INSPECTION_ERROR", "CAPTURE_FAILED", "ADAPTER_ERROR", "CONTINUATION_FAILED", "CALLBACK_ON_EDT", "MESSAGE_ID_COLLISION" -> "요청 처리의 안전성을 확인할 수 없어 차단했습니다.";
@@ -62,8 +96,12 @@ final class UiText {
     static String next(String reason) {
         if (reason == null) return "상세 정보와 현재 보호 상태를 확인하세요.";
         return switch (reason) {
-            case "NATIVE_RELEASED", "NATIVE_FORWARDED" -> "마스킹된 응답과 대상 측 증거를 확인하세요. 전송 해제만으로 대상 도착이나 처리 성공을 단정하지 마세요.";
-            case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION" -> "요청 기록의 처리 결과와 마스킹된 응답을 확인하세요. 정책상 허용과 실제 대상 도착은 다릅니다.";
+            case "NATIVE_RELEASED", "NATIVE_FORWARDED" -> "화면 원문은 민감정보를 포함합니다. 응답과 대상 측 증거를 확인하되 전송 해제만으로 대상 도착이나 처리 성공을 단정하지 마세요.";
+            case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION", "EXEMPT", "RULE_EXEMPT" -> "요청 기록의 처리 결과·검사 경고·응답을 확인하세요. 정책상 허용과 실제 대상 도착은 다릅니다.";
+            case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "‘자동 차단’에서 만료·해제와 ‘사건 내보내기’를 확인하세요. 로컬 451을 대상 장애로 오인하지 마세요. 첫 큰 응답은 예방할 수 없습니다.";
+            case "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "‘설정’의 태그 한도와 클라이언트 X-Cairn 태그를 검토하세요. 초기화는 ‘개요’에서 명시 확인해야 하며 태그는 인증이 아닙니다.";
+            case "LISTENER_UNVERIFIED" -> "‘설정’의 실제 Burp 인바운드 리스너 포트와 현재 리스너 정보를 확인하세요. 목적지 서버 포트로 대체하지 않습니다.";
+            case "PATH_INTERPRETATION_INCOMPLETE" -> "명시적 모든 경로 범위에서 원래 target은 바꾸지 않습니다. 제한 경로·명시 차단은 계속 검사하며 불완전 경로로 EXEMPT를 부여하지 않습니다.";
             case "SCOPE_NOT_ALLOWED" -> "허가받은 대상인지 확인한 뒤 ‘대상’에서 호스트·연결 방식·포트·경로를 등록하세요. 빈 허용 목록은 모든 요청을 차단합니다.";
             case "SCOPE_BLOCKED" -> "‘대상 → 차단 대상’에서 해당 범위를 확인하세요. 차단 대상은 허용 대상보다 우선합니다.";
             case "RULE_BLOCK", "RULE_MATCH" -> "아래의 일치 규칙을 확인하고 ‘규칙’에서 의도한 조건인지 검토하세요. 필수 안전 차단은 승인으로 풀 수 없습니다.";
@@ -73,9 +111,9 @@ final class UiText {
             case "QUEUED" -> "진행 중 요청의 완료와 전송 예산을 기다립니다. 도착 여부는 응답과 별도 증거로 확인하세요.";
             case "APPROVAL_TIMEOUT", "DENIED" -> "필요한 요청이라면 다시 실행하고 ‘승인 대기’에서 새 요청을 검토하세요. 만료된 요청은 재승인할 수 없습니다.";
             case "QUEUE_TIMEOUT", "QUEUE_FULL", "APPROVAL_CAPACITY", "HOST_CAPACITY", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY", "CORRELATION_CAPACITY" -> "요청 발생 속도를 줄이세요. ‘설정’에서 속도·동시성·대기 제한을 검토하되 안전 한도를 무작정 높이지 마세요.";
-            case "IN_FLIGHT_TIMEOUT" -> "먼저 요청 발생을 멈추고 Burp의 진행 중 연결을 확인하세요. 설정 저장·재개로 미완료 요청의 자리를 강제로 비우지 않습니다.";
+            case "IN_FLIGHT_TIMEOUT" -> "먼저 해당 호스트의 요청 발생을 멈추고 Burp의 진행 중 연결을 확인하세요. 다른 호스트도 실제 남은 전체 슬롯만 사용할 수 있습니다. 설정 저장·재개로 미완료 요청의 자리를 강제로 비우지 않습니다.";
             case "POLICY_CHANGED", "PROJECT_CHANGED", "FINAL_CHECK_REJECTED" -> "현재 프로젝트와 설정을 확인한 뒤 필요한 요청만 새로 실행하세요. 이전 승인을 재사용하지 않습니다.";
-            default -> "요청 형식과 상세 진단을 확인하세요. 지원하지 않는 요청·안전 검사 실패는 허용 규칙이나 승인으로 우회할 수 없습니다.";
+            default -> "실제 목적지·정책·검사 경고·보호 상태를 확인하세요. 선택 헤더/본문이 해석 불가여도 형식 자체로 자동 거절하지 않습니다. 범위·유효성·용량 등 필수 거절은 승인으로 우회할 수 없습니다.";
         };
     }
 
@@ -86,6 +124,11 @@ final class UiText {
             case "PROJECT_UNAVAILABLE", "REFRESH_UNAVAILABLE" -> "현재 프로젝트의 상태를 확인할 수 없습니다. Burp 프로젝트를 확인하고 ‘새로고침’을 누르세요. 확인 전에는 설정 변경과 승인을 막습니다.";
             case "INVALID_POLICY", "INVALID_BOUNDED_JSON" -> "정책을 저장할 수 없습니다. 필수 항목·숫자 범위·중복 ID·RE2 정규식과 설정 형식을 확인하세요. 기존 정책은 이 작업으로 바뀌지 않았습니다.";
             case "POLICY_ROW_LIMIT" -> "대상과 규칙은 각각 최대 256개입니다. 사용하지 않는 항목을 삭제한 뒤 추가하세요.";
+            case "SELECT_OVERLAY_FIRST" -> "먼저 해제할 자동 차단을 표에서 선택하세요.";
+            case "SELECT_CANDIDATE_FIRST" -> "먼저 대용량 후보를 표에서 선택하세요.";
+            case "CANDIDATE_UNSAFE" -> "후보 URL이 마스킹됐거나 안전한 정책 URL이 아닙니다. 원문을 자동 복사하지 않습니다. 직접 검토한 정확한 경로를 설정에서 작성하세요.";
+            case "CANDIDATE_STALE" -> "후보가 만료·변경됐습니다. 새로고침 후 현재 후보에서 다시 작성하세요.";
+            case "INVALID_INCIDENT_WINDOW" -> "UTC ISO-8601 (끝 Z)의 시작·끝을 입력하세요. [시작, 끝) 창은 0보다 크고 최대 24시간, 1밀리초 단위여야 합니다.";
             case "SELECT_RULE_FIRST" -> "먼저 편집할 규칙을 표에서 선택하세요.";
             case "SELECT_SCOPE_FIRST" -> "먼저 편집할 대상을 표에서 선택하세요.";
             case "SELECT_TRAFFIC_FIRST" -> "먼저 요청 기록에서 하나 이상의 행을 선택하세요.";

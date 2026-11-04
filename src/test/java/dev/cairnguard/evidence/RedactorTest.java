@@ -203,6 +203,19 @@ class RedactorTest {
         assertEquals(Redactor.REDACTED_URL, e.url());
     }
 
+    @Test void embeddedBrokerGrantAssignmentsDiscoverSecretsBeforeMaskingMirroredTagsAndPaths() {
+        for (String assignment : List.of("X-Broker-Grant", "brokerGrant", "grant_value")) {
+            EvidenceStore store = new EvidenceStore();
+            String id = store.begin("local", "review", new RequestData("GET", "https://fixture.test/" + SECRET,
+                    "fixture.test", 443, true, List.of(new Header("X-Debug", "issued " + assignment + ": " + SECRET),
+                    new Header("X-Cairn-Intent", SECRET), new Header("X-Cairn-Run", SECRET)), new byte[0]), ALLOW, 1);
+            assertFalse(store.exportJson(store.snapshot()).contains(SECRET));
+            assertFalse(store.exportHar(store.snapshot()).contains(SECRET));
+            assertEquals(Redactor.REDACTED, store.snapshot().getFirst().intentId());
+            assertTrue(store.rawRequest(id).contains(SECRET));
+        }
+    }
+
     @Test void standaloneRedactorHasSameCrossFieldGuarantee() {
         RequestData request = new RequestData("GET", "https://fixture.test/?echo=" + SECRET, "fixture.test", 443, true,
                 List.of(new Header("Authorization", "Bearer " + SECRET)), new byte[0]);

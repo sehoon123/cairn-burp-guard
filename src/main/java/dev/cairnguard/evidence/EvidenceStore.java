@@ -4,6 +4,7 @@ import dev.cairnguard.model.Decision;
 import dev.cairnguard.model.DenialReasons;
 import dev.cairnguard.model.Json;
 import dev.cairnguard.model.RequestData;
+import dev.cairnguard.model.RequestAttribution;
 import dev.cairnguard.model.RequestData.Header;
 
 import javax.crypto.Mac;
@@ -23,7 +24,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** Thread-safe, bounded, memory-only evidence. No native request or plaintext secret is retained. */
+/** Thread-safe, bounded, masked evidence plus a separate human-local raw UI cache. No native objects retained. */
 public final class EvidenceStore {
     public static final int MAX_ENTRIES = 2000;
     public static final long MAX_TOTAL_BYTES = 32L * 1024 * 1024;
@@ -31,6 +32,12 @@ public final class EvidenceStore {
     private static final int MAX_METADATA_BYTES = 512;
     private static final int MAX_URL_BYTES = 8192;
     private static final int MAX_HITS = 128;
+    private static final int MAX_WARNINGS = 32;
+    private static final Set<String> OUTCOMES = Set.of("pending", "forwarded", "blocked", "exempt", "probe_allowed", "half_open");
+    private static final Set<String> GUARD_STATES = Set.of("PROTECTED", "PAUSED_BY_OPERATOR", "POLICY_INVALID",
+            "POLICY_SAVE_UNCERTAIN", "PROJECT_UNVERIFIED", "SHUTDOWN", "CIRCUIT_OPEN", "OVERLAY_BLOCK",
+            "INTENT_BUDGET", "LISTENER_UNVERIFIED", "CAPACITY", "IN_FLIGHT_STALLED");
+    private static final Set<String> INSPECTION_FIELDS = Set.of("URL", "QUERY", "HEADER", "BODY", "JSON", "FORM", "ANY", "METHOD", "PATH");
     private static final Set<String> DISPOSITIONS = Set.of("PENDING", "QUEUED", "AWAITING_APPROVAL", "FORWARDED",
             "BLOCKED", "STALLED", "CANCELLED", "ERROR");
     private static final Set<String> REASONS = Set.of("ALLOW", "BLOCK", "MONITOR", "ASK", "DEFAULT", "DEFAULT_ALLOW",
@@ -45,13 +52,18 @@ public final class EvidenceStore {
             "INVALID_AUTHORITY", "INVALID_HOST", "INVALID_HEADERS", "REQUEST_TOO_LARGE", "WEBSOCKET_UNSUPPORTED",
             "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "AMBIGUOUS_PATH", "INVALID_TEXT_ENCODING",
             "INVALID_CONTENT_LENGTH", "MALFORMED_CONTENT_TYPE", "UNSUPPORTED_CHARSET", "INSPECTION_LIMIT", "MALFORMED_JSON",
-            "AMBIGUOUS_JSON_KEYS", "ENCODING_DEPTH_EXCEEDED", "MALFORMED_PERCENT_ENCODING");
+            "AMBIGUOUS_JSON_KEYS", "ENCODING_DEPTH_EXCEEDED", "MALFORMED_PERCENT_ENCODING",
+            "EXEMPT", "RULE_EXEMPT", "PROBE_ALLOWED", "HALF_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN",
+            "FANOUT_SUSPECTED", "INTENT_BUDGET_EXCEEDED", "INTENT_INVALID", "INTENT_CAPACITY", "WATCHER_CAPACITY",
+            "LISTENER_UNVERIFIED", "CAPTURE_INCOMPLETE", "INTENT_BUDGET_CAPACITY", "INVALID_INTENT_TAG", "RESPONSE_WATCHER_CAPACITY");
 
     private final int maxEntries;
     private final long maxBytes;
     private final int partBytes;
     private final byte[] exportKey = new byte[32];
     private final LinkedHashMap<String, Stored> entries = new LinkedHashMap<>();
+    private final RawTrafficStore rawUi;
+    private final Map<String, Long> reasonCounters = new LinkedHashMap<>();
     private long retainedBytes;
     private long begun;
     private long forwarded;
@@ -78,6 +90,7 @@ public final class EvidenceStore {
         boolean countedResponse;
         boolean responseLocal;
         boolean countedTruncation;
+        String countedReason;
         Stored(TrafficEntry entry, SecretFingerprints secrets) { this.entry = entry; this.secrets = secrets; }
     }
 
@@ -90,12 +103,18 @@ public final class EvidenceStore {
         this.maxEntries = maxEntries;
         this.maxBytes = maxBytes;
         this.partBytes = partBytes;
+        this.rawUi = new RawTrafficStore(maxEntries, maxBytes, partBytes);
+        REASONS.stream().sorted().forEach(key -> reasonCounters.put(key, 0L));
+        DenialReasons.ALL.stream().sorted().forEach(key -> reasonCounters.putIfAbsent(key, 0L));
         new SecureRandom().nextBytes(exportKey);
     }
 
     public synchronized String begin(String projectId, String projectName, RequestData request, Decision decision, long revision) {
         if (request == null || decision == null || decision.mode() == null) throw new IllegalArgumentException("INVALID_EVIDENCE_INPUT");
+        RequestAttribution attribution = RequestAttribution.parse(request.headers());
         List<String> metadata = new ArrayList<>();
+        metadata.add(attribution.intentId());
+        metadata.add(attribution.runId());
         metadata.add(projectId);
         metadata.add(projectName);
         // Decision reasons are not copied: they must be categorical, not regex captures or error text.
@@ -112,13 +131,21 @@ public final class EvidenceStore {
         int requestBudget = requestBudget(method, url);
         TrafficEntry.Message message = Redactor.render(prepared.message, secrets, requestBudget);
         boolean cut = message.truncated() || !url.equals(rawUrl) || decision.hits().size() > MAX_HITS
-                || metadataCut(projectId, secrets) || metadataCut(projectName, secrets) || hitsCut(decision.hits(), secrets);
+                || metadataCut(projectId, secrets) || metadataCut(projectName, secrets) || hitsCut(decision.hits(), secrets)
+                || decision.inspectionWarnings().size() > MAX_WARNINGS;
+        List<String> warnings = new ArrayList<>();
+        if (!request.headersComplete()) warnings.add("HEADERS_INCOMPLETE");
+        if (!request.bodyComplete()) warnings.add("BODY_INCOMPLETE");
+        warnings.addAll(decision.inspectionWarnings().stream().limit(MAX_WARNINGS).toList());
+        List<String> safeWarnings = warnings(warnings);
         String id = UUID.randomUUID().toString();
         TrafficEntry entry = new TrafficEntry(id, safeProjectId, safeProjectName, Instant.now().toString(), method, url,
                 decision.mode().name(), "PENDING", reason(decision.reason(), "POLICY_DECISION"), null, hits, revision,
-                false, message, TrafficEntry.Message.EMPTY, cut, "");
+                false, message, TrafficEntry.Message.EMPTY, cut, "", metadata(attribution.intentId(), secrets),
+                metadata(attribution.runId(), secrets), "pending", "", "", -1, safeWarnings);
         Stored stored = new Stored(seal(entry), secrets);
         entries.put(id, stored);
+        rawUi.begin(projectId, id, request, attribution, safeWarnings);
         begun++;
         update(stored);
         return id;
@@ -137,6 +164,10 @@ public final class EvidenceStore {
         if (next.equals("FORWARDED") && !stored.countedForward) { forwarded++; stored.countedForward = true; }
         if (next.equals("BLOCKED") && !stored.countedBlock) { blocked++; stored.countedBlock = true; }
         TrafficEntry old = stored.entry;
+        String outcome = next.equals("BLOCKED") ? "blocked" : next.equals("FORWARDED")
+                ? Set.of("exempt", "probe_allowed", "half_open").contains(old.outcome()) ? old.outcome() : "forwarded"
+                : old.outcome();
+        old = contextCopy(old, outcome, old.guardState(), old.overlayId(), old.responseBytes());
         stored.entry = copy(old, next, reason(reason, "OUTCOME_RECORDED"), validStatus(statusCode) == null ? old.statusCode() : validStatus(statusCode),
                 old.bookmarked(), old.requestCapture(), old.responseCapture(), old.truncated(), stored.secrets);
         if (stored.countedResponse && !stored.responseLocal && next.equals("BLOCKED")) {
@@ -148,14 +179,23 @@ public final class EvidenceStore {
     }
 
     public synchronized void response(String id, int statusCode, List<Header> headers, byte[] body) {
+        response(id, statusCode, headers, body, true, true);
+    }
+
+    /** Completeness refers to the supplied inspection copy, not a claim of exact wire capture. */
+    public synchronized void response(String id, int statusCode, List<Header> headers, byte[] body,
+                                      boolean headersComplete, boolean bodyComplete) {
         responseCallbacks++;
         Stored stored = find(id);
         if (stored == null) { orphanResponses++; return; }
         if (headers == null || body == null) throw new IllegalArgumentException("INVALID_EVIDENCE_INPUT");
         SecretFingerprints.Builder builder = stored.secrets.extend();
-        Redactor.RawMessage raw = Redactor.prepareMessage(headers, body, builder);
+        Redactor.RawMessage raw = Redactor.prepareMessage(headers, body, builder, headersComplete, bodyComplete);
         stored.secrets = builder.build();
+        rawUi.response(id, statusCode, headers, body, headersComplete, bodyComplete);
         TrafficEntry old = stored.entry;
+        if (bodyComplete && body.length <= RequestData.MAX_INSPECT_BYTES && old.responseBytes() < 0)
+            old = contextCopy(old, old.outcome(), old.guardState(), old.overlayId(), body.length);
         String method = Redactor.method(old.method(), stored.secrets);
         String url = Redactor.url(old.url(), stored.secrets);
         TrafficEntry.Message request = Redactor.remask(old.requestCapture(), stored.secrets, requestBudget(method, url));
@@ -170,6 +210,60 @@ public final class EvidenceStore {
         }
         update(stored);
     }
+
+    /** Add fixed runtime context only; arbitrary caller strings cannot become export metadata. */
+    public synchronized void context(String id, String outcome, String guardState, String overlayId) {
+        Stored stored = find(id);
+        if (stored == null) return;
+        TrafficEntry old = stored.entry;
+        String nextOutcome = OUTCOMES.contains(outcome == null ? "" : outcome) ? outcome : old.outcome();
+        if (old.disposition().equals("BLOCKED")) nextOutcome = "blocked";
+        if (stored.countedForward && (nextOutcome.equals("blocked") || nextOutcome.equals("pending"))) nextOutcome = old.outcome();
+        String nextGuard = GUARD_STATES.contains(guardState == null ? "" : guardState) ? guardState : "";
+        String nextOverlay = overlayId != null && uuid(overlayId) ? metadata(overlayId, stored.secrets) : "";
+        TrafficEntry contextual = contextCopy(old, nextOutcome, nextGuard, nextOverlay, old.responseBytes());
+        stored.entry = copy(contextual, old.disposition(), old.reason(), old.statusCode(), old.bookmarked(),
+                old.requestCapture(), old.responseCapture(), old.truncated(), stored.secrets);
+        update(stored);
+    }
+
+    /** Actual native body length is independent of optional content capture/slots; -1 means unknown. */
+    public synchronized void responseBytes(String id, long bytes) {
+        Stored stored = find(id);
+        if (stored == null) return;
+        TrafficEntry old = stored.entry;
+        TrafficEntry measured = contextCopy(old, old.outcome(), old.guardState(), old.overlayId(), Math.max(-1, bytes));
+        stored.entry = copy(measured, old.disposition(), old.reason(), old.statusCode(), old.bookmarked(),
+                old.requestCapture(), old.responseCapture(), old.truncated(), stored.secrets);
+        update(stored);
+    }
+
+    /** Immutable MASKED row lookup for runtime projections; never consult the raw UI cache. */
+    public synchronized TrafficEntry entry(String id) {
+        Stored stored = entries.get(id);
+        return stored == null ? null : stored.entry;
+    }
+
+    /**
+     * Ephemeral sanitizer for individual watcher display VALUES, using this row's latest keyed
+     * secret fingerprints. Never apply it to serialized JSON/schema keys. A disposed/missing row
+     * cannot prove safe display, so it returns only a redaction marker. No plaintext credentials or
+     * raw UI accessors escape this boundary; callers must not retain the sanitizer across waits.
+     */
+    public synchronized java.util.function.UnaryOperator<String> displaySanitizer(String id) {
+        Stored stored = entries.get(id);
+        if (stored == null) return value -> value == null || value.isEmpty() ? "" : Redactor.REDACTED;
+        SecretFingerprints current = stored.secrets;
+        return value -> Redactor.text(value, current);
+    }
+
+    /** Human UI only. These accessors are deliberately absent from TrafficEntry and all exporters. */
+    public synchronized String rawRequest(String id) { return rawUi.request(id); }
+    public synchronized String rawResponse(String id) { return rawUi.response(id); }
+    public synchronized String rawUrl(String id) { return rawUi.url(id); }
+    public synchronized Map<String, Object> rawCaptureInfo(String id) { return rawUi.info(id); }
+    /** Called on project epoch/uncertainty even when masked history is retained. */
+    public synchronized void clearRawUi() { rawUi.clear(); }
 
     public synchronized void bookmark(String id, boolean value) {
         Stored stored = find(id);
@@ -192,6 +286,7 @@ public final class EvidenceStore {
     public synchronized void clear() {
         clearedEntries += entries.size();
         entries.clear();
+        rawUi.clear();
         retainedBytes = 0;
         clears++;
     }
@@ -217,13 +312,16 @@ public final class EvidenceStore {
         result.put("responseCallbacks", responseCallbacks);
         result.put("orphanOutcomes", orphanOutcomes);
         result.put("orphanResponses", orphanResponses);
+        result.put("reasonCounters", Collections.unmodifiableMap(new LinkedHashMap<>(reasonCounters)));
+        result.put("rawRetainedEntries", (long) rawUi.size());
+        result.put("rawRetainedBytes", rawUi.retainedBytes());
         return Collections.unmodifiableMap(result);
     }
 
     public String exportJson(List<TrafficEntry> selection) {
         List<TrafficEntry> safe = verified(selection);
         Map<String, Object> document = new LinkedHashMap<>();
-        document.put("schemaVersion", 1);
+        document.put("schemaVersion", 2);
         document.put("_cairnGuard", provenance());
         document.put("entries", safe.stream().map(EvidenceStore::entryMap).toList());
         return json(document);
@@ -266,6 +364,13 @@ public final class EvidenceStore {
             details.put("mode", e.mode());
             details.put("disposition", e.disposition());
             details.put("reason", e.reason());
+            details.put("intentId", e.intentId());
+            details.put("runId", e.runId());
+            details.put("outcome", e.outcome());
+            details.put("guardState", e.guardState());
+            details.put("overlayId", e.overlayId());
+            details.put("responseBytes", e.responseBytes());
+            details.put("inspectionWarnings", e.inspectionWarnings());
             details.put("hits", e.hits());
             details.put("bookmarked", e.bookmarked());
             details.put("truncated", e.truncated());
@@ -298,6 +403,10 @@ public final class EvidenceStore {
         return result;
     }
     private void update(Stored stored) {
+        if (!stored.entry.reason().equals(stored.countedReason)) {
+            reasonCounters.computeIfPresent(stored.entry.reason(), (key, count) -> count + 1);
+            stored.countedReason = stored.entry.reason();
+        }
         if (stored.entry.truncated() && !stored.countedTruncation) { truncations++; stored.countedTruncation = true; }
         retainedBytes -= stored.bytes;
         stored.bytes = estimatedBytes(stored.entry) + stored.secrets.estimatedBytes();
@@ -306,6 +415,7 @@ public final class EvidenceStore {
             var oldest = entries.entrySet().iterator();
             Stored removed = oldest.next().getValue();
             oldest.remove();
+            rawUi.remove(removed.entry.id());
             retainedBytes -= removed.bytes;
             evictions++;
         }
@@ -337,12 +447,42 @@ public final class EvidenceStore {
                 || metadataCut(old.projectId(), secrets) || metadataCut(old.projectName(), secrets) || hitsCut(old.hits(), secrets);
         return seal(new TrafficEntry(old.id(), metadata(old.projectId(), secrets), metadata(old.projectName(), secrets), old.timestamp(),
                 method, url, old.mode(), disposition, reason, status, hits(old.hits(), secrets), old.revision(), bookmark,
-                boundedRequest, response, cut, ""));
+                boundedRequest, response, cut, "", metadata(old.intentId(), secrets), metadata(old.runId(), secrets),
+                old.outcome(), old.guardState(), metadata(old.overlayId(), secrets), old.responseBytes(), warnings(old.inspectionWarnings())));
+    }
+    private static TrafficEntry contextCopy(TrafficEntry e, String outcome, String state, String overlay, long bytes) {
+        return new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(),
+                e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(),
+                e.responseCapture(), e.truncated(), "", e.intentId(), e.runId(), outcome, state, overlay, bytes, e.inspectionWarnings());
+    }
+    private static boolean uuid(String value) {
+        if (value.length() != 36) return false;
+        try { return UUID.fromString(value).toString().equals(value); }
+        catch (IllegalArgumentException ignored) { return false; }
+    }
+    private static List<String> warnings(List<String> input) {
+        // Fixed categories are diagnostic facts, never copies of payload/error text. Preserve them
+        // even when missing content forces opaque redaction of all free-form display metadata.
+        return input.stream().limit(MAX_WARNINGS).map(EvidenceStore::warning).distinct().toList();
+    }
+    private static String warning(String value) {
+        if (Set.of("HEADERS_INCOMPLETE", "BODY_INCOMPLETE", "INSPECTION_UNAVAILABLE", "PATH_INTERPRETATION_INCOMPLETE", "[REDACTED]").contains(value == null ? "" : value)) return value;
+        if (value != null && value.length() <= 128) {
+            String marker = "_INSPECTION_UNAVAILABLE_";
+            int split = value.indexOf(marker);
+            if (split > 0 && INSPECTION_FIELDS.contains(value.substring(0, split))) {
+                String category = value.substring(split + marker.length());
+                if (REASONS.contains(category) || DenialReasons.ALL.contains(category)) return value;
+            }
+        }
+        return "INSPECTION_UNAVAILABLE";
     }
     private static long estimatedBytes(TrafficEntry e) {
         // A conservative UTF-16/UTF-8 text estimate plus per-object overhead, not a JVM heap profiler.
         long bytes = 2048;
         for (String text : List.of(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(), e.disposition(), e.reason(), e.provenanceSeal())) bytes += textCost(text);
+        for (String text : List.of(e.intentId(), e.runId(), e.outcome(), e.guardState(), e.overlayId())) bytes += textCost(text);
+        for (String warning : e.inspectionWarnings()) bytes += textCost(warning);
         for (Decision.RuleHit h : e.hits()) bytes += 128 + textCost(h.id()) + textCost(h.name());
         for (TrafficEntry.Message m : List.of(e.requestCapture(), e.responseCapture())) {
             bytes += 128 + textCost(m.body()) + textCost(m.mimeType());
@@ -354,7 +494,8 @@ public final class EvidenceStore {
 
     private TrafficEntry seal(TrafficEntry e) {
         return new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(), e.disposition(),
-                e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), signature(e));
+                e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), signature(e),
+                e.intentId(), e.runId(), e.outcome(), e.guardState(), e.overlayId(), e.responseBytes(), e.inspectionWarnings());
     }
     private String signature(TrafficEntry e) {
         try {
@@ -391,6 +532,13 @@ public final class EvidenceStore {
         result.put("mode", e.mode());
         result.put("disposition", e.disposition());
         result.put("reason", e.reason());
+        result.put("intentId", e.intentId());
+        result.put("runId", e.runId());
+        result.put("outcome", e.outcome());
+        result.put("guardState", e.guardState());
+        result.put("overlayId", e.overlayId());
+        result.put("responseBytes", e.responseBytes());
+        result.put("inspectionWarnings", e.inspectionWarnings());
         result.put("statusCode", e.statusCode());
         result.put("hits", e.hits());
         result.put("revision", e.revision());
@@ -405,6 +553,7 @@ public final class EvidenceStore {
     }
     private static Map<String, Object> provenance() {
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schemaVersion", 2);
         result.put("label", "REDACTED_EVIDENCE_NOT_WIRE_CAPTURE");
         result.put("source", "BURP_PROXY_CALLBACK_COPY");
         result.put("completeWireCapture", false);

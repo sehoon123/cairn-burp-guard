@@ -15,153 +15,149 @@ import static dev.cairnguard.burp.AdapterFixtures.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/** In-process bounded-copy tests, not real Burp/wire behavior. */
+/** Bounded inspection-copy tests, NOT native Burp/wire proof. */
 class NativeCaptureTest {
-    @Test void capturesOnlyInspectionCopyWithoutSerializingNativeMessage() {
-        HttpRequestToBeSent nativeRequest = request(1);
-        byte[] json = "{\"ok\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        doReturn(bytes(json)).when(nativeRequest).body();
-        RequestData copy = NativeCapture.request(nativeRequest);
-        assertEquals(nativeRequest.method(), copy.method());
-        assertEquals(nativeRequest.url(), copy.url());
-        assertEquals("example.test", copy.host());
-        assertEquals(443, copy.port()); assertTrue(copy.secure());
-        assertArrayEquals(json, copy.body());
-        verify(nativeRequest, never()).toByteArray(); verify(nativeRequest, never()).bodyToString();
-        verify(nativeRequest.body()).getBytes();
-        assertEquals(2, copy.headers().size());
+    @Test void actualServiceAndRawPathNotHostDerivedUrlEstablishInspectionUrl() {
+        var request = request(1);
+        when(request.url()).thenThrow(new AssertionError("Host-derived URL must never be used"));
+        when(request.path()).thenReturn("/c/%2e/main.do?bad=%ZZ");
+        when(request.headers()).thenReturn(List.of(header("Host", "synthetic.invalid")));
+        var copy = NativeCapture.request(request);
+        assertEquals("https://example.test:443/c/%2e/main.do?bad=%ZZ", copy.url());
+        assertEquals("example.test", copy.host()); assertEquals(443, copy.port()); assertTrue(copy.secure());
+        assertEquals("synthetic.invalid", copy.header("Host"));
+        verify(request, never()).url(); verify(request, never()).httpVersion();
+        verify(request, never()).toByteArray(); verify(request, never()).bodyToString();
     }
-
+    @Test void capturesIndependentCopyWithExplicitCompleteness() {
+        var request = request(1); byte[] json = "{\"ok\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        doReturn(bytes(json)).when(request).body();
+        var copy = NativeCapture.request(request);
+        assertEquals("GET", copy.method()); assertArrayEquals(json, copy.body());
+        assertTrue(copy.headersComplete()); assertTrue(copy.bodyComplete()); assertEquals(2, copy.headers().size());
+        verify(request.body()).getBytes();
+    }
     @ParameterizedTest @ValueSource(ints = {1_048_577, Integer.MAX_VALUE, -1})
-    void rejectsOversizedOrInvalidBodyBeforeGetBytes(int length) {
-        HttpRequestToBeSent request = request(1);
-        ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(length); when(request.body()).thenReturn(body);
-        assertCategory("CAPTURE_LIMIT", request);
+    void oversizedOrInvalidOptionalBodyIsOmittedBeforeGetBytes(int length) {
+        var request = request(1); ByteArray body = mock(ByteArray.class);
+        when(body.length()).thenReturn(length); when(request.body()).thenReturn(body);
+        var copy = NativeCapture.request(request);
+        assertEquals(0, copy.bodyLength()); assertFalse(copy.bodyComplete()); assertTrue(copy.headersComplete());
         verify(body, never()).getBytes();
     }
-    @Test void aggregateBodyPlusHeadMustFitBeforeCopy() {
-        HttpRequestToBeSent request = request(1);
-        ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(NativeCapture.MAX_BODY);
+    @Test void aggregateBudgetRemainsBoundedBeforeCopyAndExactBoundaryFits() {
+        var request = request(1); when(request.headers()).thenReturn(List.of(header("Host", "example.test")));
+        int head = "GEThttps://example.test:443/safeHostexample.test".length();
+        var body = mock(ByteArray.class); when(body.length()).thenReturn(NativeCapture.MAX_BODY);
         when(request.body()).thenReturn(body);
-        assertCategory("CAPTURE_LIMIT", request);
-        verify(body, never()).getBytes();
+        assertFalse(NativeCapture.request(request).bodyComplete()); verify(body, never()).getBytes();
+        byte[] bounded = new byte[NativeCapture.MAX_BODY - head]; doReturn(bytes(bounded)).when(request).body();
+        assertArrayEquals(bounded, NativeCapture.request(request).body());
     }
-    @Test void exactlyBoundedAggregateFits() {
-        HttpRequestToBeSent request = request(1);
-        int head = "GET".length() + "https://example.test/safe".length() + "Hostexample.test".length();
-        when(request.headers()).thenReturn(List.of(header("Host", "example.test")));
-        byte[] body = new byte[NativeCapture.MAX_BODY - head]; doReturn(bytes(body)).when(request).body();
-        assertEquals(body.length, NativeCapture.request(request).body().length);
+    @ParameterizedTest @ValueSource(strings = {"dishonest", "changed", "throw", "null", "body-api"})
+    void optionalBodyFailuresNeverBecomeScopeFailuresOrFakeEmptyBodies(String kind) {
+        var request = request(1); var body = mock(ByteArray.class); when(request.body()).thenReturn(body);
+        when(body.length()).thenReturn(1); when(body.getBytes()).thenReturn(new byte[1]);
+        switch (kind) {
+            case "dishonest" -> when(body.getBytes()).thenReturn(new byte[2]);
+            case "changed" -> when(body.length()).thenReturn(1, 2);
+            case "throw" -> when(body.getBytes()).thenThrow(new IllegalArgumentException("SYNTHETIC"));
+            case "null" -> when(body.getBytes()).thenReturn(null);
+            case "body-api" -> when(request.body()).thenThrow(new LinkageError("SYNTHETIC"));
+            default -> fail(kind);
+        }
+        var copy = NativeCapture.request(request);
+        assertFalse(copy.bodyComplete()); assertEquals(0, copy.bodyLength()); assertEquals("example.test", copy.host());
     }
-    @Test void changedOrDishonestNativeArrayIsRejected() {
-        HttpRequestToBeSent request = request(1);
-        ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(1); when(body.getBytes()).thenReturn(new byte[2]);
-        when(request.body()).thenReturn(body);
-        assertCategory("CAPTURE_FAILED", request);
+    @ParameterizedTest @ValueSource(strings = {"count", "name", "value", "aggregate", "throw", "null"})
+    void optionalHeaderBoundsAndFailuresAreExplicitlyIncompleteNotAutomaticDenials(String kind) {
+        var request = request(1);
+        switch (kind) {
+            case "count" -> {
+                @SuppressWarnings("unchecked") List<HttpHeader> headers = mock(List.class);
+                when(headers.size()).thenReturn(257); when(request.headers()).thenReturn(headers);
+                assertFalse(NativeCapture.request(request).headersComplete()); verify(headers, never()).get(anyInt()); return;
+            }
+            case "name" -> when(request.headers()).thenReturn(List.of(header("A".repeat(257), "x")));
+            case "value" -> when(request.headers()).thenReturn(List.of(header("A", "x".repeat(65_537))));
+            case "aggregate" -> when(request.headers()).thenReturn(List.of(header("A", "x".repeat(33_000)), header("B", "y".repeat(33_000))));
+            case "throw" -> when(request.headers()).thenThrow(new IllegalArgumentException("SYNTHETIC"));
+            case "null" -> when(request.headers()).thenReturn(null);
+            default -> fail(kind);
+        }
+        var copy = NativeCapture.request(request);
+        assertFalse(copy.headersComplete()); assertTrue(copy.headers().isEmpty()); assertTrue(copy.bodyComplete());
     }
-    @Test void rechecksLengthAfterGetBytes() {
-        HttpRequestToBeSent request = request(1);
-        ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(1, 2); when(body.getBytes()).thenReturn(new byte[1]);
-        when(request.body()).thenReturn(body);
-        assertCategory("CAPTURE_FAILED", request);
+    @Test void noCopySlotReadsOnlyEssentialScopeAndBodyLengthAndCanVerifyEmptyBody() {
+        var request = request(1); var body = request.body(); clearInvocations(request);
+        var copy = NativeCapture.request(request, false);
+        assertTrue(copy.bodyComplete()); assertFalse(copy.headersComplete()); assertTrue(copy.headers().isEmpty());
+        verify(body).length(); verify(body, never()).getBytes(); verify(request, never()).headers();
+        when(body.length()).thenReturn(1);
+        assertFalse(NativeCapture.request(request, false).bodyComplete());
     }
-    @Test void oversizedUrlIsRejectedBeforeAnyBodyRead() {
-        HttpRequestToBeSent request = request(1); when(request.url()).thenReturn("x".repeat(NativeCapture.MAX_URL + 1));
-        assertCategory("CAPTURE_LIMIT", request); verify(request, never()).body();
+    @ParameterizedTest @ValueSource(strings = {"method", "service", "host", "port", "path", "long-path"})
+    void scopeEssentialMetadataStillFailsClosed(String kind) {
+        var request = request(1);
+        switch (kind) {
+            case "method" -> when(request.method()).thenReturn(null);
+            case "service" -> when(request.httpService()).thenReturn(null);
+            case "host" -> when(request.httpService().host()).thenReturn(null);
+            case "port" -> when(request.httpService().port()).thenReturn(0);
+            case "path" -> when(request.path()).thenReturn(null);
+            case "long-path" -> when(request.path()).thenReturn("/".repeat(NativeCapture.MAX_URL + 1));
+            default -> fail(kind);
+        }
+        assertThrows(NativeCapture.Rejected.class, () -> NativeCapture.request(request)); verify(request, never()).body();
     }
-    @Test void headerCountIsRejectedBeforeTraversalOrBody() {
-        HttpRequestToBeSent request = request(1);
-        @SuppressWarnings("unchecked") List<HttpHeader> headers = mock(List.class);
-        when(headers.size()).thenReturn(257); when(request.headers()).thenReturn(headers);
-        assertCategory("CAPTURE_LIMIT", request);
-        verify(headers, never()).get(anyInt()); verify(request, never()).body();
-    }
-    @Test void headerNameBoundBeforeBody() {
-        HttpRequestToBeSent request = request(1); when(request.headers()).thenReturn(List.of(header("A".repeat(257), "x")));
-        assertCategory("CAPTURE_LIMIT", request); verify(request, never()).body();
-    }
-    @Test void headerValueBoundBeforeBody() {
-        HttpRequestToBeSent request = request(1); when(request.headers()).thenReturn(List.of(header("A", "x".repeat(65_537))));
-        assertCategory("CAPTURE_LIMIT", request); verify(request, never()).body();
-    }
-    @Test void aggregateHeadersBoundBeforeBody() {
-        HttpRequestToBeSent request = request(1);
-        when(request.headers()).thenReturn(List.of(header("A", "x".repeat(33_000)), header("B", "y".repeat(33_000))));
-        assertCategory("CAPTURE_LIMIT", request); verify(request, never()).body();
-    }
-    @ParameterizedTest @ValueSource(strings = {"HTTP/3", "HTTP/0.9", "", "SYNTHETIC-SECRET"})
-    void unknownVersionFailsClosedBeforeBody(String version) {
-        HttpRequestToBeSent request = request(1); when(request.httpVersion()).thenReturn(version);
-        assertCategory("UNSUPPORTED_HTTP_VERSION", request); verify(request, never()).body();
-    }
-    @Test void normalizesPseudoHeadersInCopyOnlyAndAddsValidatedHost() {
-        HttpRequestToBeSent request = http2();
-        List<HttpHeader> original = pseudos(); when(request.headers()).thenReturn(original);
-        RequestData copy = NativeCapture.request(request);
-        assertEquals(List.of(new RequestData.Header("Host", "example.test")), copy.headers());
-        assertEquals(4, original.size()); assertEquals(":method", original.getFirst().name());
+    @ParameterizedTest @MethodSource("fuzzedHeaders")
+    void duplicatesPartialPseudoFieldsAndHostFuzzArePreservedWithoutNormalization(List<HttpHeader> headers) {
+        var request = request(1); when(request.httpVersion()).thenReturn("HTTP/2"); when(request.headers()).thenReturn(headers);
+        var copy = NativeCapture.request(request);
+        assertEquals(headers.stream().map(h -> new RequestData.Header(h.name(), h.value())).toList(), copy.headers());
+        assertTrue(copy.headersComplete());
         assertTrue(mockingDetails(request).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
     }
-    @Test void http2WithAlreadyNormalizedHeadersIsAccepted() {
-        HttpRequestToBeSent request = http2();
-        assertEquals(2, NativeCapture.request(request).headers().size());
-    }
-    @Test void consistentExplicitDefaultPortAndHostAreAccepted() {
-        HttpRequestToBeSent request = http2(); List<HttpHeader> headers = pseudos();
-        headers.set(3, header(":authority", "EXAMPLE.TEST.:443")); headers.add(header("Host", "example.test"));
-        when(request.headers()).thenReturn(headers);
-        assertEquals(1, NativeCapture.request(request).headers().size());
-    }
-    @ParameterizedTest @MethodSource("inconsistentPseudoHeaders")
-    void allUnknownDuplicatePartialAndMismatchCasesFailBeforeBody(List<HttpHeader> headers) {
-        HttpRequestToBeSent request = http2(); when(request.headers()).thenReturn(headers);
-        assertCategory("HTTP2_INCONSISTENT", request); verify(request, never()).body();
-    }
-    static Stream<List<HttpHeader>> inconsistentPseudoHeaders() {
+    static Stream<List<HttpHeader>> fuzzedHeaders() {
         List<List<HttpHeader>> cases = new ArrayList<>();
-        for (int i = 0; i < 4; i++) { List<HttpHeader> list = pseudos(); list.remove(i); cases.add(list); }
-        for (int i = 0; i < 4; i++) { List<HttpHeader> list = pseudos(); list.add(list.get(i)); cases.add(list); }
-        for (String name : List.of(":protocol", ":METHOD", ":status", ":unknown")) {
-            List<HttpHeader> list = pseudos(); list.add(header(name, "x")); cases.add(list);
+        cases.add(List.of()); cases.add(List.of(header("Host", "other.invalid"), header("host", "fuzz.invalid")));
+        for (String name : List.of(":method", ":path", ":scheme", ":authority", ":protocol", ":METHOD")) {
+            cases.add(List.of(header(name, "fuzz"))); cases.add(List.of(header(name, "first"), header(name, "second")));
         }
-        for (String method : List.of("POST", "get", "CONNECT", "SYNTHETIC-SECRET")) {
-            List<HttpHeader> list = pseudos(); list.set(0, header(":method", method)); cases.add(list);
-        }
-        for (String path : List.of("/other", "/safe?unexpected=1", "https://example.test/safe", "*")) {
-            List<HttpHeader> list = pseudos(); list.set(1, header(":path", path)); cases.add(list);
-        }
-        for (String scheme : List.of("http", "HTTPS", "ftp")) {
-            List<HttpHeader> list = pseudos(); list.set(2, header(":scheme", scheme)); cases.add(list);
-        }
-        for (String authority : List.of("other.test", "example.test:80", "example.test:", "example.test:0", "example.test:65536",
-                "example.test:443:443", "user@example.test", "example.test/path", "example.test#fragment", "[::1]")) {
-            List<HttpHeader> list = pseudos(); list.set(3, header(":authority", authority)); cases.add(list);
-        }
-        List<HttpHeader> mismatchHost = pseudos(); mismatchHost.add(header("Host", "other.test")); cases.add(mismatchHost);
-        List<HttpHeader> duplicateHost = pseudos(); duplicateHost.add(header("Host", "example.test")); duplicateHost.add(header("host", "example.test")); cases.add(duplicateHost);
-        List<HttpHeader> wrongOrder = pseudos(); wrongOrder.addFirst(header("X-Regular", "x")); cases.add(wrongOrder);
+        cases.add(List.of(header("X-Regular", "x"), header(":authority", "other.invalid"), header("Host", "mismatch.invalid")));
         return cases.stream();
     }
-    @Test void apiPathMismatchIsNotSilentlyDiscarded() {
-        HttpRequestToBeSent request = http2(); when(request.headers()).thenReturn(pseudos()); when(request.path()).thenReturn("/other");
-        assertCategory("HTTP2_INCONSISTENT", request); verify(request, never()).body();
+    @Test void oversizedOptionalQueryIsBoundedAsUnavailableWithoutRewritingNativeTarget() {
+        var request = request(1); String target = "/safe?value=" + "x".repeat(2 * NativeCapture.MAX_URL);
+        when(request.path()).thenReturn(target);
+        var copy = NativeCapture.request(request);
+        assertTrue(copy.url().length() < 2 * NativeCapture.MAX_URL);
+        assertEquals(NativeCapture.MAX_URL + 1, copy.url().substring(copy.url().indexOf('?') + 1).length());
+        assertEquals(target, request.path());
     }
-    @Test void pseudoHeadersOnHttp1AreRejected() {
-        HttpRequestToBeSent request = request(1); when(request.headers()).thenReturn(pseudos());
-        assertCategory("HTTP2_INCONSISTENT", request); verify(request, never()).body();
+    @Test void failedZeroByteCopyStillHasVerifiedEmptyBodyNotUnknownNonemptyMetadata() {
+        var request = request(1); when(request.body().getBytes()).thenThrow(new IllegalArgumentException("SYNTHETIC"));
+        assertTrue(NativeCapture.request(request).bodyComplete());
+        assertEquals(0, NativeCapture.request(request).bodyLength());
     }
-    @Test void pseudoUrlAndServiceMismatchIsRejected() {
-        HttpRequestToBeSent request = http2(); when(request.headers()).thenReturn(pseudos());
-        when(request.url()).thenReturn("https://other.test/safe");
-        assertCategory("HTTP2_INCONSISTENT", request); verify(request, never()).body();
+    @Test void ipv6AuthorityUsesSingleBracketsAndActualServicePort() {
+        var request = request(1); when(request.httpService().host()).thenReturn("::1"); when(request.httpService().port()).thenReturn(8443);
+        assertEquals("https://[::1]:8443/safe", NativeCapture.request(request).url());
+        when(request.httpService().host()).thenReturn("[::1]");
+        assertEquals("https://[::1]:8443/safe", NativeCapture.request(request).url());
     }
-    private static HttpRequestToBeSent http2() {
-        HttpRequestToBeSent request = request(1); when(request.httpVersion()).thenReturn("HTTP/2"); return request;
+    @Test void responseScalarsAreIndependentOfSlotsAndContentLengthAndNoZeroSentinelIsInvented() {
+        var response = response(1, "{}"); ByteArray body = mock(ByteArray.class);
+        when(body.length()).thenReturn(6 * 1_048_576); when(response.body()).thenReturn(body); when(response.statusCode()).thenReturn((short) 503);
+        when(response.headers()).thenReturn(List.of(header("Content-Length", "1")));
+        var observed = NativeCapture.observe(response); var copy = NativeCapture.response(response, observed, false);
+        assertEquals(503, copy.status()); assertEquals(6 * 1_048_576L, copy.actualBytes()); assertEquals(0, copy.body().length);
+        assertFalse(copy.bodyComplete()); assertFalse(copy.headersComplete()); verify(body, never()).getBytes(); verify(response, never()).headers();
     }
-    private static List<HttpHeader> pseudos() {
-        return new ArrayList<>(List.of(header(":method", "GET"), header(":path", "/safe"), header(":scheme", "https"), header(":authority", "example.test")));
-    }
-    private static void assertCategory(String category, HttpRequestToBeSent request) {
-        assertEquals(category, assertThrows(NativeCapture.Rejected.class, () -> NativeCapture.request(request)).category());
+    @Test void failedStatusObservationDoesNotHideActualSizeAndFailedSizeDoesNotHideStatus() {
+        var response = response(1, "{}"); when(response.statusCode()).thenThrow(new IllegalStateException("SYNTHETIC"));
+        assertEquals(2, NativeCapture.observe(response).actualBytes()); assertEquals(0, NativeCapture.observe(response).status());
+        var second = response(2, "{}"); when(second.body()).thenThrow(new LinkageError("SYNTHETIC"));
+        assertEquals(200, NativeCapture.observe(second).status()); assertEquals(-1, NativeCapture.observe(second).actualBytes());
     }
 }

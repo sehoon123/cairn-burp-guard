@@ -19,10 +19,10 @@ class UsageGuideTest {
         assertThrows(IllegalStateException.class, UsageGuide::create);
         edt(() -> {
             JTabbedPane tabs = assertInstanceOf(JTabbedPane.class, UsageGuide.create());
-            assertEquals(List.of("대상 등록", "규칙 만들기", "속도·결과 읽기"),
+            assertEquals(List.of("대상 등록", "규칙 만들기", "속도·결과 읽기", "자동 안전·태그·내보내기"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
             List<JTextArea> pages = new ArrayList<>(); collect(tabs, pages);
-            assertEquals(3, pages.size());
+            assertEquals(4, pages.size());
             for (JTextArea page : pages) {
                 assertFalse(page.isEditable()); assertTrue(page.isFocusable());
                 assertTrue(page.getText().length() < 5_000);
@@ -32,7 +32,9 @@ class UsageGuideTest {
             }
             assertTrue(pages.getFirst().getText().contains("api.example.test"));
             assertTrue(pages.get(1).getText().contains("{\"action\":\"review\"}"));
-            assertTrue(pages.getLast().getText().contains("자동 재전송"));
+            assertTrue(pages.get(2).getText().contains("자동 재전송"));
+            assertTrue(pages.getLast().getText().contains("JSON/HAR/사건"));
+            assertTrue(pages.getFirst().getText().contains("/c/%2e/main.do"));
             return null;
         });
     }

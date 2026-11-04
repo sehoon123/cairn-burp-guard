@@ -1,22 +1,79 @@
-# 실제 Burp 검증 결과
+# 실제 Burp 기록 — 미배포 v2와 과거 산출물 구분
 
-## 최신 모달·전체 통과·조건 추가 개발 프리뷰 — native 미실행
+## 현재 v2 후보 — 첫 EULA에서 중단, native 수용 미실행
 
-`dev-2026-11-04-conditions-passthrough` / `4232ae63d0a158d294fbe9ee3cf40cf58b9e8bdc85a300c8f829a5135b4bd159` JAR은 Java845 / 실제 Swing20 / Python35 자동 검사를 통과했지만 **아직 Burp에서 실행하지 않았습니다**. Swing의 실제 키·마우스 이벤트도 Burp 통합 검증이 아닙니다. 확장 명세의 ResponseWatcher/EXEMPT/schema2 등은 아직 제안 단계입니다.
+현재 작업 트리에는 EXEMPT/ResponseWatcher/overlay/Intent/schema2/별도 Raw UI/
+listener observer와 native adapter 구현이 있습니다. **구현 존재는 설치·실제 native
+수용·독립 구현 감사·배포 완료가 아닙니다.** 정확한 API는 [INTERFACES.md](INTERFACES.md),
+현재 자동 검사/후보별 hash와 남은 gate는 [VERIFICATION.md](VERIFICATION.md)를 보세요.
 
-이번 버그 수정 범위는 지정 모델의 독립 코드 검토와 마지막 레이아웃 수정 후속 검토를 별도로 받았으며, 사용자 명시 요청에 따른 제한된 개발 프리뷰입니다. **이 검토를 native 검증이나 확장 명세의 4자 합의로 세지 않습니다.** 확장 명세 검토는 지정 모델3명 중1명과 오케스트레이터만 완료되었고2명은 당시 제공자 요청 중단으로 미실시입니다. [검토 초안과 미결정 사항](AVAILABILITY_REVIEW.md).
+Main이 실제 disposable Burp를 **완전히 분리한 임시 HOME·profile·display 및 소유
+임시 포트**로 시작했으나 **첫 EULA 화면에서 중단**했습니다. **약관을 동의하지 않았고,
+확장을 로드하지 않았으며 어떤 native phase도 실행하지 않았습니다.** 사용자 live
+프로젝트/라이선스·활성화·프로필 자료를 복사하거나 우회한 것으로 해석하지 마세요.
+이는 제품 시작 관찰이지 확장 로드 성공이나 native A–H PASS가 아닙니다.
 
-아래 절은 과거 산출물별 기록입니다. 각 절의 ‘현재’는 **그 절에 적힌 당시 hash**만 뜻하며 최신 후보에 결과를 이전하지 않습니다.
+현재 native 상태:
+
+| 확인할 항목 | 상태 |
+|---|---|
+| 정확한 최종 v2 JAR 로드·native A–H | **PENDING** |
+| Observer → HttpHandler ID 공유/순서, 실제 listenerInterface | **PENDING**; API/Mockito/registry로 증명하지 못함 |
+| 두 실제 inbound listener: 선택 보호 / 미선택 no-capture | **PENDING**; 목적지 포트 fallback 없음, unknown은 내용 없이 거절 |
+| 실제 목적지 vs fuzzed Host, all-path `/c/;/main.do`, `/c/%2e/main.do` 및 변형 원형 보존 | **PENDING native**, 소스·합성·owned socket 회귀와 구분 |
+| 지원하지 않는 body/charset/encoding·선택적 capture 한계 경고, 원형 전달 | **PENDING native**, 자동451을 요구하지 않음 |
+| 첫6MiB/actual bytes·circuit·half-open·EXEMPT·21st Intent·로컬 no-spend | **PENDING native** |
+| Raw human 화면만 원문 / JSON·HAR·incident 마스킹 / OFF·미선택 내용 미수집 | **PENDING native**, 외부 client만으로 메모리 미수집 증명 못함 |
+| pause 보존/OFF·설정·listener·health 확인/저장·프로젝트 lifecycle | **PENDING native** |
+
+자동 검사 기록은 revision3 clean Java1221 PASS, focused Python27 PASS와 local-template18
+PASS(실제 upstream 미실행)입니다. 초기 HiDPI 테스트의 비동기 wrap·클릭 좌표 대기만 보완해
+포커스/마지막 줄 도달 단언을 유지했고, 격리 Xvfb+소유 WM의 Swing은 scale1 27 PASS,
+scale2 27 PASS 및 scale2 반복27 PASS입니다. 후보 SHA256
+`217730d68b66f7ddb7f1c8d5ef4271873ac05e3e77efeb7dffb29c4bc105607d`는
+revision2/3 clean 및 반복 로컬 재빌드에서 동일했습니다. 독립 코드 검토나 native 검증은
+아닙니다. Swing/Mock/직접 loopback 결과나 이전 native hash를 이 후보의 native 증거로
+이전하지 않습니다. 사용자 재요청 뒤 같은 소스의 fresh clean Java1221, Python27+18,
+격리 Swing scale1·2 및 scale2반복 각27도 다시 통과했고 clean/반복 JAR hash도 같았습니다.
+로컬 체크포인트·후보 빌드는 이 검사 상태를 보존할 뿐 공개 push/tag/release나 실제 native
+수용 완료가 아닙니다. 기존 사용자 Burp/JAR를 교체하거나 약관에 동의하지 않았습니다.
+
+요청된 독립 A **설계** 검토는3회 시도 뒤 credential rotation으로 중단됐고,
+앞선 B/C **DESIGN** 보고서는 최종 구현 감사가 아닙니다. 이어 frozen revision4의
+통합 소스 A/B/C 감사는 최초3건과 사용자 재요청 뒤 재시도3건, 총6개 요청 모두 정확한
+provider/model metadata를 확인했으나3–7초 안에 같은 공급자 오류로 중단됐습니다.
+도구 출력·감사 보고서가 없어 실질적 최종 감사/승인은0건입니다. 대체 모델·인증/라우팅 변경·전체 합의로 세지 않습니다. 원본 보고서·로그·스크린샷·profile·auth·license
+자료와 사설 경로를 이 저장소에 복사하지 않습니다. 재현 절차는 generic `$TMP`와
+합성·소유 fixture만 사용합니다. 다음 [수동 checklist](MANUAL_BURP_SMOKE.md)는 앞으로
+사람이 수행할 절차이며 현재 실행 증거가 아닙니다.
+
+## HISTORICAL — 공개 모달·전체 통과·조건 추가 프리뷰
+
+과거 `dev-2026-11-04-conditions-passthrough`, released-source 기준 `738b41e` /
+JAR SHA256 `4232ae63d0a158d294fbe9ee3cf40cf58b9e8bdc85a300c8f829a5135b4bd159`는
+당시 Java845 / Swing20(scale1·2) / Python35를 통과했지만 **그 정확한 JAR의 Burp
+native는 실행하지 않았습니다**. 당시 EXEMPT/ResponseWatcher/schema2는 제안 단계였으며
+그 프리뷰에 현재 v2가 포함되어 있다는 뜻이 아닙니다.
+
+당시 제한된 버그 수정은 지정 모델 독립 검토와 레이아웃 후속 검토를 별도로 받았지만
+native 검증·확장 명세의4자 합의·현재 v2 최종 구현 감사가 아닙니다. 당시 확장 설계
+검토는 지정3명 중1명과 오케스트레이터만 완료,2명은 제공자 중단으로 미실시였습니다.
+[역사적 검토 초안](AVAILABILITY_REVIEW.md)은 현재 source acceptance가 아닙니다.
+
+**이하 모든 결과는 과거 산출물별 기록입니다.** 각 절의 ‘현재/최종’은 그 절에 적힌
+당시 hash만 뜻합니다.12/13/54 시나리오를 합치거나 미배포 v2/4232 프리뷰에 이전하지
+않습니다. 아래 과거의 broad delete/unsupported-body 차단 관찰도 지금의 요구사항이
+아닙니다. 현재는 actual destination + 원형 all-path, best-effort optional inspection입니다.
 
 ## 2026-11-04 — 이전 사용 예시·빠른 조작 빌드 (c071)
 
-2026-11-04 KST / 2026-11-03 UTC에 검증했습니다. **현재 산출물의 결과만 이 절에 적습니다.** 아래 이전 두 hash의12개·54개 시나리오와 합산하지 않습니다.
+2026-11-04 KST / 2026-11-03 UTC에 검증했습니다. **이 절은 당시 c071 산출물만의 역사적 기록입니다.** 아래 이전 두 hash의12개·54개 시나리오와 합산하지 않습니다.
 
 | 항목 | 직접 확인한 값 |
 |---|---|
 | 제품 | 정상 선택 화면의 **Burp Community Edition v2026.10.1**, 제품 포함 OpenJDK26.0.2+10-55 |
 | 확장 | Java21 / Montoya API2026.7, `cairn-proxy-guard-0.1.0-SNAPSHOT.jar` |
-| 현재 JAR SHA256 | `c07116e051f6f49f7e582ffd8490e2ae234a91b22b6a8958bb82e55e646cf508` |
+| 당시 JAR SHA256 | `c07116e051f6f49f7e582ffd8490e2ae234a91b22b6a8958bb82e55e646cf508` |
 | 격리 | 별도 임시 home/config/data/cache/preferences/tmp, 인증된 중첩 X display1440×1000, 임시 메모리 프로젝트 |
 | 대상·클라이언트 | 소유한 numeric-loopback HTTP echo fixture와 외부 Python 클라이언트. **CAIRN/Pi 워커 아님** |
 | 조작 | clean build의 위 JAR을 Extensions UI에서 로드. 대상·규칙·설정·승인은 모두 사람용 UI에서 조작 |
@@ -43,7 +100,7 @@ GET/HEAD를 함께 확인하는 시나리오가 있어 **총14요청 = fixture20
 - 실제 마스킹 요청/응답에서 Authorization·Cookie·JSON password·Set-Cookie의 가림을 확인했습니다. **전체 JSON14건 / 선택 HAR1건**은 각각 `0600`이며 합성 비밀 원문4종이 없었습니다. 최종 증거는 FORWARDED6/BLOCKED8이며 대기 항목은 없었습니다.
 - 확장 로드 성공을 확인했고 테스트 로그의 exception/error 검색 결과는 없었습니다. 테스트 Burp는 UI로 종료되어 PID가 사라진 것을 확인했습니다. 이 작업의 display/window manager·임시 프로필·내보내기·로그·스크린샷만 정리했으며 원본 실행 자료는 게시하지 않습니다.
 
-### 현재 hash의 미검증 범위
+### 당시 c071 hash의 미검증 범위
 
 이번 native 실행은 HTTP/1.1의 위13개와 한 Linux/디스플레이 환경에 한정됩니다. **거절·만료·정책 변경 취소, HTTPS/HTTP2, pacing/동시성/호스트 예외/큐 포화/격리의 전체 native matrix를 이 hash에서 재실행하지 않았습니다.** 관련783 Java 회귀 통과와 이전 hash의 관찰은 그 native 빈칸을 대체하지 않습니다.
 

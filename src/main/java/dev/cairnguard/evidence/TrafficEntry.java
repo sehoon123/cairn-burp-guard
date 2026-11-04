@@ -11,7 +11,9 @@ public record TrafficEntry(String id, String projectId, String projectName, Stri
                            String method, String url, String mode, String disposition, String reason,
                            Integer statusCode, List<Decision.RuleHit> hits, long revision,
                            boolean bookmarked, Message requestCapture, Message responseCapture,
-                           boolean truncated, String provenanceSeal) {
+                           boolean truncated, String provenanceSeal,
+                           String intentId, String runId, String outcome, String guardState,
+                           String overlayId, long responseBytes, List<String> inspectionWarnings) {
     public TrafficEntry {
         Objects.requireNonNull(id);
         Objects.requireNonNull(projectId);
@@ -26,6 +28,35 @@ public record TrafficEntry(String id, String projectId, String projectName, Stri
         Objects.requireNonNull(requestCapture);
         Objects.requireNonNull(responseCapture);
         Objects.requireNonNull(provenanceSeal);
+        Objects.requireNonNull(intentId);
+        Objects.requireNonNull(runId);
+        Objects.requireNonNull(outcome);
+        Objects.requireNonNull(guardState);
+        Objects.requireNonNull(overlayId);
+        inspectionWarnings = List.copyOf(inspectionWarnings);
+    }
+
+    /** Original constructor retained for integrations and fixtures; only EvidenceStore can seal it. */
+    public TrafficEntry(String id, String projectId, String projectName, String timestamp,
+                        String method, String url, String mode, String disposition, String reason,
+                        Integer statusCode, List<Decision.RuleHit> hits, long revision,
+                        boolean bookmarked, Message requestCapture, Message responseCapture,
+                        boolean truncated, String provenanceSeal) {
+        this(id, projectId, projectName, timestamp, method, url, mode, disposition, reason, statusCode,
+                hits, revision, bookmarked, requestCapture, responseCapture, truncated, provenanceSeal,
+                "-", "-", "FORWARDED".equals(disposition) ? "forwarded" : "BLOCKED".equals(disposition)
+                        ? "blocked" : "pending", "", "", -1, List.of());
+    }
+
+    public TrafficEntry(String id, String projectId, String projectName, String timestamp,
+                        String method, String url, String mode, String disposition, String reason,
+                        Integer statusCode, List<Decision.RuleHit> hits, long revision,
+                        boolean bookmarked, Message requestCapture, Message responseCapture,
+                        boolean truncated, String provenanceSeal, String intentId, String runId,
+                        String outcome, String guardState, String overlayId, long responseBytes) {
+        this(id, projectId, projectName, timestamp, method, url, mode, disposition, reason, statusCode,
+                hits, revision, bookmarked, requestCapture, responseCapture, truncated, provenanceSeal,
+                intentId, runId, outcome, guardState, overlayId, responseBytes, List.of());
     }
 
     public String request() {

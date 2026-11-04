@@ -277,7 +277,7 @@ public final class ConditionEditor implements EditorForm<Condition> {
             case PATH -> "URL의 경로를 비교합니다. 예: /admin 또는 /items/1";
             case QUERY -> "이름이 비어 있으면 모든 쿼리 이름·값을 비교합니다. 예: 이름 action, 값 delete. 이름에도 대소문자 옵션이 적용됩니다.";
             case HEADER -> "이름이 비어 있으면 모든 헤더 이름·값을 비교합니다. 예: 이름 X-Operation, 값 delete. 헤더 이름은 항상 대소문자를 구분하지 않습니다.";
-            case BODY -> "본문 텍스트를 비교합니다. 예: operation=delete. 해석할 수 없는 요청은 별도로 차단됩니다.";
+            case BODY -> "본문 텍스트를 비교합니다. 예: operation=delete. 해석할 수 없으면 검사 경고를 표시하고 이 조건은 평가할 수 없는 것으로 처리합니다. 본문 형식 자체로 자동 차단하지 않습니다.";
             case JSON -> "비우면 JSON 전체의 키·값을, 지정하면 해당 위치와 하위 키·값을 비교합니다. 예: /action 또는 /items/0/name. 선택 경로의 키는 대소문자를 구분하며 ~는 ~0, /는 ~1로 씁니다.";
             case FORM -> "이름이 비어 있으면 모든 폼 이름·값을 비교합니다. 예: 이름 action, 값 delete. 이름에도 대소문자 옵션이 적용됩니다.";
             case ANY -> "메서드·URL·헤더·본문 등의 검사 가능한 값을 넓게 비교합니다. 예: delete. 원치 않는 일치가 없는지 확인하세요.";
@@ -432,7 +432,7 @@ public final class ConditionEditor implements EditorForm<Condition> {
 
     static void validateRule(Rule rule) {
         try {
-            new PolicyEngine().validate(new GuardConfig(1, List.of(), List.of(), List.of(rule), Mode.BLOCK, GuardConfig.defaults().limits()));
+            new PolicyEngine().validate(new GuardConfig(2, List.of(), List.of(), List.of(rule), Mode.BLOCK, GuardConfig.defaults().limits()));
         } catch (IllegalArgumentException error) {
             // Only known categories are inspected. Never surface the original text, value, or cause.
             String message = switch (error.getMessage() == null ? "" : error.getMessage()) {

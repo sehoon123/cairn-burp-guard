@@ -73,12 +73,12 @@ class PolicyEngineTest {
         blocked(noScope, request("/safe"));
     }
 
-    @Test void defaultDeleteRulesAreCaseInsensitiveAndKeepAllHits() {
+    @Test void newDefaultDeleteMethodIsCaseInsensitiveWithoutDeleteStringFalsePositives() {
         GuardConfig defaults = GuardConfig.defaults();
         GuardConfig cfg = config(List.of(scope("example.test", "any", 0, "")), List.of(), defaults.rules(), Mode.ALLOW);
         Decision decision = engine.evaluate(cfg, request("delete", "/safe", "", ""));
         assertEquals(Mode.BLOCK, decision.mode());
-        assertEquals(List.of("delete-method", "delete-string"), decision.hits().stream().map(Decision.RuleHit::id).toList());
+        assertEquals(List.of("delete-method"), decision.hits().stream().map(Decision.RuleHit::id).toList());
         assertEquals("RULE_BLOCK", decision.reason());
         assertEquals(Mode.ALLOW, engine.evaluate(cfg, request("/safe")).mode());
     }
@@ -117,8 +117,8 @@ class PolicyEngineTest {
         assertEquals(Mode.ASK, engine.evaluate(cfg, request("/other")).mode());
         assertEquals(Mode.ALLOW, engine.evaluate(cfg, request("/different")).mode());
         assertEquals(Mode.ALLOW, engine.evaluate(cfg, request("POST", "/safe", "", "")).mode());
-        // An early true OR/Allow cannot skip malformed structured inspection.
-        blocked(cfg, request("GET", "/safe", "application/json", "{broken"));
+        // No rule demands JSON here: malformed optional payloads do not become hard denials.
+        assertEquals(Mode.ASK, engine.evaluate(cfg, request("GET", "/safe", "application/json", "{broken")).mode());
     }
 
     static Stream<Arguments> fields() {
@@ -190,14 +190,18 @@ class PolicyEngineTest {
                 request("POST", "/safe", "application/x-www-form-urlencoded", "q=delete+item")).reason());
     }
 
-    @Test void rawAndThreeDecodedViewsAreKeptAndFourthIsBlocked() {
+    @Test void rawAndThreeDecodedViewsAreKeptAndFourthIsUnavailableNotGloballyBlocked() {
         GuardConfig cfg = config(List.of(rule("raw", Mode.MONITOR, leaf(Field.PATH, Match.EXACT, "/del%65te")),
                 rule("decoded", Mode.ASK, leaf(Field.PATH, Match.EXACT, "/delete"))));
         assertEquals(2, engine.evaluate(cfg, request("/del%65te")).hits().size());
         for (String value : List.of("del%65te", "del%2565te", "del%252565te")) {
             assertEquals("RULE_ASK", engine.evaluate(cfg, request("/" + value)).reason());
         }
-        assertEquals("ENCODING_DEPTH_EXCEEDED", engine.evaluate(cfg, request("/del%25252565te")).reason());
+        Decision limited = engine.evaluate(cfg, request("/del%25252565te"));
+        assertEquals("DEFAULT_ALLOW", limited.reason(), "All-path scope is not an encoding-depth restriction");
+        assertEquals(List.of("raw"), limited.hits().stream().map(Decision.RuleHit::id).toList(),
+                "Keep the known raw MONITOR match, never claim the not-yet-decoded ASK matched");
+        assertTrue(limited.inspectionWarnings().contains("PATH_INTERPRETATION_INCOMPLETE"));
     }
 
     @Test void encodedSeparatorsAndRepeatedParameterNamesCannotHideValues() {
@@ -256,7 +260,11 @@ class PolicyEngineTest {
 
     @ParameterizedTest @ValueSource(strings = {"/safe/../delete", "/safe/%2e%2e/delete", "/safe/%255cdelete", "/safe/%3foutside", "/safe/%23outside",
             "/safe/..;/delete", "/safe/%2e%2e%3b/delete", "/safe/path;matrix=value"})
-    void ambiguousPathsAreNotNormalizedIntoScope(String path) { blocked(config(List.of()), request(path)); }
+    void allPathScopeDoesNotBanAmbiguousPentestPaths(String path) {
+        RequestData input = request(path);
+        assertEquals(Mode.ALLOW, engine.evaluate(config(List.of()), input).mode());
+        assertEquals("https://example.test" + path, input.url(), "Never normalize the forwarded request");
+    }
 
     @Test void scopeSchemePortAndDisabledEntriesMatter() {
         GuardConfig https = config(List.of(scope("example.test", "https", 443, "")), List.of(), List.of(), Mode.ALLOW);
@@ -275,27 +283,32 @@ class PolicyEngineTest {
                 8080, false, List.of(new Header("Host", "[0:0:0:0:0:0:0:1]:8080")), new byte[0])).mode());
     }
 
-    @Test void serviceAndHostHeaderMustAgreeWithUriAuthority() {
+    @Test void actualServiceControlsScopeAndHostHeaderNeverCreatesAConsistencyGate() {
         GuardConfig cfg = config(List.of());
         blocked(cfg, new RequestData("GET", "https://example.test/", "elsewhere.test", 443, true, List.of(), new byte[0]));
         blocked(cfg, new RequestData("GET", "https://example.test/", "example.test", 444, true, List.of(), new byte[0]));
         blocked(cfg, new RequestData("GET", "https://example.test/", "example.test", 443, false, List.of(), new byte[0]));
-        for (String host : List.of("elsewhere.test", "example.test:80", "example.test@evil.test", " example.test", "example.test:")) {
-            blocked(cfg, new RequestData("GET", "https://example.test/", "example.test", 443, true,
-                    List.of(new Header("Host", host)), new byte[0]));
+        for (String host : List.of("synthetic.invalid", "example.test:80", "example.test@evil.test", " example.test", "example.test:", "%", "")) {
+            assertEquals(Mode.ALLOW, engine.evaluate(cfg, new RequestData("GET", "https://example.test/", "example.test", 443, true,
+                    List.of(new Header("Host", host)), new byte[0])).mode());
         }
-        blocked(cfg, new RequestData("GET", "https://example.test/", "example.test", 443, true,
-                List.of(new Header("Host", "example.test"), new Header("host", "example.test")), new byte[0]));
-        // The copy has no HTTP version: missing Host is permissible only with URL/service agreement.
-        assertEquals(Mode.ALLOW, engine.evaluate(cfg, new RequestData("GET", "https://example.test/", "example.test",
+        assertEquals(Mode.ALLOW, engine.evaluate(cfg, new RequestData("GET", "https://example.test/", "example.test", 443, true,
+                List.of(new Header("Host", "example.test"), new Header("host", "synthetic.invalid")), new byte[0])).mode());
+        assertEquals(Mode.ALLOW, engine.evaluate(cfg, new RequestData("GET", "https://synthetic.invalid/", "example.test",
                 443, true, List.of(), new byte[0])).mode());
     }
 
-    @ParameterizedTest @ValueSource(strings = {"ftp://example.test/a", "/relative", "https:opaque", "https://user:pass@example.test/", "https://example.test/#f",
-            "https://example.test:0/", "https://example.test:65536/", "https://example.test:/", "https://example.test/a b", "https://example.test/%zz",
-            "https://example.test\\@evil.test/", "https://%65xample.test/", "https://127.1/", "https://0177.0.0.1/", "https://0x7f.0.0.1/"})
-    void hostileUrisAreBlocked(String url) {
+    @ParameterizedTest @ValueSource(strings = {"ftp://example.test/a", "/relative", "https:opaque"})
+    void missingOrUnsupportedTargetRepresentationStillFailsClosed(String url) {
         blocked(config(List.of()), new RequestData("GET", url, "example.test", 443, true, List.of(), new byte[0]));
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"https://example.test/#f", "https://example.test/a b",
+            "https://example.test/%zz", "https://example.test\\@evil.test/"})
+    void targetSyntaxAndUntrustedUrlAuthorityDoNotOverrideActualServiceAllPathScope(String url) {
+        RequestData input = new RequestData("GET", url, "example.test", 443, true, List.of(), new byte[0]);
+        assertEquals(Mode.ALLOW, engine.evaluate(config(List.of()), input).mode());
+        assertEquals(url, input.url());
     }
 
     @Test void allowedAndMonitorRequestsAreNeverMutated() {

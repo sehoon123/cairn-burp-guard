@@ -1,10 +1,12 @@
 package dev.cairnguard.runtime;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import dev.cairnguard.evidence.TrafficEntry;
 import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Limits;
+import dev.cairnguard.model.GuardConfig.Condition;
+import dev.cairnguard.model.GuardConfig.Field;
+import dev.cairnguard.model.GuardConfig.Match;
+import dev.cairnguard.model.GuardConfig.Rule;
 import dev.cairnguard.model.GuardConfig.Mode;
 import dev.cairnguard.model.GuardConfig.ScopeEntry;
 import dev.cairnguard.model.Json;
@@ -20,7 +22,7 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.URI;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +49,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Owned HttpServer + controlled forwarding HARNESS invoking the actual GuardController.
+ * Bounded owned raw HTTP fixture + controlled forwarding HARNESS using the actual GuardController.
  * NOT a native Burp test, HTTP proxy implementation, TLS test or network-enforcement proof.
  */
 @Timeout(30)
@@ -72,6 +74,11 @@ class ProxyLoopbackTest {
     @ParameterizedTest(name = "dangerous fixture [{index}]") @MethodSource("dangerousRequests")
     void dangerousMethodUrlAndBodyNeverReachOwnedUpstream(String method, String target, String type, String body) throws Exception {
         try (Harness h = new Harness(Mode.ALLOW, limits(5, 5, 3, 10_000))) {
+            // New defaults contain ONLY method DELETE; explicitly author each content test's field.
+            Field field = method.equals("DELETE") ? Field.METHOD : target.equals("/delete") ? Field.PATH
+                    : target.contains("?") ? Field.QUERY : type.equals("application/json") ? Field.JSON
+                    : type.equals("application/x-www-form-urlencoded") ? Field.FORM : Field.BODY;
+            h.authorBlock(field, "delete");
             Wire request = h.wire(method, target, type, body, List.of());
             Reply reply = h.forward(request);
             assertLocalBlock(h, reply, "RULE_BLOCK");
@@ -82,33 +89,61 @@ class ProxyLoopbackTest {
         }
     }
 
-    @ParameterizedTest @ValueSource(strings = {"malformed-json", "malformed-percent", "binary", "multipart", "encoding", "websocket"})
-    void unsupportedOrMalformedInspectionFailsClosedWithZeroUpstreamHits(String kind) throws Exception {
+    @ParameterizedTest @ValueSource(strings = {"malformed-json", "malformed-percent", "binary", "multipart", "encoding", "charset", "websocket"})
+    void optionalUnsupportedOrMalformedInspectionPassesUnchangedWithExplicitWarning(String kind) throws Exception {
         try (Harness h = new Harness(Mode.MONITOR, limits(5, 5, 3, 10_000))) {
+            h.authorBlock(Field.ANY, "operator-denied-marker"); // demand optional inspection explicitly
             Wire request = switch (kind) {
                 case "malformed-json" -> h.wire("POST", "/safe", "application/json", "{", List.of());
                 case "malformed-percent" -> h.wire("GET", "/safe?value=%ZZ", "application/json", "", List.of());
                 case "binary" -> h.wire("POST", "/safe", "application/octet-stream", "opaque", List.of());
                 case "multipart" -> h.wire("POST", "/safe", "multipart/form-data; boundary=fixture", "opaque", List.of());
                 case "encoding" -> h.wire("POST", "/safe", "application/json", "{}", List.of(new Header("Content-Encoding", "gzip")));
+                case "charset" -> h.wire("POST", "/safe", "text/plain; charset=unsupported-fixture", "opaque", List.of());
                 case "websocket" -> h.wire("GET", "/safe", "application/json", "", List.of(new Header("Upgrade", "websocket")));
                 default -> throw new AssertionError(kind);
             };
             Reply reply = h.forward(request);
-            assertFalse(reply.forwarded());
-            assertEquals(451, reply.status());
-            assertEquals(0, h.upstream.hits.get());
-            assertEquals(0, h.socketOpens.get());
-            assertEquals("BLOCKED", h.row(reply).disposition());
+            assertTrue(reply.forwarded()); assertEquals(200, reply.status());
+            assertEquals(1, h.upstream.hits.get()); assertEquals(1, h.socketOpens.get());
+            Capture observed = h.upstream.captures.getFirst();
+            assertEquals(request.target(), observed.target()); assertEquals(request.headers(), observed.headers());
+            assertArrayEquals(request.body(), observed.body());
+            assertEquals("FORWARDED", h.row(reply).disposition());
+            if (kind.equals("websocket")) assertTrue(h.row(reply).inspectionWarnings().isEmpty(), "ordinary handshake fields are inspectable; no invented failure");
+            else assertFalse(h.row(reply).inspectionWarnings().isEmpty(), "attempted unsupported inspection must be visible");
+        }
+    }
+
+    @Test void explicitOperatorHeaderBlockHasNoSocketHandoff() throws Exception {
+        try (Harness h = new Harness(Mode.ALLOW, limits(5, 5, 3, 10_000))) {
+            h.authorBlock(Field.HEADER, "operator-denied-marker");
+            assertLocalBlock(h, h.forward(h.wire("GET", "/safe", "text/plain", "", List.of(new Header("X-Action", "operator-denied-marker")))), "RULE_BLOCK");
+            assertEquals(0, h.socketOpens.get()); assertEquals(0, h.upstream.hits.get());
+        }
+    }
+    @ParameterizedTest @ValueSource(strings = {"/ui/bp/common/board/deleteInfoBoardComnt.do", "/deleteListTmp.do", "/undelete",
+            "/c/;/main.do", "/c/%2e/main.do", "/c/%252e/main.do", "/c/%25252e/main.do", "/c/a/../main.do",
+            "/c/%3b/main.do", "/c/%253b/main.do", "/c%2fmain.do", "/c%252fmain.do", "//c///main.do", "/c\\main.do", "/c/%ZZ/main.do?bad=%ZZ"})
+    void allPathDefaultsAndHostFuzzReachOwnedRawTargetWithExactTargetHeadersAndBody(String target) throws Exception {
+        try (Harness h = new Harness(Mode.ALLOW, limits(1_000, 1_000, 3, 10_000))) {
+            Wire original = h.wire("POST", target, "text/plain; charset=unsupported-fixture", "undelete explanation", List.of());
+            List<Header> headers = original.headers().stream().map(v -> v.name().equals("Host") ? new Header("Host", "synthetic.invalid") : v).toList();
+            RequestData inspection = new RequestData(original.method(), original.inspection().url(), "127.0.0.1", h.upstream.port(), false, headers, original.body());
+            Wire fuzzed = new Wire(original.id(), original.method(), original.target(), headers, original.body(), inspection);
+            Reply reply = h.forward(fuzzed); assertTrue(reply.forwarded()); assertEquals(200, reply.status());
+            Capture observed = h.upstream.captures.getFirst();
+            assertEquals(target, observed.target()); assertEquals(headers, observed.headers()); assertArrayEquals(original.body(), observed.body());
+            assertEquals(1, h.socketOpens.get()); assertEquals(1, h.upstream.hits.get()); h.upstream.assertHealthy();
         }
     }
 
     @Test void emptyAllowlistAndExplicitBlockScopeProduceNoUpstreamRequests() throws Exception {
         try (Harness h = new Harness(Mode.ALLOW, limits(5, 5, 3, 10_000))) {
             GuardConfig valid = h.controller.config();
-            h.apply(new GuardConfig(1, List.of(), List.of(), valid.rules(), Mode.ALLOW, valid.limits()));
+            h.apply(new GuardConfig(2, List.of(), List.of(), valid.rules(), Mode.ALLOW, valid.limits()));
             assertLocalBlock(h, h.forward(h.wire("GET", "/safe", "application/json", "", List.of())), "SCOPE_NOT_ALLOWED");
-            h.apply(new GuardConfig(1, valid.allowScope(),
+            h.apply(new GuardConfig(2, valid.allowScope(),
                     List.of(new ScopeEntry(true, "127.0.0.1", "http", h.upstream.port(), "/forbidden.*")),
                     valid.rules(), Mode.ALLOW, valid.limits()));
             assertLocalBlock(h, h.forward(h.wire("GET", "/forbidden", "application/json", "", List.of())), "SCOPE_BLOCKED");
@@ -368,7 +403,7 @@ class ProxyLoopbackTest {
         final AtomicInteger ids = new AtomicInteger();
 
         Harness(Mode mode, Limits limits) throws IOException {
-            GuardConfig config = new GuardConfig(1,
+            GuardConfig config = new GuardConfig(2,
                     List.of(new ScopeEntry(true, "127.0.0.1", "http", upstream.port(), "/.*")), List.of(),
                     GuardConfig.defaults().rules(), mode, limits);
             controller = new GuardController(new ProjectAccess() {
@@ -380,6 +415,13 @@ class ProxyLoopbackTest {
         }
         void apply(GuardConfig config) {
             controller.updateConfig(config, "owned-loopback-project", ((Number) controller.status().get("revision")).longValue());
+        }
+        void authorBlock(Field field, String value) {
+            GuardConfig c = controller.config();
+            List<Rule> rules = new ArrayList<>(c.rules());
+            rules.add(new Rule("operator-" + field.name().toLowerCase(java.util.Locale.ROOT), "Explicit fixture operator rule", true,
+                    Mode.BLOCK, Condition.leaf(field, Match.CONTAINS, value)));
+            apply(new GuardConfig(2, c.allowScope(), c.blockScope(), rules, c.defaultMode(), c.limits(), c.guardListenerPorts()));
         }
         Wire wire(String method, String target, String contentType, String body, List<Header> extra) {
             String id = Integer.toString(ids.incrementAndGet());
@@ -405,17 +447,14 @@ class ProxyLoopbackTest {
             try {
                 // Independent safety pin: transport ALWAYS connects to our own numeric address/port,
                 // never a destination derived from policy input, DNS, proxy env or a redirect.
-                URI uri = URI.create(request.inspection().url());
-                if (!uri.getScheme().equals("http") || !uri.getHost().equals("127.0.0.1") || uri.getPort() != upstream.port())
+                if (request.inspection().secure() || !request.inspection().host().equals("127.0.0.1") || request.inspection().port() != upstream.port())
                     throw new IllegalStateException("HARNESS_REQUIRES_OWNED_ENDPOINT");
                 beforeCommit.run();
-                if (!controller.commit(p)) {
-                    String reason = row(p.evidenceId()).reason();
-                    return local(p, reason);
-                }
+                GuardController.CommitResult result = controller.commitDetailed(p);
+                if (!result.allowed()) return local(p, result.reason());
                 committed = true;
                 Reply reply = exchange(request, p.evidenceId());
-                controller.response(p.evidenceId(), reply.status(), reply.headers(), reply.body());
+                controller.response(p.evidenceId(), reply.status(), reply.headers(), reply.body(), reply.body().length, true, true);
                 // Extra conservative test-only rendezvous: both full response read and our owned
                 // handler cleanup have completed before this completion owner releases its permit.
                 upstream.awaitFinished(request.id());
@@ -518,8 +557,11 @@ class ProxyLoopbackTest {
     }
 
     private static final class OwnedUpstream implements AutoCloseable {
-        final HttpServer server;
-        final ExecutorService handlers = Executors.newFixedThreadPool(8);
+        final ServerSocket server;
+        final ExecutorService acceptor = Executors.newSingleThreadExecutor();
+        final Set<Socket> connections = ConcurrentHashMap.newKeySet();
+        final ExecutorService handlers = new java.util.concurrent.ThreadPoolExecutor(8, 8, 0, TimeUnit.SECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(16));
         final InetSocketAddress address;
         final AtomicInteger hits = new AtomicInteger();
         final AtomicInteger active = new AtomicInteger();
@@ -532,11 +574,19 @@ class ProxyLoopbackTest {
 
         OwnedUpstream() throws IOException {
             // Byte-address construction avoids DNS; bind only 127.0.0.1, ephemeral port, not wildcard.
-            server = HttpServer.create(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0), 16);
-            address = server.getAddress();
-            server.setExecutor(handlers);
-            server.createContext("/", this::handle);
-            server.start();
+            server = new ServerSocket();
+            server.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0), 16);
+            address = (InetSocketAddress) server.getLocalSocketAddress();
+            acceptor.submit(() -> {
+                while (!server.isClosed()) {
+                    try {
+                        Socket socket = server.accept(); socket.setSoTimeout(12_000);
+                        connections.add(socket);
+                        try { handlers.submit(() -> handle(socket)); }
+                        catch (java.util.concurrent.RejectedExecutionException full) { connections.remove(socket); socket.close(); }
+                    } catch (IOException failure) { if (!server.isClosed()) error.compareAndSet(null, failure); }
+                }
+            });
         }
         int port() { return address.getPort(); }
         void holdResponses() { responses = new CountDownLatch(1); }
@@ -546,39 +596,45 @@ class ProxyLoopbackTest {
             assertNotNull(done, "owned handler registered completion");
             assertTrue(done.await(5, TimeUnit.SECONDS), "owned handler completed after full response");
         }
-        void handle(HttpExchange exchange) {
+        void handle(Socket socket) {
             CountDownLatch done = new CountDownLatch(1);
-            String id = exchange.getRequestHeaders().getFirst("X-Fixture-Id");
-            if (id != null) finished.put(id, done);
-            int current = active.incrementAndGet();
-            maxActive.accumulateAndGet(current, Math::max);
-            try (exchange) {
-                byte[] body = exchange.getRequestBody().readNBytes(RequestData.MAX_INSPECT_BYTES + 1);
-                if (body.length > RequestData.MAX_INSPECT_BYTES) throw new IOException("FIXTURE_REQUEST_LENGTH");
-                List<Header> headers = new ArrayList<>();
-                exchange.getRequestHeaders().forEach((name, values) -> values.forEach(value -> headers.add(new Header(name, value))));
-                captures.add(new Capture(exchange.getRequestMethod(), exchange.getRequestURI().toASCIIString(), List.copyOf(headers), body));
-                hits.incrementAndGet();
+            int current = active.incrementAndGet(); maxActive.accumulateAndGet(current, Math::max);
+            try (socket) {
+                InputStream in = new BufferedInputStream(socket.getInputStream());
+                String[] request = Harness.line(in).split(" ", 3);
+                if (request.length != 3 || !request[2].equals("HTTP/1.1")) throw new IOException("FIXTURE_REQUEST_LINE");
+                List<Header> headers = new ArrayList<>(); int total = 0;
+                for (String line = Harness.line(in); !line.isEmpty(); line = Harness.line(in)) {
+                    int colon = line.indexOf(':'); total += line.length();
+                    if (colon <= 0 || headers.size() >= 256 || total > 65_536) throw new IOException("FIXTURE_REQUEST_HEADERS");
+                    headers.add(new Header(line.substring(0, colon), line.substring(colon + 1).trim()));
+                }
+                List<String> ids = values(headers, "X-Fixture-Id"), lengths = values(headers, "Content-Length");
+                if (ids.size() != 1 || lengths.size() != 1 || !values(headers, "Transfer-Encoding").isEmpty()) throw new IOException("FIXTURE_REQUEST_FRAMING");
+                finished.put(ids.getFirst(), done);
+                int length = Integer.parseInt(lengths.getFirst());
+                if (length < 0 || length > RequestData.MAX_INSPECT_BYTES) throw new IOException("FIXTURE_REQUEST_LENGTH");
+                byte[] body = in.readNBytes(length);
+                if (body.length != length) throw new IOException("FIXTURE_REQUEST_INCOMPLETE");
+                // Raw bounded origin-target parser deliberately accepts invalid percent bytes. A
+                // generic URI/HttpServer parser here would reject before observing the wire target.
+                captures.add(new Capture(request[0], request[1], List.copyOf(headers), body)); hits.incrementAndGet();
                 if (!responses.await(10, TimeUnit.SECONDS)) throw new IOException("FIXTURE_RESPONSE_RELEASE_TIMEOUT");
-                exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.getResponseHeaders().add("Set-Cookie", RESPONSE_COOKIE);
-                exchange.getResponseHeaders().add("X-Fixture-Source", "owned-upstream");
-                exchange.sendResponseHeaders(responseStatus, RESPONSE_BODY.length);
-                exchange.getResponseBody().write(RESPONSE_BODY);
+                String response = "HTTP/1.1 " + responseStatus + " Fixture\r\nContent-Type: application/json\r\nSet-Cookie: " + RESPONSE_COOKIE
+                        + "\r\nX-Fixture-Source: owned-upstream\r\nContent-Length: " + RESPONSE_BODY.length + "\r\nConnection: close\r\n\r\n";
+                socket.getOutputStream().write(bytes(response)); socket.getOutputStream().write(RESPONSE_BODY); socket.getOutputStream().flush();
             } catch (Exception failure) {
                 error.compareAndSet(null, failure);
                 if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
-            } finally {
-                active.decrementAndGet();
-                done.countDown();
-            }
+            } finally { connections.remove(socket); active.decrementAndGet(); done.countDown(); }
         }
         void assertHealthy() { assertNull(error.get(), "owned upstream handler had no failure"); }
-        @Override public void close() throws InterruptedException {
-            releaseResponses();
-            server.stop(0);
-            handlers.shutdownNow();
-            assertTrue(handlers.awaitTermination(5, TimeUnit.SECONDS), "owned HttpServer workers terminated");
+        @Override public void close() throws IOException, InterruptedException {
+            releaseResponses(); server.close();
+            for (Socket socket : connections) socket.close();
+            acceptor.shutdownNow(); handlers.shutdownNow();
+            assertTrue(acceptor.awaitTermination(5, TimeUnit.SECONDS), "owned acceptor terminated");
+            assertTrue(handlers.awaitTermination(5, TimeUnit.SECONDS), "owned raw fixture workers terminated");
             assertEquals(0, active.get());
         }
     }

@@ -8,6 +8,7 @@ import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import dev.cairnguard.model.DenialReasons;
+import dev.cairnguard.model.GuardState;
 import dev.cairnguard.runtime.GuardController;
 import dev.cairnguard.runtime.GuardController.Admission;
 import dev.cairnguard.runtime.GuardController.Prepared;
@@ -69,7 +70,7 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
             synchronized (releaseLock) { collision = inFlight.containsKey(messageId) || preparing.contains(messageId); }
             if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
             if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
-            GuardController.NativeMode mode = controller.nativeMode();
+            GuardController.NativeMode mode = controller.nativeMode(messageId);
             if (mode.rejection() != null)
                 return block(rejected(mode.rejection()), mode.rejection(), annotations, false);
             PassthroughToken token = mode.token();
@@ -114,7 +115,8 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
                 }
                 if (inFlight.size() >= MAX_IN_FLIGHT) return block(prepared, "CORRELATION_CAPACITY", annotations, false);
                 inFlight.put(messageId, flight);
-                if (!controller.commit(prepared)) return block(prepared, "FINAL_CHECK_REJECTED", annotations, false);
+                GuardController.CommitResult committed = Objects.requireNonNull(controller.commitDetailed(prepared));
+                if (!committed.allowed()) return block(prepared, committed.reason(), annotations, false);
                 released = true;
                 return continuation;
             }
@@ -137,14 +139,14 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
 
     private Prepared prepare(HttpRequestToBeSent request) {
-        if (!inspections.tryAcquire()) return controller.prepareRejected("INSPECTION_CAPACITY");
+        boolean inspection = inspections.tryAcquire();
         try {
-            return controller.prepare(NativeCapture.request(request));
+            return controller.prepare(NativeCapture.request(request, inspection));
         } catch (NativeCapture.Rejected e) {
             return controller.prepareRejected(e.category());
         } catch (RuntimeException | LinkageError e) {
             return controller.prepareRejected("CAPTURE_FAILED");
-        } finally { inspections.release(); }
+        } finally { if (inspection) inspections.release(); }
     }
 
     private Prepared rejected(String category) {
@@ -160,10 +162,18 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
         }
         if (!dropOnly) {
             String id = prepared == null ? "unavailable" : evidenceId(prepared.evidenceId());
-            // Both substituted fields have fixed ASCII alphabets. No shared/configurable serializer
-            // or exception-producing native traffic formatter is needed to produce a denial.
+            GuardController.Denial denial = null;
+            try { denial = controller.denial(prepared, category); }
+            catch (RuntimeException | LinkageError ignored) { /* Fixed categorical fallback only. */ }
+            String state = guardState(denial == null ? null : denial.guardState());
+            long revision = denial == null ? 0 : Math.max(0, denial.policyRevision());
+            String overlay = denial == null ? "unavailable" : evidenceId(denial.overlayId());
+            // Preserve the original FIVE keys/order, append only typed fixed-alphabet metadata.
+            // No request values, notes, paths, tags or exception strings can enter this document.
             String json = "{\"source\":\"cairn-proxy-guard\",\"outcome\":\"blocked\",\"reason\":\"" + category
-                    + "\",\"evidenceId\":\"" + id + "\",\"retryable\":false}";
+                    + "\",\"evidenceId\":\"" + id + "\",\"retryable\":false,\"guardState\":\"" + state
+                    + "\",\"local\":true,\"policyRevision\":" + revision
+                    + (overlay.equals("unavailable") ? "" : ",\"overlayId\":\"" + overlay + "\"") + "}";
             byte[] body = json.getBytes(StandardCharsets.UTF_8);
             if (prepared != null) {
                 try { controller.localResponse(prepared.evidenceId(), body); }
@@ -195,19 +205,22 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
 
     private void captureResponse(String evidenceId, HttpResponseReceived response) {
+        // Scalars are independent of optional capture capacity; no Content-Length heuristic and no
+        // whole-body copy just to find its size. Untracked OFF/unselected responses never get here.
+        NativeCapture.Observation observed = NativeCapture.observe(response);
         boolean inspection = inspections.tryAcquire();
         try {
-            NativeCapture.Response copy;
-            if (!inspection) copy = NativeCapture.omitted(0);
-            else {
-                try { copy = NativeCapture.response(response); }
-                catch (RuntimeException | LinkageError e) { copy = NativeCapture.omitted(0); }
-            }
-            controller.response(evidenceId, copy.status(), copy.headers(), copy.body());
+            NativeCapture.Response copy = NativeCapture.response(response, observed, inspection);
+            controller.response(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
+                    copy.headersComplete(), copy.bodyComplete());
         } finally { if (inspection) inspections.release(); }
     }
 
     private static String category(String value) { return DenialReasons.category(value); }
+    private static String guardState(String value) {
+        try { return GuardState.valueOf(value).name(); }
+        catch (RuntimeException ignored) { return GuardState.PROTECTED.name(); }
+    }
     private static String evidenceId(String id) {
         if (id == null || id.length() != 36) return "unavailable";
         for (int i = 0; i < id.length(); i++) {

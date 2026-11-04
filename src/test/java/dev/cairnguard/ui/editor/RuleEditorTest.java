@@ -118,7 +118,7 @@ class RuleEditorTest {
                 Rule value = editor.value();
                 assertEquals("keep-this-id", value.id());
                 assertFalse(value.enabled());
-                assertEquals(index <= 2 || index == 6 ? Mode.BLOCK : Mode.ASK, value.mode());
+                assertEquals(index == 7 ? Mode.EXEMPT : index <= 2 || index == 6 ? Mode.BLOCK : Mode.ASK, value.mode());
                 switch (index) {
                     case 1 -> assertEquals(Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"), value.condition());
                     case 2 -> {
@@ -145,6 +145,7 @@ class RuleEditorTest {
                         assertEquals("operation", value.condition().name());
                         assertEquals("purge", value.condition().value());
                     }
+                    case 7 -> assertEquals(Condition.and(Condition.leaf(Field.METHOD, Match.EXACT, "GET"), Condition.leaf(Field.PATH, Match.EXACT, "/health")), value.condition());
                     default -> fail("unexpected preset");
                 }
                 assertNotNull(get(editor, "condition.tree", javax.swing.JTree.class));
@@ -189,6 +190,11 @@ class RuleEditorTest {
                         assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/items?other=purge", "", ""));
                         assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/items?operation=purge-extra", "", ""));
                     }
+                    case 7 -> {
+                        assertEquals(Mode.EXEMPT, evaluate(rule, "GET", "/health", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "POST", "/health", "", ""));
+                        assertEquals(Mode.ALLOW, evaluate(rule, "GET", "/health/admin", "", ""));
+                    }
                     default -> fail("unexpected preset");
                 }
             }
@@ -230,7 +236,7 @@ class RuleEditorTest {
                 RequestData request = new RequestData("POST", "https://api.example.test/items", "api.example.test", 443, true,
                         List.of(new RequestData.Header("Content-Type", "application/json")),
                         ("{\"action\":\"" + action + "\"}").getBytes(StandardCharsets.UTF_8));
-                assertEquals(action.equals("review") ? Mode.ASK : Mode.BLOCK, new PolicyEngine().evaluate(config, request).mode());
+                assertEquals(action.equals("review") ? Mode.ASK : Mode.ALLOW, new PolicyEngine().evaluate(config, request).mode());
             }
             assertEquals("delete", original.condition().value());
             return null;
@@ -312,7 +318,7 @@ class RuleEditorTest {
                 assertFalse(found.getAccessibleContext().getAccessibleName().isBlank(), control);
             }
             JComboBox<?> modes = get(editor, "rule.mode", JComboBox.class);
-            assertEquals(4, modes.getItemCount());
+            assertEquals(5, modes.getItemCount());
             for (int i = 0; i < modes.getItemCount(); i++) {
                 JLabel label = render(modes, modes.getItemAt(i));
                 assertTrue(label.getText().contains("—"));
@@ -332,7 +338,7 @@ class RuleEditorTest {
     }
 
     private static Mode evaluate(Rule rule, String method, String path, String contentType, String body) {
-        GuardConfig config = new GuardConfig(1, List.of(new ScopeEntry(true, "api.example.test", "https", 443, "")),
+        GuardConfig config = new GuardConfig(2, List.of(new ScopeEntry(true, "api.example.test", "https", 443, "")),
                 List.of(), List.of(rule), Mode.ALLOW, GuardConfig.defaults().limits());
         List<RequestData.Header> headers = contentType.isEmpty() ? List.of() : List.of(new RequestData.Header("Content-Type", contentType));
         return new PolicyEngine().evaluate(config, new RequestData(method, "https://api.example.test" + path,

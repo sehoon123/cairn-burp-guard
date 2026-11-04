@@ -10,6 +10,8 @@ import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.persistence.PersistedObject;
 import burp.api.montoya.persistence.Persistence;
 import burp.api.montoya.project.Project;
+import burp.api.montoya.proxy.Proxy;
+import burp.api.montoya.proxy.http.ProxyRequestHandler;
 import burp.api.montoya.ui.UserInterface;
 import dev.cairnguard.GuardExtension;
 import dev.cairnguard.ui.GuardPanel;
@@ -31,6 +33,9 @@ class BurpLifecycleTest {
         final MontoyaApi api = mock(MontoyaApi.class);
         final Extension extension = mock(Extension.class);
         final Http http = mock(Http.class);
+        final Proxy proxy = mock(Proxy.class);
+        final Registration listenerRegistration = mock(Registration.class);
+        final AtomicReference<ProxyRequestHandler> observer = new AtomicReference<>();
         final UserInterface ui = mock(UserInterface.class);
         final Persistence persistence = mock(Persistence.class);
         final Project project = mock(Project.class);
@@ -43,6 +48,8 @@ class BurpLifecycleTest {
         final AtomicReference<HttpHandler> handler = new AtomicReference<>();
         Fixture() {
             when(api.extension()).thenReturn(extension); when(api.http()).thenReturn(http); when(api.userInterface()).thenReturn(ui);
+            when(api.proxy()).thenReturn(proxy);
+            when(proxy.registerRequestHandler(any())).thenAnswer(i -> { observer.set(i.getArgument(0)); return listenerRegistration; });
             when(api.project()).thenReturn(project); when(api.persistence()).thenReturn(persistence); when(persistence.extensionData()).thenReturn(data);
             when(project.id()).thenReturn("fixture-project"); when(project.name()).thenReturn("Synthetic project");
             when(extension.registerUnloadingHandler(any())).thenAnswer(i -> { unload.set(i.getArgument(0)); return unloadRegistration; });
@@ -63,18 +70,22 @@ class BurpLifecycleTest {
             return result.get();
         }
         void verifyReleased() throws Exception {
-            verify(httpRegistration).deregister(); verify(tabRegistration).deregister(); verify(unloadRegistration).deregister();
+            verify(httpRegistration).deregister(); verify(listenerRegistration).deregister();
+            verify(tabRegistration).deregister(); verify(unloadRegistration).deregister();
             assertFalse(timerRunning()); assertEquals(true, access().status().get("closed"));
         }
     }
-    @Test void realEntryPointRegistersOnlyHttpHandlerAndHumanGuardPanelOnEdt() throws Exception {
+    @Test void realEntryPointRegistersDataFreeObserverBeforeHttpHandlerAndHumanPanelOnEdt() throws Exception {
         Fixture f = new Fixture(); GuardExtension extension = new GuardExtension();
         assertInstanceOf(BurpExtension.class, extension);
         try {
             extension.initialize(f.api); assertInstanceOf(ProxyGuardHandler.class, f.handler.get()); assertTrue(f.timerRunning());
             verify(f.extension).setName("Cairn Proxy Guard (independent)"); verify(f.ui).registerSuiteTab(eq("Cairn Guard"), same(f.panel.get()));
+            assertInstanceOf(ListenerObserver.class, f.observer.get());
+            var order = inOrder(f.proxy, f.http); order.verify(f.proxy).registerRequestHandler(any()); order.verify(f.http).registerHttpHandler(any());
+            assertTrue(mockingDetails(f.proxy).getInvocations().stream().allMatch(i -> i.getMethod().getName().equals("registerRequestHandler")));
             assertTrue(mockingDetails(f.http).getInvocations().stream().allMatch(i -> i.getMethod().getName().equals("registerHttpHandler")));
-            assertTrue(mockingDetails(f.api).getInvocations().stream().allMatch(i -> Set.of("extension", "http", "userInterface", "project", "persistence").contains(i.getMethod().getName())));
+            assertTrue(mockingDetails(f.api).getInvocations().stream().allMatch(i -> Set.of("extension", "http", "proxy", "userInterface", "project", "persistence").contains(i.getMethod().getName())));
             verify(f.persistence, never()).preferences(); verify(f.data, never()).setString(anyString(), anyString());
         } finally { extension.close(); }
         f.verifyReleased(); extension.close(); f.unload.get().extensionUnloaded(); f.verifyReleased();
@@ -104,7 +115,8 @@ class BurpLifecycleTest {
         GuardExtension extension = new GuardExtension();
         IllegalStateException error = assertThrows(IllegalStateException.class, () -> extension.initialize(f.api));
         assertEquals("CAIRN_GUARD_INITIALIZATION_FAILED", error.getMessage()); assertNull(error.getCause());
-        verify(f.tabRegistration).deregister(); verify(f.unloadRegistration).deregister(); assertFalse(f.timerRunning());
+        verify(f.tabRegistration).deregister(); verify(f.listenerRegistration).deregister();
+        verify(f.unloadRegistration).deregister(); assertFalse(f.timerRunning());
         assertEquals(true, f.access().status().get("closed")); extension.close();
     }
     @Test void unloadReentrantDuringSuiteTabRegistrationCannotLeaveLateRegistrationOrTimer() throws Exception {
@@ -115,6 +127,20 @@ class BurpLifecycleTest {
         GuardExtension extension = new GuardExtension(); extension.initialize(f.api);
         verify(f.tabRegistration).deregister(); verify(f.unloadRegistration).deregister(); verifyNoInteractions(f.http);
         assertFalse(f.timerRunning()); assertEquals(true, f.access().status().get("closed")); extension.close();
+    }
+    @Test void observerRegistrationFailureRollsBackWithoutRegisteringHttpHandler() throws Exception {
+        Fixture f = new Fixture(); when(f.proxy.registerRequestHandler(any())).thenThrow(new LinkageError("SYNTHETIC"));
+        GuardExtension extension = new GuardExtension();
+        assertEquals("CAIRN_GUARD_INITIALIZATION_FAILED", assertThrows(IllegalStateException.class, () -> extension.initialize(f.api)).getMessage());
+        verifyNoInteractions(f.http); verify(f.tabRegistration).deregister(); verify(f.unloadRegistration).deregister();
+        assertFalse(f.timerRunning()); extension.close();
+    }
+    @Test void unloadDuringObserverRegistrationDeregistersLateHandleAndNeverRegistersHttpHandler() throws Exception {
+        Fixture f = new Fixture();
+        when(f.proxy.registerRequestHandler(any())).thenAnswer(i -> { f.unload.get().extensionUnloaded(); return f.listenerRegistration; });
+        GuardExtension extension = new GuardExtension(); extension.initialize(f.api);
+        verify(f.listenerRegistration).deregister(); verifyNoInteractions(f.http); verify(f.tabRegistration).deregister();
+        assertFalse(f.timerRunning()); extension.close();
     }
     @Test void unloadDuringNativeHttpRegistrationDeregistersLateReturnedHandle() throws Exception {
         Fixture f = new Fixture();
@@ -130,6 +156,7 @@ class BurpLifecycleTest {
     @Test void deregistrationErrorsDoNotPreventControllerAndPanelShutdown() throws Exception {
         Fixture f = new Fixture(); GuardExtension extension = new GuardExtension(); extension.initialize(f.api);
         doThrow(new IllegalStateException("SYNTHETIC-SECRET")).when(f.httpRegistration).deregister();
+        doThrow(new IllegalStateException("SYNTHETIC-SECRET")).when(f.listenerRegistration).deregister();
         doThrow(new IllegalStateException("SYNTHETIC-SECRET")).when(f.tabRegistration).deregister();
         doThrow(new IllegalStateException("SYNTHETIC-SECRET")).when(f.unloadRegistration).deregister();
         assertDoesNotThrow(extension::close); f.verifyReleased();

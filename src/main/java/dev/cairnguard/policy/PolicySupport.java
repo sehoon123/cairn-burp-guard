@@ -95,6 +95,51 @@ final class PolicySupport {
         return List.copyOf(result);
     }
 
+    record RoutingPaths(List<String> paths, boolean complete) {}
+
+    /**
+     * Bounded interpretation views, NOT a request sanitizer. Semicolons, dot segments and encoded
+     * separators are normal pentest inputs. All-path scope must not reject them or rewrite the wire
+     * request. Restricted scope checks every known view, including conservative routing aliases.
+     * Unknown decoding is explicit; it can pass all-path scope, never prove restricted-path scope.
+     */
+    static RoutingPaths routingPaths(String rawPath, Budget budget) {
+        if (rawPath == null || !rawPath.startsWith("/") || rawPath.length() > MAX_URL
+                || !cleanUnicode(rawPath, false)) throw fail("INVALID_URI");
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        String current = rawPath;
+        boolean complete = true;
+        for (int round = 0; ; round++) {
+            if (!cleanUnicode(current, false)) { complete = false; break; }
+            if (paths.add(current)) budget.text(current);
+            if (current.indexOf('%') < 0) break;
+            if (round == MAX_DECODE_ROUNDS) { complete = false; break; }
+            try { current = decode(current, false); }
+            catch (Failure e) { complete = false; break; }
+        }
+        // Add interpretations only for scope/rule/overlay keys. Never assign these back to RequestData.
+        for (String path : List.copyOf(paths)) {
+            String normalized = normalizedRoutingPath(path);
+            if (paths.add(normalized)) budget.text(normalized);
+        }
+        return new RoutingPaths(List.copyOf(paths), complete);
+    }
+
+    private static String normalizedRoutingPath(String path) {
+        List<String> segments = new ArrayList<>();
+        boolean trailingSlash = false;
+        for (String segment : parts(path.replace('\\', '/'), '/')) {
+            int semicolon = segment.indexOf(';');
+            String bare = semicolon < 0 ? segment : segment.substring(0, semicolon);
+            trailingSlash = bare.isEmpty() || bare.equals(".") || bare.equals("..");
+            if (bare.equals("..")) {
+                if (!segments.isEmpty()) segments.removeLast();
+            } else if (!bare.isEmpty() && !bare.equals(".")) segments.add(bare);
+        }
+        String normalized = "/" + String.join("/", segments);
+        return trailingSlash && !segments.isEmpty() ? normalized + "/" : normalized;
+    }
+
     private static String decode(String value, boolean plusSpace) {
         StringBuilder out = new StringBuilder(value.length());
         for (int i = 0; i < value.length();) {

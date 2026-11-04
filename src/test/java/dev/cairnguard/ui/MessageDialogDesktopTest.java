@@ -138,14 +138,28 @@ class MessageDialogDesktopTest {
 
     private static void awaitTextLayout(JDialog dialog) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        java.util.List<Integer> previous = java.util.List.of();
+        long stableSince = System.nanoTime();
         while (System.nanoTime() < until) {
-            if (edt(() -> {
+            java.util.List<Integer> layout = edt(() -> {
                 JTextArea body = find(dialog, "dialog.body", JTextArea.class);
                 JScrollPane scroll = find(dialog, "dialog.scroll", JScrollPane.class);
                 var end = body.modelToView2D(body.getDocument().getLength()).getBounds();
-                return end.y + end.height <= scroll.getVerticalScrollBar().getMaximum() + 1;
-            })) return;
-            Thread.sleep(5); // Native resize/paint and wrapped-view revalidation are asynchronous.
+                var extent = scroll.getViewport().getExtentSize();
+                int maximum = scroll.getVerticalScrollBar().getMaximum();
+                if (end.y + end.height > maximum + 1 || body.getHeight() < end.y + end.height
+                        || body.getWidth() != extent.width) return java.util.List.of();
+                return java.util.List.of(dialog.getWidth(), dialog.getHeight(), body.getWidth(), body.getHeight(),
+                        extent.width, extent.height, maximum, end.y, end.height);
+            });
+            long now = System.nanoTime();
+            if (layout.isEmpty() || !layout.equals(previous)) {
+                previous = layout;
+                stableSince = now;
+            } else if (now - stableSince >= TimeUnit.MILLISECONDS.toNanos(80)) return;
+            // A single coherent sample can still be the PRE-resize wrap at HiDPI. Observe native
+            // geometry settling without forcing another layout or weakening the bottom-line check.
+            Thread.sleep(10);
         }
         fail("wrapped text scroll model did not settle after native resize");
     }

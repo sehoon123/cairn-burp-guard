@@ -39,7 +39,8 @@ public final class Redactor {
             "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK");
     private static final String SECRET_WORDS = "authorization|proxy-authorization|password|passwd|pwd|"
             + "secret|client[_-]?secret|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|"
-            + "id[_-]?token|token|credential|session(?:id)?|csrf|xsrf|cookie|private[_-]?key|otp|pin|signature|code";
+            + "id[_-]?token|token|credential|session(?:id)?|csrf|xsrf|cookie|private[_-]?key|otp|pin|signature|code|"
+            + "(?:x[_-]?)?broker[_-]?grant|grant(?:[_-]?value)?";
     private static final Pattern ASSIGNMENT = Pattern.compile("(?i)([\"']?(?:" + SECRET_WORDS
             + ")[\"']?)\\s*[:=]\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s&;,<>]+))");
     private static final Pattern AUTH = Pattern.compile("(?i)\\b(bearer|basic)\\s+([^\\s,;<>]+)");
@@ -83,11 +84,18 @@ public final class Redactor {
         SecretFingerprints.Builder builder = SecretFingerprints.builder();
         discoverUrl(request.url(), builder);
         for (String value : metadata) discoverText(value, builder, 0);
-        RawMessage message = prepareMessage(request.headers(), request.body(), builder);
+        boolean oversized = request.bodyLength() > MAX_INPUT;
+        RawMessage message = prepareMessage(request.headers(), oversized ? new byte[0] : request.body(), builder,
+                request.headersComplete(), request.bodyComplete() && !oversized);
         return new Prepared(builder, message);
     }
 
     static RawMessage prepareMessage(List<Header> headers, byte[] bytes, SecretFingerprints.Builder builder) {
+        return prepareMessage(headers, bytes, builder, true, true);
+    }
+
+    static RawMessage prepareMessage(List<Header> headers, byte[] bytes, SecretFingerprints.Builder builder,
+                                     boolean headersComplete, boolean bodyComplete) {
         boolean limited = headers.size() > MAX_HEADERS;
         long headerSize = 0;
         for (Header header : limited ? List.<Header>of() : headers) {
@@ -113,6 +121,12 @@ public final class Redactor {
             if (name.equalsIgnoreCase("content-encoding") && !header.value().trim().equalsIgnoreCase("identity")) encoding = true;
         }
         String mime = mime(contentType);
+        if (!headersComplete || !bodyComplete) {
+            // Missing bytes may contain a secret reflected anywhere else in this row. Export an
+            // omission, never a prefix masquerading as complete content (or native zero sentinel).
+            builder.uncertain();
+            return new RawMessage(safeInput, null, mime, true, true);
+        }
         if (bytes.length == 0) return new RawMessage(safeInput, new RawBody("empty", null, List.of()), mime, false, limited);
         if (bytes.length > MAX_INPUT || limited || encoding || !supportedCharset(contentType)) {
             builder.uncertain();

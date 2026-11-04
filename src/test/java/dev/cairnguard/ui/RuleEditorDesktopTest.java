@@ -127,9 +127,29 @@ class RuleEditorDesktopTest {
             assertTrue(button.isEnabled()); button.scrollRectToVisible(new Rectangle(0, 0, button.getWidth(), button.getHeight()));
             return null;
         });
-        Point point = edt(() -> { Point p = button.getLocationOnScreen(); p.translate(button.getWidth() / 2, button.getHeight() / 2); return p; });
-        Robot robot = new Robot(); robot.setAutoDelay(30); robot.mouseMove(point.x, point.y);
+        Robot robot = new Robot(); robot.setAutoDelay(30); robot.waitForIdle();
+        Point point = stableButtonCenter(button);
+        robot.mouseMove(point.x, point.y);
         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK); robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK); robot.waitForIdle();
+    }
+    private static Point stableButtonCenter(JButton button) throws Exception {
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        Rectangle previous = null;
+        long stableSince = System.nanoTime();
+        while (System.nanoTime() < until) {
+            Rectangle bounds = edt(() -> {
+                assertTrue(button.isShowing());
+                return new Rectangle(button.getLocationOnScreen(), button.getSize());
+            });
+            long now = System.nanoTime();
+            if (!bounds.equals(previous)) { previous = bounds; stableSince = now; }
+            else if (now - stableSince >= TimeUnit.MILLISECONDS.toNanos(80))
+                return new Point(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            // Group-card switches and wrapped captions can move buttons after the first EDT pass.
+            // Wait for the real click target, not for/retry the action or its focus assertion.
+            Thread.sleep(10);
+        }
+        throw new AssertionError("condition action bounds did not settle before native click");
     }
     private static JDialog awaitDialog() throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);

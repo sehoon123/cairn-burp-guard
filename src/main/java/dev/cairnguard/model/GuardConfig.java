@@ -5,13 +5,20 @@ import java.util.Map;
 
 /** Operator-authored project policy. No credentials or authentication state. */
 public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<ScopeEntry> blockScope,
-                          List<Rule> rules, Mode defaultMode, Limits limits) {
+                          List<Rule> rules, Mode defaultMode, Limits limits, List<Integer> guardListenerPorts) {
     public GuardConfig {
         allowScope = List.copyOf(allowScope);
         blockScope = List.copyOf(blockScope);
         rules = List.copyOf(rules);
+        guardListenerPorts = List.copyOf(guardListenerPorts);
     }
-    public enum Mode { ALLOW, BLOCK, MONITOR, ASK }
+    /** Compatibility constructor; the supplied schema is deliberately NOT silently upgraded. */
+    public GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<ScopeEntry> blockScope,
+                       List<Rule> rules, Mode defaultMode, Limits limits) {
+        this(schemaVersion, allowScope, blockScope, rules, defaultMode, limits, List.of());
+    }
+    public enum Mode { EXEMPT, ALLOW, BLOCK, MONITOR, ASK }
+    public enum FanoutAction { BLOCK, PAUSE, WARN }
     public enum Field { METHOD, URL, PATH, QUERY, HEADER, BODY, JSON, FORM, ANY }
     public enum Match { CONTAINS, EXACT, REGEX }
     public enum Logic { LEAF, AND, OR }
@@ -23,18 +30,43 @@ public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<S
         public static Condition leaf(Field field, Match match, String value) {
             return new Condition(Logic.LEAF, field, "", match, value, false, List.of());
         }
+        public static Condition and(Condition... children) {
+            return new Condition(Logic.AND, null, "", null, "", false, List.of(children));
+        }
+        public static Condition or(Condition... children) {
+            return new Condition(Logic.OR, null, "", null, "", false, List.of(children));
+        }
     }
+    public record Circuit5xx(long windowMillis, int threshold, long openMillis, int halfOpenProbe) {}
+    public record Fanout(long windowMillis, int distinctPaths, FanoutAction action) {}
+    public record ProbePath(String scheme, String host, int port, String path) {}
+    public record PathByteLimit(String scheme, String host, int port, String path, long maxBytes) {}
     public record Limits(int globalRps, int perHostRps, Map<String,Integer> hostRps, int maxConcurrent,
                          int maxQueued, long queueTimeoutMillis, long approvalTimeoutMillis,
-                         long requestTimeoutMillis) {
-        public Limits { hostRps = Map.copyOf(hostRps); }
+                         long requestTimeoutMillis, long perPathMaxResponseBytes, long autoBlockMillis,
+                         Circuit5xx circuit5xx, Fanout fanout, int perIntentMaxRequests,
+                         boolean healthProbePassthrough, List<ProbePath> healthProbePaths,
+                         List<PathByteLimit> heavyPathLimits) {
+        public Limits {
+            hostRps = Map.copyOf(hostRps);
+            healthProbePaths = List.copyOf(healthProbePaths);
+            heavyPathLimits = List.copyOf(heavyPathLimits);
+        }
+        /** Legacy fixtures and migrated v1 policies keep all new protections explicitly off. */
+        public Limits(int globalRps, int perHostRps, Map<String, Integer> hostRps, int maxConcurrent,
+                      int maxQueued, long queueTimeoutMillis, long approvalTimeoutMillis,
+                      long requestTimeoutMillis) {
+            this(globalRps, perHostRps, hostRps, maxConcurrent, maxQueued, queueTimeoutMillis,
+                    approvalTimeoutMillis, requestTimeoutMillis, 0, 600_000, null, null, 0,
+                    false, List.of(), List.of());
+        }
     }
     public static GuardConfig defaults() {
-        return new GuardConfig(1, List.of(), List.of(), List.of(
+        return new GuardConfig(2, List.of(), List.of(), List.of(
                 new Rule("delete-method", "Block DELETE method", true, Mode.BLOCK,
-                        Condition.leaf(Field.METHOD, Match.EXACT, "DELETE")),
-                new Rule("delete-string", "Block delete string (conservative)", true, Mode.BLOCK,
-                        Condition.leaf(Field.ANY, Match.CONTAINS, "delete"))), Mode.ALLOW,
-                new Limits(5, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000));
+                        Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"))), Mode.ALLOW,
+                new Limits(5, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000,
+                        5L * 1_048_576, 600_000, new Circuit5xx(60_000, 5, 600_000, 1),
+                        new Fanout(60_000, 100, FanoutAction.WARN), 0, false, List.of(), List.of()));
     }
 }

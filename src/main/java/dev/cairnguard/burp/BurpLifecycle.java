@@ -19,6 +19,7 @@ public final class BurpLifecycle implements AutoCloseable {
     private final AtomicBoolean initialized = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicReference<Registration> httpRegistration = new AtomicReference<>();
+    private final AtomicReference<Registration> listenerRegistration = new AtomicReference<>();
     private final AtomicReference<Registration> tabRegistration = new AtomicReference<>();
     private final AtomicReference<Registration> unloadRegistration = new AtomicReference<>();
     private final AtomicReference<GuardPanel> panel = new AtomicReference<>();
@@ -43,6 +44,8 @@ public final class BurpLifecycle implements AutoCloseable {
                 install(tabRegistration, api.userInterface().registerSuiteTab("Cairn Guard", created));
                 if (closed.get()) stopPanel();
             });
+            // Listener observation must be installed before the HTTP boundary can consume IDs.
+            if (!closed.get()) install(listenerRegistration, api.proxy().registerRequestHandler(new ListenerObserver(controller)));
             if (!closed.get()) install(httpRegistration, api.http().registerHttpHandler(handler));
         } catch (RuntimeException | LinkageError e) {
             close();
@@ -63,6 +66,7 @@ public final class BurpLifecycle implements AutoCloseable {
         try { handler.close(); }
         finally {
             deregister(httpRegistration);
+            deregister(listenerRegistration);
             try {
                 onEdt(() -> {
                     try { stopPanel(); }

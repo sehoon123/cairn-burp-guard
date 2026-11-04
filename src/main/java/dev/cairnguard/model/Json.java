@@ -17,12 +17,16 @@ public final class Json {
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .build();
     public static String write(Object value) {
+        // Preserve the frozen raw-v1 shape for legacy Java fixtures; explicit saves use PolicyCodec.
+        if (value instanceof GuardConfig config)
+            return config.schemaVersion() == 1 ? PolicyCodec.encodeLegacy(config) : PolicyCodec.encode(config);
         try { return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(value); }
-        catch (Exception e) { throw new IllegalArgumentException("JSON serialization failed", e); }
+        catch (Exception e) { throw new IllegalArgumentException("JSON serialization failed"); }
     }
     public static <T> T read(String input, Class<T> type) {
+        if (type == GuardConfig.class) return type.cast(PolicyCodec.decode(input).config());
         if (input == null || input.length() > 2_097_152) throw new IllegalArgumentException("JSON input exceeds limit");
         try { return MAPPER.readValue(input, type); }
-        catch (Exception e) { throw new IllegalArgumentException("Invalid bounded JSON input", e); }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid bounded JSON input"); }
     }
 }

@@ -110,8 +110,8 @@ class GuardControllerTest {
                 List.of(new Rule("invalid", "Disabled invalid expression", false, Mode.ALLOW,
                         Condition.leaf(Field.PATH, Match.REGEX, "(?=unsupported)"))), Mode.ALLOW, ordinaryLimits());
         return Stream.of("{", "null", valid + " true", "{\"schemaVersion\":1,\"schemaVersion\":1}",
-                Json.write(unknown), valid.replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 2"),
-                Json.write(invalidRule), " ".repeat(2_097_153), Json.write(nullPort), Json.write(missingPort),
+                Json.write(unknown), valid.replace("\"schemaVersion\" : 2", "\"schemaVersion\" : 3"),
+                Json.write(Json.MAPPER.valueToTree(invalidRule)), " ".repeat(2_097_153), Json.write(nullPort), Json.write(missingPort),
                 Json.write(fractionalPort), Json.write(nullEnabled), Json.write(fractionalRate));
     }
 
@@ -218,7 +218,8 @@ class GuardControllerTest {
         assertEquals("STALE_POLICY_DRAFT", failure.getMessage());
         assertEquals(0, projects.saves.get());
         assertNull(projects.documents.get(B.id()));
-        blocked(controller.prepare(request("GET", "/safe", "")), "PROJECT_CHANGED");
+        blocked(controller.prepare(request("GET", "/safe", "")), "PAUSED");
+        assertEquals("PROJECT_UNVERIFIED", controller.status().get("guardState"));
     }
 
     @Test void unavailableProjectDuringDraftCheckIsCategoricalAndDoesNotSave() {
@@ -296,7 +297,7 @@ class GuardControllerTest {
         await(() -> gate("queued") == 1);
         projects.saveThenFail = true;
         assertThrows(IllegalStateException.class, () -> apply(policy(Mode.BLOCK, ordinaryLimits())));
-        denied(get(waiting), "POLICY_CHANGED");
+        denied(get(waiting), "PAUSED");
         assertEquals(1, gate("active"));
         assertEquals(1, evidence("forwarded"));
         assertFalse(controller.current(first));
@@ -490,7 +491,7 @@ class GuardControllerTest {
         await(() -> gate("queued") == 1);
         assertEquals("QUEUED", row(waiting).disposition());
         change(change);
-        denied(get(result), change == Change.CLOSE ? "SHUTDOWN" : "POLICY_CHANGED");
+        denied(get(result), queuedChangeReason(change));
         assertEquals(0, gate("queued"));
         assertEquals(1, gate("active"), "a state change does not complete the first send");
         assertEquals("BLOCKED", row(waiting).disposition());
@@ -515,7 +516,7 @@ class GuardControllerTest {
         assertTrue(controller.approvals().isEmpty());
         assertFalse(controller.decideApproval(id, true));
         change(change);
-        denied(get(result), change == Change.CLOSE ? "SHUTDOWN" : "POLICY_CHANGED");
+        denied(get(result), queuedChangeReason(change));
         assertEquals(1, gate("active"));
         running.permit().close();
         assertEquals(1, evidence("forwarded"));
@@ -639,15 +640,13 @@ class GuardControllerTest {
         assertEquals(0, gate("active"));
     }
 
-    @ParameterizedTest @ValueSource(strings = {"scope", "method", "body", "malformed"})
+    @ParameterizedTest @ValueSource(strings = {"scope", "method"})
     void hardBlocksAreNeverPresentedAsHumanApprovable(String kind) {
         GuardConfig config = policy(Mode.ASK, ordinaryLimits());
         open(config);
         RequestData input = switch (kind) {
             case "scope" -> new RequestData("GET", "https://outside.test/safe", "outside.test", 443, true, List.of(), new byte[0]);
             case "method" -> request("DELETE", "/safe", "");
-            case "body" -> request("POST", "/safe", "{\"operation\":\"delete\"}");
-            case "malformed" -> request("POST", "/safe", "{");
             default -> throw new AssertionError(kind);
         };
         Prepared p = controller.prepare(input);
@@ -911,6 +910,15 @@ class GuardControllerTest {
 
     private enum Change { POLICY, PROJECT, REFRESH_PROJECT, PAUSE, CLOSE, PASSTHROUGH }
 
+    private static String queuedChangeReason(Change change) {
+        return switch (change) {
+            case CLOSE -> "SHUTDOWN";
+            case PROJECT, REFRESH_PROJECT -> "PROJECT_CHANGED";
+            case PAUSE -> "PAUSED";
+            case POLICY, PASSTHROUGH -> "POLICY_CHANGED";
+        };
+    }
+
     private void change(Change change) {
         switch (change) {
             case POLICY -> apply(controller.config());
@@ -965,7 +973,7 @@ class GuardControllerTest {
                 List.of(new Header("Content-Type", "application/json")), bytes(body));
     }
     private static GuardConfig policy(Mode mode, Limits limits) {
-        return new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(),
+        return new GuardConfig(2, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(),
                 GuardConfig.defaults().rules(), mode, limits);
     }
     private static Limits ordinaryLimits() { return limits(3, 20, 5_000, 5_000, 10_000); }

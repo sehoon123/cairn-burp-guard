@@ -33,6 +33,7 @@ public final class RuleEditor implements EditorForm<Rule> {
     private final JTextArea presetHelp = ConditionEditor.information("rule.presetHint", "예제의 동작과 일치·불일치 예시");
     private final JPanel conditionHost = new JPanel(new BorderLayout());
     private final JTextArea status = ConditionEditor.information("rule.status", "규칙 편집 상태");
+    private final JTextArea exemption = ConditionEditor.information("rule.exemptWarning", "EXEMPT 예외 경고");
     private final String id;
     private ConditionEditor conditions;
     private final boolean invalidLoadedName;
@@ -55,6 +56,9 @@ public final class RuleEditor implements EditorForm<Rule> {
         ConditionEditor.name(mode, "rule.mode", "조건이 맞을 때의 동작");
         mode.setRenderer(new ConditionEditor.ChoiceRenderer(value -> modeLabel((Mode) value)));
         mode.setSelectedItem(initial == null ? Mode.BLOCK : initial.mode());
+        mode.addActionListener(e -> updateExemption());
+        exemption.setForeground(new java.awt.Color(180, 65, 0));
+        updateExemption();
         ConditionEditor.name(preset, "rule.preset", "빠른 규칙 예제");
         preset.setRenderer(new ConditionEditor.ChoiceRenderer(value -> value instanceof Preset item ? item.label : "예제를 선택하세요"));
         ConditionEditor.name(applyPreset, "rule.applyPreset", "선택한 규칙 예제 적용");
@@ -92,8 +96,10 @@ public final class RuleEditor implements EditorForm<Rule> {
         JPanel footer = new JPanel(new BorderLayout(4, 4));
         footer.setName("rule.footer");
         JTextArea priority = ConditionEditor.information("rule.priorityHint", "규칙 우선순위 안내");
-        priority.setText("차단 > 승인 요청 > 허용 순서로 적용됩니다. ‘기록만’은 다른 동작을 덮어쓰지 않습니다. 허용 규칙도 대상 범위·요청 검사 차단을 우회하지 못합니다.");
-        footer.add(priority, BorderLayout.NORTH);
+        priority.setText("EXEMPT 예외 > 차단 > 승인 요청 > 허용 순서로 적용됩니다. ‘기록만’은 다른 동작을 덮어쓰지 않습니다. EXEMPT도 실제 대상 범위·유효성·운영자 일시중지·자동 차단·속도·태그 예산을 우회하지 못합니다.");
+        JPanel warnings = new JPanel(new java.awt.GridLayout(0, 1));
+        warnings.add(priority); warnings.add(exemption);
+        footer.add(warnings, BorderLayout.NORTH);
         status.setRows(1);
         if (invalidLoadedName) status.setText("가져온 규칙 이름이 256자를 넘습니다. 취소 후 원래 설정에서 이름을 줄여 다시 여세요. 잘라서 저장하지 않습니다.");
         else if (missingLoadedCondition) status.setText("가져온 규칙에 조건이 없습니다. 취소 후 원래 설정을 확인하세요. 예제 조건으로 바꾸어 저장하지 않습니다.");
@@ -132,6 +138,8 @@ public final class RuleEditor implements EditorForm<Rule> {
         Preset selected = (Preset) preset.getSelectedItem();
         if (selected == null || selected == Preset.NONE) return;
         Condition condition = switch (selected) {
+            case HEALTH_EXEMPT -> Condition.and(Condition.leaf(Field.METHOD, Match.EXACT, "GET"),
+                    Condition.leaf(Field.PATH, Match.EXACT, "/health"));
             case DELETE_METHOD -> Condition.leaf(Field.METHOD, Match.EXACT, "DELETE");
             case CHANGE_METHODS -> new Condition(Logic.OR, null, null, null, null, false, List.of(
                     Condition.leaf(Field.METHOD, Match.EXACT, "POST"),
@@ -156,6 +164,12 @@ public final class RuleEditor implements EditorForm<Rule> {
         status.setText("예제의 이름·동작·조건을 폼에 반영했습니다. 내용을 확인한 뒤 저장하세요. 아직 적용된 정책은 바뀌지 않았습니다.");
     }
 
+    private void updateExemption() {
+        exemption.setText(mode.getSelectedItem() == Mode.EXEMPT
+                ? "경고: EXEMPT는 같은 요청에 일치하는 일반 BLOCK·ASK를 무시합니다. 정확한 메서드+경로 등 최소 조건으로 제한하세요. 기본 예외는 없으며 저장 시 별도 확인이 필요합니다."
+                : "EXEMPT는 일반 차단 규칙을 무시하는 고위험 예외입니다. 필요한 경우에만 선택하고 최소 조건으로 제한하세요.");
+    }
+
     private void updatePresetHelp() {
         Preset selected = preset.getSelectedItem() instanceof Preset item ? item : Preset.NONE;
         presetHelp.setText(selected.help + "\n‘예제로 폼 채우기’는 이름·동작·조건만 바꿉니다. ID·사용 여부는 유지하며 정책 저장은 별도입니다.");
@@ -175,7 +189,9 @@ public final class RuleEditor implements EditorForm<Rule> {
         POST_PATH("POST /api/items 승인 요청", "POST API 작업 확인", Mode.ASK,
                 "일치: POST /api/items → 승인 요청 (AND 묶음). 불일치: GET /api/items, POST /api/items/1. 대상 범위도 등록해야 합니다."),
         QUERY_PURGE("쿼리 operation=purge 차단", "특정 쿼리 작업 차단", Mode.BLOCK,
-                "일치: ?operation=purge → 차단. 불일치: ?operation=view, ?other=purge. 이름과 값을 구분해 비교합니다.");
+                "일치: ?operation=purge → 차단. 불일치: ?operation=view, ?other=purge. 이름과 값을 구분해 비교합니다."),
+        HEALTH_EXEMPT("GET /health 일반 규칙 예외 (주의)", "GET 상태 확인 일반 규칙 예외", Mode.EXEMPT,
+                "일치: GET /health → 일반 BLOCK·ASK 무시. 불일치: POST /health, GET /health/admin. 범위·일시중지·자동 차단·속도·예산은 유지됩니다. GET도 부작용이 있을 수 있습니다. 자동 적용하지 않습니다.");
         private final String label;
         private final String ruleName;
         private final Mode mode;
@@ -187,6 +203,7 @@ public final class RuleEditor implements EditorForm<Rule> {
     private static String modeLabel(Mode mode) {
         if (mode == null) return "동작을 선택하세요";
         return switch (mode) {
+            case EXEMPT -> "EXEMPT 예외 — 일반 BLOCK·ASK 무시 (주의)";
             case BLOCK -> "차단 — 요청을 보내지 않음";
             case ASK -> "승인 요청 — 사람이 승인할 때까지 대기";
             case ALLOW -> "허용 — 안전 범위 안에서만 전송";

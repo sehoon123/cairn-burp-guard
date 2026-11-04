@@ -1,171 +1,157 @@
 # Bounded policy engine
 
 `dev.cairnguard.policy.PolicyEngine` implements `validate(GuardConfig)` and
-`evaluate(GuardConfig, RequestData)`. It consumes an inspection **copy**, not a
-Burp request. There are no native Burp APIs, sockets, DNS lookups, file writes,
-authentication changes, or logging in this package. Neither ALLOW nor MONITOR
-constructs or modifies a request. The runtime alone controls native continuation.
+`evaluate(GuardConfig, RequestData)`. This package is network-free and examines
+bounded inspection copies. It does not rewrite native requests, normalize the
+forwarded path, repair Host headers, manage authentication, or log request data.
+
+> **Implementation status:** this document describes the in-progress v2 policy
+> implementation, not a claim that the existing development-preview JAR contains
+> it. Full controller/UI/native integration and exact-artifact verification are
+> separate acceptance gates.
+
+## Scope is not a pentest-path sanitizer
+
+Scope uses the **actual transport service host, scheme and port**, plus the actual
+request-target path. A fuzzed `Host`/`:authority` header, or a header-derived URL
+authority, cannot deny an otherwise permitted destination or authorize a different
+one. The native adapter must construct the inspection URL from `httpService()` and
+the untouched `path()` (including its query), not trust a Host-derived `url()`.
+Explicit HEADER rules can still match a fuzzed header when inspection is available.
+
+**Allowing all paths really allows all paths.** In particular, these targets must
+not be denied merely as `AMBIGUOUS_PATH`:
+
+```text
+/c/;/main.do
+/c/%2e/main.do
+/c/%252e/main.do
+/c/child/../main.do
+/c/%3b/main.do
+```
+
+Semicolons/matrix parameters, dot segments, encoded separators and repeated
+encoding are legitimate pentest inputs. They are forwarded unchanged. Bounded
+raw, decoded and conservative normalized aliases exist **only inside scope,
+rule matching and runtime route keys**; none replaces the native target.
+
+For a **restricted** path scope, every known interpretation must fit one allow
+entry. A block scope matching any interpretation wins. This prevents a scope such
+as `/c/.*` from authorizing `/c/%2e%2e/private` solely because its raw spelling
+starts with `/c/`. Query data never broadens scope. Empty allow scope allows nothing.
+Empty path expression means all paths; port `0` and scheme `any` mean any port and
+HTTP(S) scheme respectively.
+
+Path decoding has a fixed work/depth limit. Invalid, non-text or deeper encodings
+can pass explicit all-path scope with `PATH_INTERPRETATION_INCOMPLETE`, not a fake
+successful decoding result. They cannot prove a restricted allow/block-path
+constraint was satisfied. The explicit all-path UI setting and common universal
+regex spellings are recognized; this is not an arbitrary RE2 universality proof.
+Unknown method, invalid actual destination, unavailable target representation or
+mandatory routing-capacity failure still fails closed.
+
+This relaxed **traffic** handling does not relax authored health-probe or
+per-path byte-limit configuration: those routes remain exact, unambiguous,
+query-free, fragment-free and bounded. A pentest spelling is not automatically a
+configured health probe.
 
 ## Evaluation and precedence
 
-1. Validate/compile the entire configuration, including disabled entries. Invalid
-   configuration evaluates to a categorical `INVALID_CONFIG` block. Explicit
-   `validate` throws `IllegalArgumentException` with a fixed category and no cause
-   chain containing the offending expression or input.
-2. Validate absolute HTTP(S) URI, actual service authority, header structure, and
-   raw/decoded scope paths. URI userinfo/fragments, invalid ports, authority
-   disagreement, unsupported encodings/upgrades, and ambiguous paths block.
-3. A matching block scope wins. At least one enabled allow scope must cover the
-   authority **and every raw/decoded path view**; empty allow scope allows nothing.
-   A block scope matching **any** path view blocks. Scope regular expressions
-   full-match the path only, never query or the full URL. Empty path expression
-   means any path. Scope port 0 and scheme `any` mean any port / HTTP(S) scheme.
-4. Inspect all supported request structures before testing any rule. A true OR,
-   an ALLOW, or an earlier matching BLOCK cannot hide a malformed input, exceed a
-   budget silently, or omit unsupported structured data from an ALLOW decision.
-5. Record all enabled matching rules, in configuration order. Rule actions have
-   precedence BLOCK > ASK > ALLOW, independent of list order. MONITOR only records
-   a hit. With no actionable hit, use the configured default mode. Defaults do
-   not compete with explicit rule actions. Hard-gate failures have no rule hits.
+1. Validate/compile the complete configuration, including disabled entries.
+   Invalid configuration gives categorical `INVALID_CONFIG`; explicit validation
+   throws a fixed-category exception without offending input or a cause chain.
+2. Check actual service/routing scope. Empty allow scope allows nothing. A rule,
+   including EXEMPT, never overrides scope.
+3. Inspect only fields demanded by enabled rules. Optional header/body/query/URL
+   parsing or capture limitations are **inspection warnings, not automatic 451s**.
+4. Record enabled known matches in configuration order. Ordinary action priority
+   is **EXEMPT > BLOCK > ASK > ALLOW**; MONITOR only records. With no actionable
+   hit, use the configured default. Defaults do not compete with explicit rules.
+5. EXEMPT bypasses ordinary policy BLOCK/ASK only. It never bypasses project or
+   lifecycle validity, automatic safety overlays, budgets, pacing, queue limits,
+   shutdown or actual destination scope. It cannot be the default mode or a v1
+   rule; empty/common syntactically universal exemptions are rejected.
 
-AND/OR groups have 1–64 children and no leaf metadata (`field`/`match` null;
-`name`/`value` null or empty). LEAF conditions have no children. CONTAINS and
-EXACT treat the value literally; REGEX uses RE2/J **find** semantics. EXACT uses
-full-value matching. Inline RE2 flags are supported; lookaround, backreferences,
-and other expressions not supported by RE2/J are rejected, never run by Java's
-backtracking regex engine. Case-insensitive matching uses RE2/J case folding.
+Unknown inspection is not a match or a successful check. Known positive ordinary
+OR/ANY branches (and known raw PATH matches) remain enforceable. A condition
+requiring unavailable inspection **cannot grant EXEMPT**, even if another OR
+branch matches. Routing-only conditions do not unnecessarily demand body parsing.
 
-## Authorities and scope boundaries
+AND/OR groups have 1–64 children and no leaf metadata. LEAF conditions have no
+children. CONTAINS/EXACT are literal; REGEX uses bounded RE2/J `find` semantics;
+EXACT and scope expressions full-match. Unsupported RE2 syntax is rejected, never
+run by Java backtracking regex. Case-insensitive matching uses RE2 case folding.
 
-Hosts use Java IDN/STD3 ASCII normalization and case folding, with one terminal
-ASCII DNS dot normalized away. IPv4 must have four decimal octets, with no
-leading zero aliases; short/integer/hexadecimal IPv4 forms are rejected. IPv6 is
-parsed numerically in-process and compared in expanded canonical form; no DNS or
-`InetAddress` calls occur. Bracketed URI IPv6 and unbracketed service IPv6 agree
-when numerically equivalent. Zone IDs are unsupported. This is Java IDN's
-normalization, not a claim of IDNA2008 resolver equivalence.
+## Inspection views and limitations
 
-`*.example.test` matches only proper DNS-label subdomains (including deeper
-ones), not the apex, `notexample.test`, or `example.test.evil`. Wildcard IP scope
-entries are rejected. URL scheme/effective port/host must agree with the actual
-service's secure flag/port/host. If Host is present, exactly one Host is allowed
-and its effective authority must also agree. Host absence is accepted because
-`RequestData` carries no HTTP version; URI/service agreement is still mandatory.
-Raw HTTP/2 pseudo-header names are not supported in this copy API and fail header
-validation; the native adapter must supply an ordinary inspected header view.
+- METHOD/PATH/URL/BODY use raw and bounded textual views. Path `+` is literal;
+  query and form `+` can represent space. URL-rule authority is reconstructed from
+  the actual destination, not the supplied Host header.
+- QUERY/FORM examine raw/decoded keys and values, repeated parameters and bounded
+  revealed `&`/`;` separators. A named selector selects values; an empty selector
+  also examines keys.
+- HEADER examines captured names/values, including repeats. Header selector names
+  are case-insensitive. Incomplete capture is never treated as complete headers.
+- JSON uses strict streaming parsing, duplicate-key detection, bounded nodes/depth,
+  Unicode/percent views and RFC6901 selectors. Missing pointers do not match.
+- ANY combines supported known views, not arbitrary application semantics or a
+  proof that an operation is harmless.
 
-Dot segments (`.` / `..`), backslashes, semicolon/matrix path parameters, decoded
-`?` / `#` in paths, and path control characters fail closed instead of guessing
-server normalization (including `..;` matrix-parameter traversal). A restrictive
-allow path may therefore reject percent-escaped spelling that would decode into
-an allowed path: both spellings must be covered. Query cannot broaden scope.
+Textual percent decoding uses strict UTF-8 and at most three transforming rounds;
+replacement characters are not silently substituted. A malformed escape, literal
+percent, unsupported charset/media/encoding, binary/multipart data, malformed JSON,
+header ambiguity, incomplete capture or optional inspection/matching bound makes
+the affected field unavailable with a categorical warning. It does **not** create
+a blanket denial for otherwise in-scope traffic. An inspectable explicit text
+rule can still match a malformed JSON body without claiming JSON parsing worked.
 
-## Inspection views
+There is no general interpretation of XML/HTML entities, Base64, encryption,
+custom serialization, recursive JSON-in-strings, WebSocket frames or unseen native
+traffic. Inspection warnings disclose this limitation rather than pretend to
+provide server-equivalent parsing. Raw human UI capture is separate from masked
+exportable evidence; see `EVIDENCE.md` and the runtime/UI integration requirements.
 
-- METHOD, URL, PATH, BODY: raw and bounded percent-decoded textual views. A path
-  `+` stays literal, including within URL views. URL query components and form
-  BODY views also include `+`-to-space decoding. Non-form body/header `+` stays
-  literal.
-- QUERY and FORM: raw/decoded keys and values, with `+` interpreted as space.
-  Both `&` and `;` separators are inspected conservatively, including separators
-  revealed by decoding. Duplicate parameters are all inspected. Key-only pairs
-  mean an empty value; empty separator-only pairs are skipped. A named selector
-  matches values for that name; an empty selector examines names **and** values.
-- HEADER: all observed names and values, including repeated ordinary headers.
-  Named header selectors always compare HTTP names case-insensitively; the
-  condition case flag still controls value matching. Query/form selector names
-  follow the condition's case flag.
-- JSON: a strict **streaming** parse with duplicate-key detection, no comments,
-  trailing tokens, non-finite numbers, or permissive escapes. JSON strings and
-  keys are Unicode-unescaped, then their percent views are inspected. An empty
-  selector flattens keys/scalars (including numbers, booleans, and null). A
-  nonempty selector is an RFC6901 pointer, with `~0` / `~1`, exact-case object keys,
-  canonical array indices, and subtree inspection. Percent-decoded key aliases
-  also participate in selection; aliases colliding with another key block as
-  ambiguous. A missing pointer does not match. A selected scalar examines the
-  scalar, not the name of its parent field.
-- ANY is the union of these supported inspection views. It is not arbitrary
-  application semantic analysis or proof that an action is nondestructive.
+## Authorities and bounds
 
-Percent decoding is strict UTF-8, at most **three transforming rounds**. Malformed
-escapes, invalid/overlong UTF-8, unpaired Unicode surrogates, disallowed controls,
-or another encoded layer after the limit block. This intentionally conservative
-recursive contract also rejects a literal `%` (including `%25` when it reveals a
-dangling percent), so valid prose or credential strings containing literal
-percent characters can be blocked. Replacement characters are never substituted
-for invalid byte sequences. These bounds are not relaxed by ALLOW/MONITOR.
-
-Nonempty JSON / `application/*+json` / `text/*+json` bodies are parsed as JSON.
-Text bodies that start with an object, array, or quoted string are also checked
-as JSON, to avoid a simple missing/mislabeled-content-type Unicode-escape bypass.
-BOM-prefixed JSON-looking text is not exempted; a BOM that this strict String
-parser does not support yields a block.
-Form bodies use `application/x-www-form-urlencoded`. Other `text/*`, or absent
-Content-Type, use strict UTF-8 text inspection (ASCII declarations are enforced).
-Only UTF-8 and US-ASCII charset declarations are accepted. Unknown non-text media,
-nonempty binary/multipart data, XML application media, nonidentity
-Content-Encoding, Transfer-Encoding, and protocol upgrades fail closed. Bodyless
-requests need not contain a JSON document even with JSON Content-Type. Duplicate
-Content-Type/Content-Encoding/Content-Length, inconsistent Content-Length,
-malformed media parameters, CR/LF in raw or decoded header values, and WebSocket
-headers block. HTTP horizontal tabs in header values are permitted.
-
-This does **not** interpret HTML/XML entities, Base64, encrypted payloads, custom
-application serialization, arbitrary Unicode escape syntax outside parsed JSON,
-or recursively deserialize JSON embedded inside JSON strings. It does not inspect
-WebSocket frames or transport traffic absent from the native callback. Strict
-text acceptance is not a claim to understand every server's parser. For formats
-outside this MVP, narrow the allow scope and block the unsupported workflow rather
-than assume application-level enforcement.
-
-## Hard bounds
+Actual hosts use in-process Java IDN/STD3 normalization and case folding with one
+terminal DNS dot removed. IPv4 is four decimal octets without leading-zero aliases;
+IPv6 is parsed numerically without DNS/`InetAddress`. Zone IDs and short/integer/hex
+IPv4 aliases are unsupported. `*.example.test` matches proper DNS-label subdomains,
+not the apex or suffix lookalikes. This is not an IDNA2008 resolver-equivalence claim.
 
 | Resource | Bound |
 |---|---:|
-| Schema version | 1 |
-| Allow / block scope entries | 256 each |
-| Rules | 256 |
-| Total condition nodes / depth | 2,048 / 16 (root depth 0) |
-| Children per boolean group | 64 |
-| Rule ID / name | 128 / 256 characters (IDs ASCII letters/digits/`._-`) |
-| Leaf literal / selector | 4,096 / 512 characters |
-| Individual REGEX/scope RE2 source / program | 2,048 characters / 4,096 instructions |
-| Aggregate pattern sources / programs | 65,536 characters / 131,072 instructions |
-| Global / per-host / override RPS | 1–1,000 |
-| Host rate overrides | 256 distinct canonical exact hosts |
+| Persisted schema | v2; explicit strict v1 migration, no load-time write |
+| Allow/block scopes / rules | 256 each |
+| Condition nodes / depth / children per group | 2,048 / 16 / 64 |
+| Rule ID / name / literal / selector | 128 / 256 / 4,096 / 512 characters |
+| RE2 source / program | 2,048 characters / 4,096 instructions |
+| Aggregate RE2 sources / programs | 65,536 characters / 131,072 instructions |
+| Global/per-host/override RPS / overrides | 1–1,000 / 256 exact hosts |
 | Concurrent / queued | 1–100 / 0–10,000 |
-| Queue / approval / request timeout | 1–600,000 ms |
-| URL | 16,384 characters |
-| Header count / name | 256 / 256 characters |
-| URL + method + header text | 65,536 characters |
-| Request body, and body + above text | 1,048,576 bytes / conservative mixed-size units |
-| Query / form pairs | 1,024 per structure (including revealed variants) |
-| JSON nodes including keys / depth | 4,096 / 32 (root depth 0) |
+| Queue/approval/request timeout | 1–600,000 ms |
+| Routing URL/path | 16,384 characters |
+| Optional header count / text | 256 / 65,536 characters |
+| Optional body inspection | 1,048,576 bytes |
+| Query/form pairs / JSON nodes / JSON depth | 1,024 / 4,096 / 32 |
 | Expanded text / produced views | 16 Mi characters / 32,768 |
-| Matching work | 64 Mi estimated character-instruction units |
+| Estimated matching work | 64 Mi character-instruction units |
 
-RE2 matching work is charged by input length times compiled program size; literal
-matching and selector comparisons use weight 1. Work exhaustion is a hard block,
-including after an earlier ALLOW hit. These are implementation ceilings, not
-benchmarked throughput guarantees. The engine caches only one immutable compiled
-configuration, keyed by object identity, and retains no request/inspection after
-evaluation. JSON node/depth ceilings are checked while streaming, before building
-a large object tree. `RequestData.body()` supplies a defensive clone; native
-capture must itself be bounded before constructing the inspection copy (the
-engine cannot prevent memory already allocated by its caller).
+Configuration/mandatory routing capacity is distinct from optional content
+inspection. Optional exhaustion reports unavailable inspection. These are ceilings,
+not throughput guarantees. The compiled cache retains one immutable policy by
+identity, not requests. `RequestData.body()` defensively clones; the native adapter
+must bound its own copy before constructing it.
 
 ## Verification boundaries
 
-Synthetic JUnit fixtures live in `src/test/java/dev/cairnguard/policy/`. They cover
-precedence, nested boolean logic, all fields, selectors, raw/decoded views,
-Unicode JSON, malformed encodings/JSON/form, authority mismatch, wildcard
-boundaries, URI/header ambiguity, unsupported formats, work/structure/config
-limits, RE2 unsupported features, concurrent revision changes, no authentication
-mutation, and categorical errors without source/pattern output. An isolated run
-uses `./gradlew test --tests 'dev.cairnguard.policy.*'`.
+The 2026-11-04 isolated model/policy/attribution slice passed **278 synthetic
+JUnit cases**, including **23 `PentestRoutingTest` cases**. The new regression first
+reproduced the blanket `AMBIGUOUS_PATH` failure, then covered all-path acceptance,
+restricted-scope escape rejection, immutable input, incomplete-interpretation
+warnings, and prevention of incomplete-path EXEMPT. Existing policy and strict
+codec/migration cases passed in the same clean isolated rebuild.
 
-Verified on 2026-11-03: `./gradlew test --tests 'dev.cairnguard.policy.*'
---no-daemon --offline --rerun-tasks` completed **142 synthetic cases**, zero
-failures/errors/skips; Java compilation included the project's `-Xlint:all`.
-These tests are not a live Burp smoke test, real-target test, delivery guarantee,
-or measurement of the runtime pacing/queue implementation.
+This is **not** a full-repository build, native Burp delivery test, exact-JAR
+verification, independent implementation approval, release, or completion claim.
+Historical tests for the prior preview do not verify this new worktree.

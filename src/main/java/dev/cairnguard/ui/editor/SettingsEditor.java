@@ -55,7 +55,10 @@ import java.util.Set;
 /** Local, EDT-only policy settings draft. No authentication, persistence, native or network actions. */
 @SuppressWarnings("serial") // Swing drafts are never serialized.
 public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
-    public record Value(Mode defaultMode, Limits limits) {}
+    public record Value(Mode defaultMode, Limits limits, List<Integer> guardListenerPorts) {
+        public Value { guardListenerPorts = List.copyOf(guardListenerPorts); }
+        public Value(Mode defaultMode, Limits limits) { this(defaultMode, limits, List.of()); }
+    }
 
     private static final int MAX_HOSTS = 256;
     private static final int MAX_HOST_CHARS = 255;
@@ -70,6 +73,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
     private static final String POLICY_ERROR = "설정을 저장할 수 없습니다. 범위와 규칙을 포함한 정책을 다시 불러온 뒤 설정값을 확인하세요.";
 
     private final GuardConfig initial;
+    private final SafetySettingsEditor safety;
     private final PolicyEngine engine;
     private final JScrollPane root;
     private final JSpinner globalRps;
@@ -95,6 +99,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         catch (RuntimeException e) { throw new FormValidationException(POLICY_ERROR); }
         this.initial = initial;
         Limits limits = initial.limits();
+        safety = new SafetySettingsEditor(initial);
         globalRps = number("settings.globalRps", "전체 초당 요청 수 (RPS)", limits.globalRps(), 1, 1_000, false);
         perHostRps = number("settings.perHostRps", "기본 호스트당 초당 요청 수", limits.perHostRps(), 1, 1_000, false);
         maxConcurrent = number("settings.maxConcurrent", "최대 동시 요청 수", limits.maxConcurrent(), 1, 100, false);
@@ -102,7 +107,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         queueTimeout = number("settings.queueTimeoutSeconds", "전송 대기 제한 (초)", seconds(limits.queueTimeoutMillis()), 0, 600, true);
         approvalTimeout = number("settings.approvalTimeoutSeconds", "승인 대기 제한 (초)", seconds(limits.approvalTimeoutMillis()), 0, 600, true);
         requestTimeout = number("settings.requestTimeoutSeconds", "응답 대기 제한 (초)", seconds(limits.requestTimeoutMillis()), 0, 600, true);
-        defaultMode = named(new JComboBox<>(Mode.values()), "settings.defaultMode", "규칙에 해당하지 않을 때의 기본 동작");
+        defaultMode = named(new JComboBox<>(new Mode[]{Mode.ALLOW, Mode.BLOCK, Mode.MONITOR, Mode.ASK}), "settings.defaultMode", "규칙에 해당하지 않을 때의 기본 동작");
         defaultMode.setRenderer(new ModeRenderer());
         defaultMode.setSelectedItem(initial.defaultMode());
         advancedToggle = named(new JCheckBox("상세 설정 펼치기 (대기열·시간·기본 동작·호스트별 속도)"),
@@ -183,6 +188,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
             advanced.revalidate();
         });
         content.add(advanced);
+        content.add(safety.component());
         content.add(validation);
         root = scroll(content, "settings.editor");
         root.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
@@ -222,12 +228,17 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         }
         if (!(defaultMode.getSelectedItem() instanceof Mode mode))
             throw failure("기본 동작을 목록에서 선택하세요.", true);
-        Limits limits = new Limits(global, perHost, overrides, concurrent, queued, queueMillis, approvalMillis, requestMillis);
+        Limits limits;
+        List<Integer> ports;
         try {
-            engine.validate(new GuardConfig(initial.schemaVersion(), initial.allowScope(), initial.blockScope(), initial.rules(), mode, limits));
-        } catch (RuntimeException e) { throw failure(POLICY_ERROR, true); }
+            limits = safety.limits(global, perHost, overrides, concurrent, queued, queueMillis, approvalMillis, requestMillis);
+            ports = safety.listenerPorts();
+        } catch (FormValidationException e) { throw failure(e.getMessage(), true); }
+        try {
+            engine.validate(new GuardConfig(initial.schemaVersion(), initial.allowScope(), initial.blockScope(), initial.rules(), mode, limits, ports));
+        } catch (RuntimeException e) { throw failure("안전 제어 설정을 확인하세요. 경로는 정확한 scheme/host/port/path여야 하며 쿼리·조각·중복·모호한 경로는 허용하지 않습니다. " + POLICY_ERROR, true); }
         validation.setText(" ");
-        return new Value(mode, limits);
+        return new Value(mode, limits, ports);
     }
 
     /** Explicit local draft replacement only; advanced values and an active host-table edit stay untouched. */
@@ -524,6 +535,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focused) {
             super.getListCellRendererComponent(list, "", index, selected, focused);
             setText(value instanceof Mode mode ? switch (mode) {
+                case EXEMPT -> "예외 — 기본 동작으로 사용할 수 없음";
                 case ALLOW -> "허용 — 다른 차단 조건이 없을 때 전송";
                 case BLOCK -> "차단 — 기본적으로 전송하지 않음";
                 case ASK -> "승인 대기 — 사람이 확인한 뒤 전송";

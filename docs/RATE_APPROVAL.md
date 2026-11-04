@@ -15,7 +15,8 @@ One controller must share **one RateGate** across all participating workers and
 hosts. Each admission satisfies **both** the global and canonical-host cadence,
 as well as the in-flight concurrency bound. Host means host, not scheme/port:
 requests to different ports or schemes on the same canonical host share its
-budget. The policy/adapter remains responsible for authority/scope inspection.
+budget. The policy/adapter remains responsible for actual-destination scope
+and best-effort content inspection; this scheduler does not inspect HTTP headers.
 
 Cadences use `System.nanoTime()`, with integer interval
 `ceil(1_000_000_000 / RPS)` nanoseconds. On admission the next slot is scheduled
@@ -30,17 +31,37 @@ extensions, native buffering, traffic outside the exposed Proxy callbacks,
 CONNECT/WebSocket frames and direct sockets are outside this class's guarantee.
 A count of admitted callbacks is not a count of target-delivered requests.
 
-### FIFO and bounded host state
+### Per-host FIFO, eligible round-robin, and bounded host state
 
-- A fair lock serializes admission, with an explicit FIFO queue of genuinely
-  waiting calls. FIFO order is enqueue order, not the time an OS thread was
-  originally started. A new immediate caller cannot jump an existing waiter.
-- **Head-of-line blocking is intentional**: a slow host at the front can delay
-  other hosts even if their individual cadence is available. There is no
-  host-skipping scheduler that could starve the slow host.
+- A fair lock serializes admission. Each canonical host has a FIFO of genuinely
+  waiting calls. FIFO means **enqueue order within that host**, not thread-start
+  order or a global ordering across hosts. Only the head of a host's FIFO can
+  receive a permit.
+- Waiting hosts form a round-robin ring. Select the first **eligible** host head,
+  skipping hosts still owing cadence or quarantined by their own stalled native
+  work. A successful admission moves that host to the ring's tail if it still
+  has waiters. Skipped hosts retain their turn; once eligible, a continuously
+  queued host cannot be overtaken repeatedly by the same competing host.
+  Cancellation removes a waiter without spending the host's turn.
+- A fresh caller cannot jump an eligible queued host or its own host's FIFO.
+  It may admit immediately when all queued host heads are ineligible and its
+  own cadence and the global gates allow it. Thus slow A does not impose
+  **host-rate head-of-line blocking** on ready B. This is not an unconditional
+  "no HOL" guarantee: global RPS still serializes admissions, and occupied
+  global concurrency slots, including stalled permits, still block everyone.
 - `maxQueued=0` still permits an immediate admission when both cadence and
   concurrency are available. Only a call that actually needs to wait consumes a
-  queue slot. Overflow fails closed as `QUEUE_FULL`.
+  queue slot. The global queue bound always applies; overflow is `QUEUE_FULL`.
+- A sole waiting host may use all `maxQueued` slots for compatibility. Once
+  another host needs to queue, each competing host is capped at
+  `max(1, ceil(maxQueued / 2))` waiters. A newcomer reclaims capacity from an
+  overrepresented host by rejecting its **newest excess waiters** as
+  `QUEUE_FULL`, retaining that host's oldest waiters. It does not evict host
+  enforcement state or revoke permits/debt. If all global slots are already
+  occupied by fair-sized queues, the newcomer is rejected instead. With a
+  bound of one, the existing waiter keeps that single slot. If competition
+  disappears the remaining host may again grow to the full global bound;
+  previously rejected calls are never revived.
 - Request hosts and configured `hostRps` keys both use
   `PolicyEngine.canonicalHost`: ASCII case, one terminal DNS dot, IDN/punycode,
   and equivalent IPv6 spellings share a key. Duplicate canonical override keys
@@ -70,14 +91,23 @@ unloading the gate is **not** evidence of native completion and must not cause
 release. The class cannot infer native completion from an ordinary `close()`
 call; this is an integration obligation, not a proof made by this API.
 
-If **any** open permit reaches `requestTimeoutMillis`, that permit is latched as
-stalled and **all new admissions stop**, including those to other hosts. New and
-queued acquisitions fail with `IN_FLIGHT_TIMEOUT`. The permit stays active and
-continues counting toward true concurrency: there is no automatic recycle,
-retry, timed release, optimistic decrement, or hidden reset. A late actual
-completion can close it; quarantine clears only when no stalled permits remain.
-Increasing the timeout after expiry cannot clear the latch. Other outstanding
-non-stalled permits still count against concurrency.
+If an open permit reaches `requestTimeoutMillis`, that permit is latched as
+stalled. New and queued acquisitions for **that canonical host** fail with
+`IN_FLIGHT_TIMEOUT`; its other ports/schemes share that quarantine. The permit
+stays active and continues counting toward true **global** concurrency. Other
+hosts may use genuinely free global slots and may wait for still-non-stalled
+operations to complete. A single stalled host is not a global pause.
+
+If the number of stalled permits alone reaches the live `maxConcurrent`, every
+usable global slot is pinned: acquisitions for **all** hosts fail with
+`IN_FLIGHT_TIMEOUT`. There is no promise of cross-host progress in this state.
+There is never automatic recycling, retry, timed release, optimistic decrement,
+or a hidden reset. A late actual completion can close its own permit and free
+that slot; a host's quarantine clears only after all its stalled permits close.
+Increasing the timeout after expiry cannot clear a latch. Raising concurrency
+can allow other hosts to use newly available slots, without revoking existing
+permits or clearing the stalled host. Non-stalled permits also continue counting
+against concurrency until their explicit completion-owned release.
 
 Waiting calls wake at the relevant cadence, request deadline, queue deadline,
 or a bounded 50ms current-state poll, even without a response or external
@@ -112,8 +142,11 @@ only `INVALID_LIMITS`:
 - Rate increases do not erase the previous committed slot; subsequent slots use
   the faster interval. Rate decreases extend retained global/host debt from the
   last admission if needed. Updating a setting never mints burst credit.
-- A reduced queue bound keeps the oldest waiters and rejects excess newest
-  waiters with `QUEUE_FULL` immediately on wake.
+- A reduced queue bound first keeps the oldest global waiters and rejects
+  excess newest waits with `QUEUE_FULL`. If multiple waiting hosts remain,
+  it also applies the new per-host fairness cap, rejecting each host's newest
+  excess waits. A queue/rate/concurrency update never changes per-host FIFO
+  ordering or the surviving hosts' round-robin turns.
 - Queue timeout uses total monotonic time since enqueue and the live setting,
   not time since the latest wake/update. Expired waits are denied **before** an
   increased timeout can take effect; an increase may extend only still-live
@@ -132,25 +165,51 @@ only `INVALID_LIMITS`:
   `QUEUE_TIMEOUT`, `QUEUE_FULL`, `SHUTDOWN`, `POLICY_CHANGED`,
   `IN_FLIGHT_TIMEOUT`, `HOST_CAPACITY`.
 
-### Safe gate status
+### Bounded gate status
 
-`snapshot()` is immutable and contains only fixed numeric/boolean fields:
+`snapshot()` and its nested rows/list are immutable. Existing numeric fields,
+particularly `hosts`, retain their types. The additive `hostMetrics` list
+contains **canonical hostnames** (not URLs, paths, headers, or request bodies),
+so status is operational metadata for the existing human UI, not a new worker
+or network control API:
 
 | Key | Meaning |
 | --- | --- |
 | `active` | All open permits, including reserved pre-dispatch and stalled ones |
 | `queued` | Currently queued waiting calls, not active sends |
-| `stalled` | Currently open latched-overdue permits; nonzero means quarantine |
+| `stalled` | All open latched-overdue permits; affected hosts are quarantined, not necessarily the whole gate |
 | `admitted` | Cumulative callback admissions, not proven delivery |
 | `rejected` | Cumulative checked rejections observed by acquire callers |
 | `closed` | Permanent gate shutdown state |
 | `globalRps`, `perHostRps`, `maxConcurrent`, `maxQueued` | Live settings |
 | `hosts` | Retained bounded host-state keys, including unexpired rate debt |
 | `timedOut` | Cumulative permits ever latched overdue, counted once each |
+| `hostMetrics` | At most 64 retained-host rows, described below |
+| `hostMetricsTruncated` | True when retained hosts were omitted from the list |
+| `hostMetricsOmitted` | Number of retained hosts omitted, not an eviction count |
+
+Each host row has exactly `host`, `rps`, `inFlight`, `queued`, and
+`p95WaitMillis`. `rps` is the **effective configured admission-rate ceiling**,
+including a canonical host override, not measured target throughput.
+`inFlight` includes stalled/reserved permits. Rows are ranked by
+`inFlight + queued` descending, then canonical hostname ascending; top-64
+truncation never deletes underlying enforcement state. Aggregating visible rows
+is not a complete total when truncation is true.
+
+`p95WaitMillis` is nearest-rank p95 over that retained host's most recent **128
+successful admissions**, including zero waits for immediate admissions. The
+fixed-size ring is not a lifetime or time-window statistic; rejected,
+interrupted and timed-out waits are excluded. Nanoseconds are rounded up to
+milliseconds after percentile selection, and an unsampled host reports zero.
+At most 4096 host rings are retained, and only 64 rings are copied/sorted per
+snapshot. Inactive, debt-free host eviction also discards that host's samples;
+it never evicts a live permit, queue or rate debt. Snapshot may reap already
+expired queue entries but never releases a native permit.
 
 Counters saturate at `Long.MAX_VALUE`. Interrupted waits are not counted as
-checked rejections. No hostnames, URLs, evidence values, parser text, or request
-contents appear in this status.
+checked rejections. No URLs, evidence values, parser text, or request contents
+appear in this status. Canonical hostname disclosure is intentional for the
+requested per-host diagnostics; malformed input is never echoed.
 
 ## Human-only bounded approvals
 
@@ -190,7 +249,7 @@ extend or shorten an approval. Timeout is fixed per wait, inclusive 1–600000ms
   allowed result produced by the queue.
 
 **Ordering obligation:** evaluate policy first; only an ASK may enter this
-queue. A hard scope/inspection BLOCK must never be presented as approvable.
+queue. A hard scope/lifecycle BLOCK must never be presented as approvable.
 Await approval **before** acquiring a rate/concurrency permit, and do both waits
 off the Swing EDT. An approval is not a scope bypass and is not a native-send
 command. Controller revision/project/pause changes must cancel approvals and
@@ -211,11 +270,21 @@ Run without changing normal Gradle locking:
   --tests 'dev.cairnguard.runtime.ApprovalQueueTest' --offline --no-daemon
 ```
 
-Verification on 2026-11-03: **59/59 owned tests passed** (34 RateGate and 25
-ApprovalQueue), including **five forced-rebuild repeat runs** using the command
-above plus `--rerun-tasks`. The then-current full synthetic project suite also
-passed: **299/299 tests**, via `./gradlew test --offline --no-daemon`. These
-results are local unit/synthetic evidence, not a native Burp smoke test.
+Historical verification on 2026-11-03: **59/59 then-owned tests passed**
+(34 RateGate and 25 ApprovalQueue), including five forced-rebuild repeat runs.
+The then-current full synthetic project suite passed 299/299 tests. Those
+results describe the earlier global-FIFO/global-quarantine implementation;
+they are not evidence for the new scheduling semantics.
+
+Verification on 2026-11-04 for the eligible per-host scheduler: **68/68 tests
+passed** (43 RateGate and 25 unchanged ApprovalQueue), in **five forced-rebuild
+repeat runs** (`--rerun-tasks`) in an isolated private scratch project, using a
+snapshot of the v2 models/policy validator and the same dependency lockfile.
+The tests exercise both the original eight-argument `Limits` fixtures and v2
+new-profile defaults; invalid v2 limits are rejected atomically. No build was
+run in the shared live project. An initial test-only compilation issue was
+corrected before these passing runs. These are local unit/synthetic results,
+not a full-project regression or native Burp proof.
 
 The suites use only synthetic hosts, fabricated metadata, fake monotonic clocks
 and local worker threads. Five workers start simultaneously in several real
@@ -223,11 +292,15 @@ clock tests. Strict minimum gaps are asserted at the gate's actual monotonic
 admission timestamp (a package-private test observation), **not** a timestamp
 recorded after arbitrary caller-thread rescheduling, and never at the wire.
 Tests cover shared global/host cadences, aliases/IDN/IPv6 overrides, rounding,
-FIFO/head-of-line blocking, idle no-burst behavior, five-worker true in-flight
-maximum, explicit/late/idempotent/cross-thread release, latched quarantine,
-real unsignalled deadline wake, live updates, exact deadlines and nanoTime wrap,
-queue overflow/shrink, 4096 simultaneous retained host keys, 100 pending human
-approvals, provisional clicks, stale/expired allows, wall-clock jumps,
+per-host FIFO and eligible round-robin, deterministic slow-A/fast-B progress
+and starvation prevention, idle no-burst behavior, five-worker true in-flight
+maximum, explicit/late/idempotent/cross-thread release, host-local latched
+quarantine and all-global-slots-pinned failure, real unsignalled deadline wake,
+live updates, exact deadlines and nanoTime wrap, queue overflow/shrink,
+single-host capacity/competing-host reclamation and cancellation, immutable
+per-host metrics and recent-ring p95, top-64 truncation with 4096 simultaneous
+retained host keys, 100 pending human approvals, provisional clicks,
+stale/expired allows, wall-clock jumps,
 interruption, cancellation, reentrant shutdown/cancellation during validation,
 and categorical failures. Test-only constructors can supply a monotonic clock
 and a smaller capacity; public constructors always use production bounds and
