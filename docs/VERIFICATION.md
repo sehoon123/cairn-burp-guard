@@ -110,7 +110,10 @@ HTTP2/TLS or macOS/Windows native coverage, Professional/disk persistence, live 
 or CAIRN/model/report E2E. Counter upper bounds, alias/multi-host, deadline/wrap,
 health/EXEMPT/intent/probe competition and late-ticket cases also have deterministic
 regressions; cases not actually observed above remain synthetic-only. Private original
-logs/screenshots/exports/profiles stay outside Git. No new release or user installation.
+logs/screenshots/exports/profiles stay outside Git. The user subsequently requested the
+**development prerelease** `dev-2026-11-05-v2-warn-history`; its [publication record](PRERELEASE_2026-11-05_WARN_HISTORY.md)
+separates this exact artifact, remaining limits and rollback precautions. Publication
+preparation changes documentation only, not production/build/lock/legal inputs; no user installation.
 
 ### Historical published c61b7d… checkpoint
 

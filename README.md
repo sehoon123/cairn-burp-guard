@@ -2,28 +2,27 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립 Burp Extension 개발 프로젝트입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> **현재: 실험용 v2 개발 프리릴리즈 — 새 JAR의 native 수용·최종 독립 감사 미완료.** 사용자가 현재 작업의 공개 체크포인트를 명시적으로 요청했습니다. 정식 배포/전체 안전 검증 완료가 아니며 **실서비스 보호에 의존하지 마세요**. 포트별 적용(H)은 추후 분리한 기능이지 현재 gate나 PASS가 아닙니다. [프리릴리즈의 남은 지적·설치/롤백 주의](docs/PRERELEASE_2026-11-04_V2_CHECKPOINT.md), [artifact별 실제 검증](docs/ALL_LISTENERS_ACCEPTANCE.md), [이전 발견](docs/V2_NATIVE_FINDINGS.md)을 구분하세요. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
+> **현재: 실험용 v2 WARN 이력 수정 프리릴리즈 — exact-JAR native 부분 검증, 전체 수용·최종 독립 감사 미완료.** 사용자가 공개를 명시적으로 요청한 개발 빌드입니다. 정식 배포/전체 안전 검증 완료가 아니며 **실서비스 보호에 의존하지 마세요**. 포트별 적용(H)은 추후 분리한 기능이지 현재 gate나 PASS가 아닙니다. [이번 프리릴리즈의 검증·제한·설치/롤백 주의](docs/PRERELEASE_2026-11-05_WARN_HISTORY.md), [artifact별 실제 검증](docs/ALL_LISTENERS_ACCEPTANCE.md), [이전 발견](docs/V2_NATIVE_FINDINGS.md)을 구분하세요. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
 
-**[v2 개발 체크포인트 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-04-v2-all-listeners-checkpoint)** · [프리릴리즈 검증 기록](docs/PRERELEASE_2026-11-04_V2_CHECKPOINT.md) · [검증 현황](docs/VERIFICATION.md) · [실제 Burp 기록](docs/NATIVE_BURP_RESULTS.md) · [v2 API](docs/INTERFACES.md)
+**[v2 WARN 이력 수정 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-warn-history)** · [프리릴리즈 검증 기록](docs/PRERELEASE_2026-11-05_WARN_HISTORY.md) · [검증 현황](docs/VERIFICATION.md) · [전체 Proxy 검증 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
 
-## v2 개발 체크포인트와 과거 artifact를 구분하세요
+## 이번 프리릴리즈와 과거 artifact를 구분하세요
 
 | 구분 | 상태 |
 |---|---|
-| 과거 공개 프리뷰 | `dev-2026-11-04-conditions-passthrough`, 소스 기준 `738b41e`; 모달·전체 통과·조건 추가 수정. **v2 배포가 아님** |
-| 그 프리뷰 JAR SHA256 | `4232ae63d0a158d294fbe9ee3cf40cf58b9e8bdc85a300c8f829a5135b4bd159` |
-| 그때의 검사 | Java845 / Swing20(scale1·2) / Python35. **그 JAR의 실제 Burp는 미실행**. 당시 제한된 수정 검토도 v2 감사가 아님 |
-| 현재 v2 소스 | 모델·정책·runtime·증거·UI, HEX 마스킹 및 잘못된 listener-proof 제거. EXEMPT/URL alias·raw target/watcher interop·late scalar/미전송 permit 회귀 수정 포함. H 완료를 주장하지 않음 |
-| 최신 자동 검사 | 격리 Java **1302 PASS**, Python helper offline unit **31 PASS**, local template **18 PASS**(upstream SKIP). 새 JAR의 native Burp/Swing 검증은 아님 |
-| 이전 실제 Burp | Community2026.10.1 / `437503…`의 raw target/본문/실제 service·EXEMPT·intent·heavy/circuit·WARN fanout·원문/내보내기 개별 성공. 새 hash의 결과로 이전하지 않음 |
-| 역사적956bcf… exact-JAR 검사 | 그 JAR의 Swing scale1·2 각27 PASS 및 Burp의 두 inbound HTTP/HTTPS, raw paths·health·fanout·OFF/old permit/ASK·queue·intent debt, raw UI·JSON56/HAR56/incident 개별 확인. HTTP2는5개 부분 검사와 percent-case 한계. **새 JAR에 결과를 이전하지 않음** |
-| 현재 체크포인트 JAR SHA256 | `c61b7d1f869ec926c30f0e0fcc9cd188396f7fd694e9fc2cfac542a6d191f491` — clean/forced rebuild 동일, **native Burp/Swing 미실행** |
-| 구 로컬 후보 | `82ec781` / `217730…` bundle은 H 실패와 HEX export 결함이 있는 과거 후보. 재현됐어도 공개하면 안 됨 |
-| 남은 수용 조건 | 새 exact-JAR native 수용과 수정 소스의 최종 독립 감사3개 미완료. 지정 모델의 이전 소스 cold 보고서2개는 결함 지적이지 승인서가 아니며 privacy/export 세 번째는 blocked. Queue/fanout/불완전 capture 분류 등 지적의 전체 판정도 미완료. **프리릴리즈 공개는 수용/정식 승인과 별개**, H는 gate도 PASS도 아님 |
+| 태그 / 기능 소스 | `dev-2026-11-05-v2-warn-history` / `e913178`. 게시용 문서 변경은 production/build/lock/legal 입력을 바꾸지 않음 |
+| 포함한 후속 수정 | 폐기·eviction된 evidence 선택 내보내기 거절(`183e106`), 완료 WARN 경로 용량 고갈 수정과 bounded 이력/누락 진단·강제 모드 전환 보호(`e913178`) |
+| JAR SHA256 | `6133f1edc2f9ff0bfc2a97c018285f54b88c604f1c82b0abaad5da44ec90aff9` |
+| 자동 검사 | 격리 Java **1321 PASS /45 suites**, Python helper **32 PASS**, local template **18 PASS** 및 fixture2개(upstream SKIP). Swing scale1·2 각각 **27 PASS** |
+| 이 exact JAR의 실제 Burp | Community2026.10.1의 격리 loopback HTTP/1.1. 기존2049번째 거절을 재현한 뒤 수정본 **2200/2200 도착**, 이력2048·누락152 확인. 강제 모드/OFF·두 inbound·raw paths/optional body·queue/quarantine·heavy/circuit·JSON30/HAR30/incident 개별 검사. 전체 수용이나 wire equality가 아님 |
+| 기능 커밋 CI | [e913178 CI 성공](https://github.com/sehoon123/cairn-burp-guard/actions/runs/41936618746); 내려받은 CI JAR도 실제 native 시험 JAR과 byte 일치. CI 자체는 native Burp를 실행하지 않음 |
+| 이번 변경의 독립 검토 | 정확한 Sol/Advantage 모델의 좁은 변경 검토에서 차단 지적 없음. 최종 전체 v2 감사3개를 대체하지 않음 |
+| 남은 수용 조건 | 전체 A–G 수용·수정 소스 최종 전체 감사 미완료. 이전 cold 결함 보고서와 blocked privacy 감사는 별개이며 나머지 queue/optional-capture 지적 전체 판정도 미완료. H는 gate도 PASS도 아님 |
+| 이전 공개 체크포인트 | `dev-2026-11-04-v2-all-listeners-checkpoint` / `c61b7d…`의 Java1302 및 당시 native/Swing 미실행은 [이전 기록](docs/PRERELEASE_2026-11-04_V2_CHECKPOINT.md). 다른 hash의 성공을 이전하거나 합산하지 않음 |
 
-> 후속 소스(`2096d50` 이후, 폐기된 증거 선택의 내보내기 차단)와 그 JAR hash/테스트 수는 [VERIFICATION.md의 해당 절](docs/VERIFICATION.md#follow-up-source-disposed-evidence-selections-no-longer-export-automated-only)에 따로 기록합니다. 위 표의 `c61b7d…` 프리릴리즈 hash·테스트 이력과 혼동하지 마세요(native 미실행).
+**WARN은 무제한 통과가 아닙니다.** 별도 host/실제 in-flight/overlay 상한은 유지합니다. 이력 누락 뒤 BLOCK/PAUSE는 각 누락 당시 창의 가장 늦은 만료까지 안전 거절하며 저장/OFF/감지 끄기·기록/overlay 해제로 지워지지 않습니다. 본문/charset 관련 후속 대화는 코드 확인만 했고, 검사 불가 경고를 제거한 빌드가 아닙니다.
 
-이번 공개 체크포인트의 빌드/남은 지적은 [프리릴리즈 기록](docs/PRERELEASE_2026-11-04_V2_CHECKPOINT.md)에, 이전 후보별 hash/검토 시도는 [VERIFICATION.md](docs/VERIFICATION.md)에 구분합니다. 과거 examples JAR(`c071…`)의13 native 시나리오 및 더 오래된12/54 결과를 v2에 이전하거나 합산하지 않습니다. 이전의 설계 제안/검토 문서는 역사적 자료이며 현재 구현 완료·승인 증거가 아닙니다.
+이번 빌드·한계·설치/롤백은 [프리릴리즈 기록](docs/PRERELEASE_2026-11-05_WARN_HISTORY.md), 상세 근거와 과거 후보는 [VERIFICATION.md](docs/VERIFICATION.md)에 구분합니다. 공개 허가·개별 검사·전체 수용·정식 승인은 각각 별개입니다.
 
 ## 역할과 제외 범위
 
