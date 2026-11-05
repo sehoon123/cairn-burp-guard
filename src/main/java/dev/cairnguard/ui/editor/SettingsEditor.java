@@ -106,7 +106,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         maxQueued = number("settings.maxQueued", "전송 대기열 크기", limits.maxQueued(), 0, 10_000, false);
         queueTimeout = number("settings.queueTimeoutSeconds", "전송 대기 제한 (초)", seconds(limits.queueTimeoutMillis()), 0, 600, true);
         approvalTimeout = number("settings.approvalTimeoutSeconds", "승인 대기 제한 (초)", seconds(limits.approvalTimeoutMillis()), 0, 600, true);
-        requestTimeout = number("settings.requestTimeoutSeconds", "응답 대기 제한 (초)", seconds(limits.requestTimeoutMillis()), 0, 600, true);
+        requestTimeout = number("settings.requestTimeoutSeconds", "응답 대기 제한 (초, 초과 시 같은 호스트 격리)", seconds(limits.requestTimeoutMillis()), 0, 600, true);
         defaultMode = named(new JComboBox<>(new Mode[]{Mode.ALLOW, Mode.BLOCK, Mode.MONITOR, Mode.ASK}), "settings.defaultMode", "규칙에 해당하지 않을 때의 기본 동작");
         defaultMode.setRenderer(new ModeRenderer());
         defaultMode.setSelectedItem(initial.defaultMode());
@@ -168,10 +168,10 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         row(timing, 0, "전송 대기열 크기 (0~10,000)", maxQueued);
         row(timing, 1, "전송 대기 제한 (초)", queueTimeout);
         row(timing, 2, "승인 대기 제한 (초)", approvalTimeout);
-        row(timing, 3, "응답 대기 제한 (초)", requestTimeout);
+        row(timing, 3, "응답 대기 제한 (초, 초과 시 같은 호스트 격리)", requestTimeout);
         row(timing, 4, "규칙에 해당하지 않을 때", defaultMode);
         advanced.add(timing);
-        advanced.add(wrapped("settings.timing.help", "시간은 0.001~600초, 0.001초(1밀리초) 단위입니다. 전송·승인 대기 제한이 지나면 차단합니다. 응답 대기 제한이 지나도 기존 요청을 취소하거나 동시 실행 자리를 자동으로 비우지 않습니다. 새 요청을 막고 확인을 기다립니다."));
+        advanced.add(wrapped("settings.timing.help", "시간은 0.001~600초, 0.001초(1밀리초) 단위입니다. 전송·승인 대기 제한이 지나면 차단합니다. 응답 대기 제한이 지나도 기존 요청을 취소하거나 동시 실행 자리를 자동으로 비우지 않습니다. 같은 호스트에서 실제 미완료 요청 하나라도 이 제한을 넘기면 그 호스트의 새 요청만 IN_FLIGHT_TIMEOUT로 막고(다른 호스트는 실제 남은 슬롯 사용), 제한을 넘긴 요청이 동시 요청 한도를 모두 차지하면 전체가 막힙니다. 5xx 회로가 아니며 대상 장애의 증거도 아닙니다. 제한을 늘려도 이미 초과한 요청은 풀리지 않고 실제 완료 또는 전송 안 됨 확정이 필요합니다. 일부 upstream 실패는 완료 콜백 없이 자리가 남을 수 있으며 자동 복구는 없습니다(확인된 플랫폼 한계)."));
         advanced.add(wrapped("settings.mode.help", "기본 동작은 등록한 허용 범위 안에서만 적용됩니다. 허용 대상이 없거나 필수 안전 검사에 실패하면 항상 차단합니다."));
         JPanel hostPanel = named(new JPanel(new BorderLayout(4, 4)), "settings.hostRps", "호스트별 속도");
         hostPanel.setBorder(BorderFactory.createTitledBorder("호스트별 속도 (최대 256행)"));

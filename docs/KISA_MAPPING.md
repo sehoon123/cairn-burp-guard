@@ -52,7 +52,7 @@
 | `untested` | 입력·시간·범위 등의 부족으로 미수행 | 수행/안전/취약으로 둔갑 |
 | `inconclusive` | 가림·잘림·누락·출처 불명으로 결론 불가 | 모호한 단서에서 확정 판정 |
 
-심각도/영향/신뢰도는 별도 근거가 있을 때만 평가한다. CVSS/공식 KISA 항목코드를 만들어 내지 않는다. 각 행에 증거 ID, 정책 revision(실제 관찰 때만), 가림/누락/잘림, worker HTTP 관찰/Guard redacted callback export/합성 fixture의 출처 구분, 관찰과 해석, 실제 알려진 예산 사용량(불명은 `unknown`), 커버리지·blocked·auth_unavailable·불확실성, 종료 사유를 남긴다. 실제 대상 이름/원본 로그/개인·세션·자격증명은 포함하지 않는다.
+심각도/영향/신뢰도는 별도 근거가 있을 때만 평가한다. CVSS/공식 KISA 항목코드를 만들어 내지 않는다. 각 행에 증거 ID, 정책 revision(실제 관찰 때만), 가림/누락/잘림, worker HTTP 관찰/Guard 원문 callback export(평문 비밀 가능, 보고서에 복사 금지)/합성 fixture의 출처 구분, 관찰과 해석, 실제 알려진 예산 사용량(불명은 `unknown`), 커버리지·blocked·auth_unavailable·불확실성, 종료 사유를 남긴다. 실제 대상 이름/원본 로그/개인·세션·자격증명은 포함하지 않는다.
 
 ## 5. 보고서 완료 게이트와 공식 검증의 구분
 

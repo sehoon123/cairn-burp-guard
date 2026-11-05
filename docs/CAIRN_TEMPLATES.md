@@ -135,7 +135,7 @@ resources.files("cairn.dispatcher.prompts").joinpath(prompt_group)
 
 **모델이 실행 가능한 모든 반환**(정상/부분/권한·정책·proxy·TLS 차단/auth unavailable/입력 부족/명령 실패/예산 소진/거절/conclude)에 종료 사유·미수행 범위를 저장하고 읽어 확인한다. `complete` 전에 실제 Goal 충족과 통합 `report.ko.md` + `checklist.ko.md` 저장·read-back이 모두 필요하다. 파일 쓰기 실패는 `artifact_write_failed`; 존재하지 않는 파일 경로를 인용하지 않는다.
 
-보고에는 proposed/approved plan, mode, 실제 수행한 discovery/validation, 항목별 `observed / not_observed / blocked / untested / inconclusive`, 증거 출처·ID·policy revision(실제 관찰 때만), 가림/잘림/누락, 실제 알려진 예산 사용량(불명은 `unknown`), auth_unavailable, 관찰 vs 해석, 커버리지/불확실성을 포함한다. `not_observed`는 안전 보장이 아니며 blocked/untested에서 취약을 추정하지 않는다. `FORWARDED`는 release이지 delivery 증명 아님, local451은 대상 응답 아님이다. worker 관찰과 redacted callback export와 fixture를 구분한다. [INTERFACES.md](INTERFACES.md), [EVIDENCE.md](EVIDENCE.md) 참조.
+보고에는 proposed/approved plan, mode, 실제 수행한 discovery/validation, 항목별 `observed / not_observed / blocked / untested / inconclusive`, 증거 출처·ID·policy revision(실제 관찰 때만), 가림/잘림/누락, 실제 알려진 예산 사용량(불명은 `unknown`), auth_unavailable, 관찰 vs 해석, 커버리지/불확실성을 포함한다. `not_observed`는 안전 보장이 아니며 blocked/untested에서 취약을 추정하지 않는다. `FORWARDED`는 release이지 delivery 증명 아님, local451은 대상 응답 아님이다. worker 관찰과 Guard callback export(Guard는 마스킹하지 않으므로 평문 비밀을 포함할 수 있고 보고서에 복사하지 않음)와 fixture를 구분한다. [INTERFACES.md](INTERFACES.md), [EVIDENCE.md](EVIDENCE.md) 참조.
 
 conclude는 새 조사/traffic/대기를 즉시 중단하고 **기지 사실로 로컬 보고 쓰기/그 파일 읽기 확인만** 최대20초 허용한다. prior active 요청수를 0으로 바꾸지 않는다. 이는 upstream 기본 conclude의 도구 전면 금지와 다른 외부 프롬프트 행동이며 소스/JSON 계약은 변경하지 않는다.
 

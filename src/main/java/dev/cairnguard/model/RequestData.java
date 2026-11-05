@@ -3,10 +3,10 @@ package dev.cairnguard.model;
 import java.util.List;
 
 /**
- * Immutable bounded inspection copy, never a replacement for a native Burp request.
+ * Immutable complete copy of the supplied request, never a replacement for a native Burp request.
  * host/port/secure describe the actual transport destination, NOT Host/:authority.
  * url is a synthetic display/inspection URL (actual service + native target). nativeTarget, when
- * present, is the bounded untouched native request-target (Montoya {@code request.path()}, including
+ * present, is the complete untouched native request-target (Montoya {@code request.path()}, including
  * any query) and is the AUTHORITATIVE routing input; it is never re-derived from url, so a
  * non-origin-form target (no leading '/') keeps its full prefix. null means a legacy caller that only
  * supplied url (policy then derives the target from url as before).
@@ -15,6 +15,7 @@ import java.util.List;
 public record RequestData(String method, String url, String host, int port, boolean secure,
                           List<Header> headers, byte[] body, boolean headersComplete, boolean bodyComplete,
                           String nativeTarget) {
+    /** POLICY inspection bound only (larger bodies are unavailable to rules); never a capture limit. */
     public static final int MAX_INSPECT_BYTES = 1_048_576;
     public record Header(String name, String value) {}
     public RequestData {

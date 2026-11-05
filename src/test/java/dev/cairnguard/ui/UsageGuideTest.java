@@ -34,6 +34,13 @@ class UsageGuideTest {
             assertTrue(pages.get(1).getText().contains("{\"action\":\"review\"}"));
             assertTrue(pages.get(2).getText().contains("자동 재전송"));
             assertTrue(pages.getLast().getText().contains("JSON/HAR/사건"));
+            assertTrue(pages.getLast().getText().contains("감지 종류 선택") && pages.getLast().getText().contains("예외 검토"));
+            assertTrue(pages.getLast().getText().contains("5xx 회로(기본 꺼짐)"));
+            String safety = pages.getLast().getText();
+            assertFalse(safety.contains("만료/수동 해제까지 유지됩니다"), "superseded retention wording");
+            assertFalse(safety.contains("끄거나 ‘경고만’으로 바꾸면 그 종류의 열린 자동 차단만 즉시 풀리고 기록·진행 중 요청 자리는 남습니다") && safety.contains("기존 차단은 만료"));
+            assertTrue(safety.contains("즉시"), "OFF/WARN release only that kind's open blocks at once");
+            assertTrue(safety.contains("누락 부채") && safety.contains("운영자 일시중지"), "history/debt/operator pause remain");
             assertTrue(pages.getFirst().getText().contains("/c/%2e/main.do"));
             return null;
         });

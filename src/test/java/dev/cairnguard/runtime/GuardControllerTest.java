@@ -75,15 +75,14 @@ class GuardControllerTest {
         assertTrue(controller.approvals().isEmpty());
     }
 
-    @Test void validProjectPolicyLoadsWithoutWritingAndStatusDoesNotExposeNativeName() {
+    @Test void validProjectPolicyLoadsWithoutWritingAndStatusShowsTheVerifiedProjectName() {
         GuardConfig config = policy(Mode.MONITOR, limits(3, 10, 5_000, 5_000, 10_000));
         projects.ref = new ProjectAccess.Ref(A.id(), SECRET);
         projects.document(A, Json.write(config));
         open();
         assertEquals(config, controller.config());
         assertEquals("project-a", controller.status().get("projectId"));
-        assertEquals("Current Burp project", controller.status().get("projectName"));
-        assertFalse(controller.status().toString().contains(SECRET));
+        assertEquals(SECRET, controller.status().get("projectName"), "the verified project name is shown as-is");
         assertEquals(1, projects.loads.get());
         assertEquals(0, projects.saves.get());
         controller.refreshProject();
@@ -494,7 +493,9 @@ class GuardControllerTest {
         denied(get(result), queuedChangeReason(change));
         assertEquals(0, gate("queued"));
         assertEquals(1, gate("active"), "a state change does not complete the first send");
-        assertEquals("BLOCKED", row(waiting).disposition());
+        if (change == Change.PROJECT || change == Change.REFRESH_PROJECT || change == Change.CLOSE)
+            assertTrue(controller.traffic().isEmpty(), "originals are released with the boundary");
+        else assertEquals("BLOCKED", row(waiting).disposition());
         assertEquals(1, evidence("forwarded"));
         controller.response(first.evidenceId(), 200, List.of(), new byte[0]);
         running.permit().close();
@@ -531,13 +532,16 @@ class GuardControllerTest {
         change(change);
         assertFalse(controller.commit(p));
         assertFalse(controller.current(p));
-        assertEquals("BLOCKED", row(p).disposition());
-        assertEquals(switch (change) {
-            case POLICY, PASSTHROUGH -> "POLICY_CHANGED";
-            case PROJECT, REFRESH_PROJECT -> "PROJECT_CHANGED";
-            case PAUSE -> "PAUSED"; // Shared fixed native vocabulary is preserved in evidence.
-            case CLOSE -> "SHUTDOWN";
-        }, row(p).reason());
+        if (change == Change.PROJECT || change == Change.REFRESH_PROJECT || change == Change.CLOSE) {
+            assertTrue(controller.traffic().stream().noneMatch(e -> e.id().equals(p.evidenceId())), "originals are released with the boundary");
+        } else {
+            assertEquals("BLOCKED", row(p).disposition());
+            assertEquals(switch (change) {
+                case POLICY, PASSTHROUGH -> "POLICY_CHANGED";
+                case PAUSE -> "PAUSED"; // Shared fixed native vocabulary is preserved in evidence.
+                default -> throw new AssertionError(change);
+            }, row(p).reason());
+        }
         assertEquals(0, evidence("forwarded"));
         assertEquals(1, gate("active"), "commit has no completion ownership");
         admission.permit().close(); // No dispatch began: the caller can conclusively release.
@@ -688,14 +692,14 @@ class GuardControllerTest {
         open(policy(Mode.ALLOW, ordinaryLimits()));
         Prepared p = controller.prepareRejected(SECRET);
         assertFalse(authorize(p).allowed());
-        assertEquals("[REDACTED]", row(p).method(), "unknown methods are conservatively suppressed by evidence");
-        assertEquals("https://redacted.invalid/", row(p).url());
+        assertEquals("UNKNOWN", row(p).method(), "fixed placeholder for a capture that never happened");
+        assertEquals("https://capture-omitted.invalid/", row(p).url());
         assertTrue(row(p).request().contains("OMITTED"));
         assertFalse(controller.exportJson(controller.traffic()).contains(SECRET));
         assertEquals(0, gate("admitted"));
     }
 
-    @Test void inspectionApprovalEvidenceAndExportsNeverMutateAuthenticationInputs() throws Exception {
+    @Test void inspectionApprovalEvidenceAndExportsNeverMutateAuthenticationInputsAndExportOriginals() throws Exception {
         open(policy(Mode.ASK, ordinaryLimits()));
         List<Header> headers = List.of(new Header("Authorization", "Bearer " + SECRET),
                 new Header("Proxy-Authorization", "Basic ZmFrZTpmYWtl"), new Header("Cookie", "sid=" + SECRET),
@@ -720,9 +724,9 @@ class GuardControllerTest {
         assertArrayEquals(originalResponse, response);
         assertEquals("sid=" + SECRET + "; HttpOnly", responseHeaders.getFirst().value());
         for (String export : List.of(controller.exportJson(controller.traffic()), controller.exportHar(controller.traffic()))) {
-            assertFalse(export.contains(SECRET));
-            assertFalse(export.contains("ZmFrZTpmYWtl"));
-            assertTrue(export.contains("[REDACTED]"));
+            assertTrue(export.contains(SECRET), "exports carry the originals");
+            assertTrue(export.contains("ZmFrZTpmYWtl"));
+            assertFalse(export.contains("[REDACTED]"));
         }
     }
 
@@ -957,8 +961,14 @@ class GuardControllerTest {
     }
     private void blocked(Prepared p, String reason) {
         denied(authorize(p), reason);
+        if (released(p)) { assertTrue(controller.traffic().stream().noneMatch(e -> e.id().equals(p.evidenceId()))); return; }
         assertEquals("BLOCKED", row(p).disposition());
         assertEquals(451, row(p).statusCode());
+    }
+    /** Shutdown or a different project releases earlier originals; the denial is still categorical. */
+    private boolean released(Prepared p) {
+        return Boolean.TRUE.equals(controller.status().get("closed")) || !p.projectId().equals(controller.status().get("projectId"))
+                || controller.traffic().stream().noneMatch(e -> e.id().equals(p.evidenceId()));
     }
     private static void denied(Admission admission, String reason) {
         assertFalse(admission.allowed());

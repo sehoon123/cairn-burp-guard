@@ -215,8 +215,8 @@ requested per-host diagnostics; malformed input is never echoed.
 
 `ApprovalQueue` contains at most **100** live waits. It takes only an evidence ID,
 project ID, timeout, and current-state predicate; the caller supplies opaque
-metadata references, and the UI resolves the evidence ID through already-masked
-`EvidenceStore` data. There is no request object, raw request/header/body/URL
+metadata references, and the UI resolves the evidence ID through the retained
+(original, unmasked) `EvidenceStore` row. There is no request object, raw request/header/body/URL
 field, native continuation callback, or rate/concurrency permit in the queue.
 Do not pass traffic/secrets in reference fields or capture traffic in predicates.
 References are bounded to 512 UTF-16 characters, nonblank, without controls or

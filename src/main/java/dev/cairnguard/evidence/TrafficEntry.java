@@ -6,7 +6,7 @@ import dev.cairnguard.model.RequestData.Header;
 import java.util.List;
 import java.util.Objects;
 
-/** An immutable, redacted observation, not a wire transcript or proof of delivery. */
+/** An immutable ORIGINAL (unmasked) observation of the supplied callback copy, not a wire transcript or proof of delivery. */
 public record TrafficEntry(String id, String projectId, String projectName, String timestamp,
                            String method, String url, String mode, String disposition, String reason,
                            Integer statusCode, List<Decision.RuleHit> hits, long revision,
@@ -69,19 +69,33 @@ public record TrafficEntry(String id, String projectId, String projectName, Stri
                 + responseCapture.text();
     }
 
-    /** Only sanitized copies belong here. EMPTY distinguishes no response from an empty body. */
+    /**
+     * Original headers and the complete supplied body. bodyEncoding: UTF8_TEXT (strictly valid declared text),
+     * HEX (lossless lowercase hex of every supplied byte), EMPTY, or UNAVAILABLE (no bytes were supplied).
+     * truncated means the supplied copy itself was incomplete. EMPTY distinguishes no response from an empty body.
+     */
     public record Message(List<Header> headers, String body, String mimeType,
-                          boolean bodyOmitted, boolean truncated, boolean present) {
-        public static final Message EMPTY = new Message(List.of(), "", "", false, false, false);
+                          boolean bodyOmitted, boolean truncated, boolean present, String bodyEncoding) {
+        public static final java.util.Set<String> ENCODINGS = java.util.Set.of("UTF8_TEXT", "HEX", "EMPTY", "UNAVAILABLE");
+        public static final Message EMPTY = new Message(List.of(), "", "", false, false, false, "UNAVAILABLE");
         public Message {
             headers = List.copyOf(headers);
             Objects.requireNonNull(body);
             Objects.requireNonNull(mimeType);
+            if (!ENCODINGS.contains(bodyEncoding)) throw new IllegalArgumentException("INVALID_BODY_ENCODING");
+        }
+        /** Original six-argument constructor for caller-built text projections. */
+        public Message(List<Header> headers, String body, String mimeType, boolean bodyOmitted, boolean truncated, boolean present) {
+            this(headers, body, mimeType, bodyOmitted, truncated, present,
+                    !body.isEmpty() ? "UTF8_TEXT" : bodyOmitted || !present ? "UNAVAILABLE" : "EMPTY");
         }
         public String text() {
             StringBuilder out = new StringBuilder();
             for (Header h : headers) out.append(h.name()).append(": ").append(h.value()).append('\n');
-            return out.append('\n').append(body).toString();
+            out.append('\n');
+            if (bodyEncoding.equals("HEX")) out.append("[HEX: captured bytes; charset unsupported or non-text]\n");
+            if (bodyEncoding.equals("UNAVAILABLE") && present) out.append("[OMITTED: capture unavailable]");
+            return out.append(body).toString();
         }
     }
 }

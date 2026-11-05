@@ -139,9 +139,10 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
 
     private Prepared prepare(HttpRequestToBeSent request) {
+        // The slot bounds optional policy parsing only; the complete original copy is always taken.
         boolean inspection = inspections.tryAcquire();
         try {
-            return controller.prepare(NativeCapture.request(request, inspection));
+            return controller.prepare(NativeCapture.request(request), inspection);
         } catch (NativeCapture.Rejected e) {
             return controller.prepareRejected(e.category());
         } catch (RuntimeException | LinkageError e) {
@@ -205,15 +206,12 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
 
     private void captureResponse(String evidenceId, HttpResponseReceived response) {
-        // Scalars are independent of optional capture capacity; no Content-Length heuristic and no
-        // whole-body copy just to find its size. Untracked OFF/unselected responses never get here.
+        // Scalars come from the native body length, never Content-Length. Response copies need no policy
+        // inspection slot. Untracked OFF/unselected responses never get here.
         NativeCapture.Observation observed = NativeCapture.observe(response);
-        boolean inspection = inspections.tryAcquire();
-        try {
-            NativeCapture.Response copy = NativeCapture.response(response, observed, inspection);
-            controller.response(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
-                    copy.headersComplete(), copy.bodyComplete());
-        } finally { if (inspection) inspections.release(); }
+        NativeCapture.Response copy = NativeCapture.response(response, observed);
+        controller.response(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
+                copy.headersComplete(), copy.bodyComplete());
     }
 
     private static String category(String value) { return DenialReasons.category(value); }

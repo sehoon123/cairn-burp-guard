@@ -7,6 +7,19 @@ certified safety boundary. Source, frozen snapshots, automated checks, disposabl
 Swing, exact JAR/native observations and independent review are separate evidence.
 Historical counts/hashes never transfer to a new candidate.
 
+## Current source change — no masking, no collection quota (2026-11-05)
+
+The latest user requirement removed masking and every traffic collection/retention/export
+quota (see [EVIDENCE.md](EVIDENCE.md)). The current source therefore differs from every
+artifact measured below: statements in the historical sections about redacted/masked
+safe exports, `[REDACTED]` markers, response-time remasking, 2000-entry/32 MiB/64 KiB
+stores, 64 MiB export caps, 24-hour incident windows, 4096/8192 rings, candidate LRU or
+the 4 MiB offline-checker read describe **those older artifacts only**. Their counts,
+hashes and native observations do not certify the current source. No native Burp run of
+the current source is recorded here; its offline unit/adapter/desktop/build results are
+kept in private run records and are not release or native acceptance. Enforcement,
+parser, capacity and lifecycle limits are unchanged and are listed in EVIDENCE.md.
+
 ## Current scope — all Proxy listeners, H explicitly deferred
 
 The user explicitly deferred per-port protection H and asked to finish the rest first.
@@ -439,3 +452,90 @@ belong in publication. Private paths, original logs/screenshots, temporary Burp
 profiles/projects, reports, certificates/keys, license/activation or auth material
 must not be copied into this repository. This status update is not permission to
 accept terms, bypass activation, perform unrelated testing or publish a candidate.
+
+## 0.2.0 candidate — local isolated validation (NOT native, NOT release acceptance)
+
+Scope of this section: source/unit/adapter/loopback and real-Swing results of the
+expanded 0.2.0 working-tree candidate on owned Linux containers (`--network none`,
+offline Gradle, strict dependency verification and locks unchanged). It supersedes
+the earlier 17-file candidate `5df5b463…` (1332 tests / 27 Swing) and the review-found
+candidate `805c0a3c…` (not accepted), whose bytes are no longer the candidate. **Not run natively:** Burp, exact-JAR loading, owned
+loopback Burp traffic and the prospective cases in
+[MANUAL_BURP_SMOKE.md](MANUAL_BURP_SMOKE.md) remain UNRUN until the parent observes
+the exact bytes. Earlier artifact or baseline-native results do not transfer.
+
+| Check | Result |
+|---|---|
+| `./gradlew --offline --no-daemon --max-workers=2 clean test jar` | 45 suites, **1478 tests**, 0 failures/errors/skips |
+| Forced `desktopTest`, isolated authenticated Xvfb + openbox, scale 1 / scale 2 | **35 / 35 PASS**, 0 failures/errors/skips each (Swing/Robot only) |
+| `python3 -m unittest discover -s scripts -p test_native_burp_smoke.py` | 37 OK (human-incident format dispatch, structural `_source` key rejection, literal-value preservation) |
+| `python3 scripts/verify_templates.py` | 18 OK + 2 fixture-only PASS; upstream check SKIP (no trusted upstream input) |
+| `git diff --check` | clean |
+| Candidate JAR `build/libs/cairn-proxy-guard-0.2.0.jar` | manifest `Implementation-Version: 0.2.0`; two clean no-build-cache builds from byte-identical complete input manifests are compared byte-for-byte. The exact final freeze, hashes and paths are identified only by the private final implementation handoff for the current candidate (a hash written here would change the inputs); earlier numbered freezes named below are historical |
+| Build legal assertion (`jar` doLast) | project MIT `LICENSE`/`NOTICE` at `META-INF/cairn-proxy-guard/`; upstream root `META-INF/LICENSE` (Apache) / `NOTICE` and every `META-INF/legal/` file intact |
+
+Behavior covered (source tests only): human labels for optional capture versus
+rule-demanded inspection; enforcing omission-debt status; idle WARN host-history
+reclaim; 5xx circuit optional/default OFF with immediate logical OFF and generation
+fencing; exact circuit and fan-out route exceptions; large-response master switch
+with generation-fenced actuation and size-0 route exceptions; history-preserving
+fan-out OFF/WARN/BLOCK<->PAUSE transitions; proof-only shared-fence clearing;
+original human screens, both candidate actions and selected-kind overlay exception
+saves revalidated after every confirmation; consented plaintext human JSON/HAR/
+incident exports with a final pre-rename checkpoint and a 64 MiB cap. Some N2/N4,
+Δ1/Δ3/Δ4 tests were written together with or after their implementation (no
+separate failing run); red runs exist for N1, N3, N5 (migrated expectations) and Δ2.
+
+Known limits: native upstream-failure permit recovery is PLATFORM_BLOCKED (no
+supported exact-flight completion signal; no TTL/reset/callback guess). The
+check-to-rename window of human exports and the sampled Burp project boundary are
+documented, not prevented. Rule preview, per-port protection (H) and RateGate
+changes are deferred; RateGate/adapter/permit code is unchanged.
+
+Review repairs after the independent reviews of `805c0a3c…` (`reviewfix1`): a relevant
+raw-source eviction before the final export checkpoint now aborts publication; HAR
+`postData.text` follows the shared declared-charset decision; the standard HAR `url` is
+filled only for a faithful unchanged target; help/confirmation/checklist wording is current;
+an already-excepted automatic-block route returns ALREADY_EXCEPTED (no reorder-only save);
+new oracles for WARN-full-history -> BLOCK and fan-out alias negatives. Their failing-first
+runs are `reviewfix1-red1`/`reviewfix1-red2` (compiled assertion failures).
+
+Second review repair (`reviewfix2`): the shared declared-charset decision now covers every
+captured Content-Type (duplicates in either order, an over-long value is unknown rather than
+"no charset") consistently in raw display, HAR and JSON facts, and the automatic-block summary
+counts "preserved automatic-protection states (conditional on route exceptions)" instead of
+"open blocks". Failing-first run: `reviewfix2-red1` (compiled assertion failures).
+
+Third review repair (`reviewfix3`, test/doc scope extended to `NativeCaptureTest` and
+`BURP_ADAPTER.md`): omitted incoming headers freeze an UNKNOWN charset (not a verified
+absence) across display/HAR/JSON; one Content-Type value is accepted as text only when a
+single well-formed `charset` parameter is supported (duplicate/`xcharset`/quoted-name/
+malformed-quote cases => bytes, SP/HTAB OWS only); exported header-completeness flags also
+require exact retained headers; the overview counters are qualified as retained conditional
+states; the current adapter document matches the human-original/safe-API split. Failing-first
+run: `reviewfix3-red1` (independent parameterized/assertAll cases; adapter/unit evidence, not native).
+
+Fourth review repair (`reviewfix4`): the Content-Type classifier is completed as a deliberately
+conservative recognized subset - token `/` token media type, then every parameter (charset or
+not) `token=token` or a whole-value quoted string, SP/HTAB outer OWS only. Malformed media types
+(`text/plain charset=...`, `text/plain, ...`, bare `charset=...`, empty present value), misplaced
+or balanced-but-misplaced quotes (`name=x"; charset=...;"`, `"charset"=...`), invalid token
+characters and empty parameter segments (`text/plain;`, `;;`) are unknown => bytes on every
+surface with exact base64; valid quoted other parameters, supported charsets and a complete
+capture with no Content-Type remain text. Lenient forms outside the subset are deliberately not
+decoded as text. Failing-first run: `reviewfix4-red1` (independent parameterized cases).
+
+Fifth review repair (`reviewfix5`): the offline human-incident checker rejects an actual
+private `_source` object KEY structurally at any depth and no longer refuses original string
+VALUES that merely contain `_source` or `[REDACTED]` (it cannot authenticate originals; strict
+format/provenance/categorical-absence/route/window/retention checks and the legacy SAFE
+known-secret refusal are unchanged). The classifier treats a `charset*` parameter-name family
+(RFC 2231 continuations) as unknown/bytes without decoding; `xcharset*` stays unrelated.
+Failing-first runs: `reviewfix5-red-py` (literal-value positives) and `reviewfix5-red-java`
+(charset* family); the structural-key negatives are true-negative controls.
+
+Sixth review repair (`reviewfix6`): the human history method filter and general search now
+compare the same displayed original method as the table (`screenMethod`), so a retained
+original such as `CUSTMETHOD` is found while the safe entry/machine APIs stay `[REDACTED]`;
+an unavailable original is matched only by its explicit diagnostic text. Failing-first run:
+`reviewfix6-red1` (real EvidenceStore fixture, both branches observed independently).

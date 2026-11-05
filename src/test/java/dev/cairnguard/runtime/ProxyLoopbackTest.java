@@ -185,10 +185,10 @@ class ProxyLoopbackTest {
             assertEquals(0, h.gate("active"));
             assertEquals(1, h.evidence("upstreamResponses"));
             String exported = h.controller.exportJson(h.controller.traffic());
-            assertFalse(exported.contains(SECRET));
-            assertFalse(exported.contains(RESPONSE_COOKIE));
-            assertFalse(exported.contains("c3ludGhldGljOm9ubHk="));
-            assertTrue(exported.contains("REDACTED_EVIDENCE_NOT_WIRE_CAPTURE"));
+            assertTrue(exported.contains(SECRET));
+            assertTrue(exported.contains(RESPONSE_COOKIE));
+            assertTrue(exported.contains("c3ludGhldGljOm9ubHk="));
+            assertTrue(exported.contains("ORIGINAL_EVIDENCE_NOT_WIRE_CAPTURE"));
         }
     }
 

@@ -31,6 +31,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import static dev.cairnguard.burp.AdapterFixtures.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.*;
 
 /** Synthetic in-process adapter tests. No real Burp, target traffic, auth API or sockets involved. */
@@ -49,7 +50,7 @@ class ProxyGuardHandlerTest {
             assertSame(response, continued.response()); assertSame(response.annotations(), continued.annotations());
             assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
             String exported = controller.exportJson(controller.traffic());
-            assertFalse(exported.contains("SYNTHETIC-SECRET")); assertFalse(exported.contains("SYNTHETIC-RESPONSE-SECRET"));
+            assertTrue(exported.contains("Bearer SYNTHETIC-SECRET")); assertTrue(exported.contains("SYNTHETIC-RESPONSE-SECRET"), "evidence keeps originals");
             assertTrue(mockingDetails(request).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
             assertTrue(mockingDetails(response).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
             verifyNoInteractions(request.annotations(), response.annotations());
@@ -91,19 +92,19 @@ class ProxyGuardHandlerTest {
             doReturn(bytes(new byte[] {1})).when(request).body();
             when(request.body().getBytes()).thenThrow(new IllegalArgumentException("SYNTHETIC-EXCEPTION-SECRET"));
             assertSame(request, handler.handleHttpRequestToBeSent(request).request());
-            verify(controller, never()).prepareRejected(anyString()); verify(controller).prepare(any(RequestData.class));
+            verify(controller, never()).prepareRejected(anyString()); verify(controller).prepare(any(RequestData.class), anyBoolean());
             assertTrue(controller.traffic().getFirst().inspectionWarnings().contains("BODY_INCOMPLETE"));
-            assertNull(actions.local); assertFalse(controller.exportJson(controller.traffic()).contains("SYNTHETIC"));
+            assertNull(actions.local); assertFalse(controller.exportJson(controller.traffic()).contains("SYNTHETIC-EXCEPTION-SECRET"));
             handler.handleHttpResponseReceived(response(1, "{}"));
         }
     }
-    @Test void optionalCaptureBoundsDoNotDenyOrAllocateUnboundedBody() {
+    @Test void unreadableHugeNativeBodyDoesNotDenyAndIsUnavailableNotInvented() {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             HttpRequestToBeSent request = request(1); ByteArray body = mock(ByteArray.class);
             when(body.length()).thenReturn(Integer.MAX_VALUE); when(request.body()).thenReturn(body);
             assertSame(request, handler.handleHttpRequestToBeSent(request).request());
-            verify(body, never()).getBytes(); assertEquals(1, handler.inFlightCount());
+            assertEquals(1, handler.inFlightCount()); // mocked getBytes() supplies nothing
             assertTrue(controller.traffic().getFirst().inspectionWarnings().contains("BODY_INCOMPLETE"));
             handler.handleHttpResponseReceived(response(1, "{}"));
         }
@@ -157,7 +158,7 @@ class ProxyGuardHandlerTest {
             assertEquals(0, handler.inFlightCount());
         } finally { workers.shutdownNow(); assertTrue(workers.awaitTermination(3, TimeUnit.SECONDS)); }
     }
-    @Test void boundedInspectionParallelismUsesTryAcquireAndOmitsOverflowBody() throws Exception {
+    @Test void boundedInspectionParallelismUsesTryAcquireWithoutSkippingTheOriginalCopy() throws Exception {
         GuardController controller = controller(); Actions actions = new Actions(); ExecutorService worker = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions, 2, 1)) {
@@ -167,8 +168,8 @@ class ProxyGuardHandlerTest {
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             HttpRequestToBeSent second = request(2);
             assertSame(second, handler.handleHttpRequestToBeSent(second).request());
-            verify(second, never()).headers(); verify(second.body(), never()).getBytes();
-            assertTrue(controller.traffic().getFirst().inspectionWarnings().contains("HEADERS_INCOMPLETE"));
+            verify(second).headers(); verify(second.body()).getBytes();
+            assertTrue(controller.traffic().getFirst().inspectionWarnings().isEmpty(), "no rule demanded content; nothing is falsely incomplete");
             release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(3, TimeUnit.SECONDS).action());
             handler.handleHttpResponseReceived(response(1, "{}")); handler.handleHttpResponseReceived(response(2, "{}"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
@@ -314,17 +315,34 @@ class ProxyGuardHandlerTest {
             assertEquals("NATIVE_DENIAL_UNAVAILABLE", error.getMessage()); assertNull(error.getCause());
         }
     }
-    @Test void oversizedResponseUsesExplicitOmissionNotZeroSentinelAndContinuesOriginal() {
-        GuardController controller = controller(); Actions actions = new Actions();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            handler.handleHttpRequestToBeSent(request(1)); HttpResponseReceived response = response(1, "{}");
-            ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(Integer.MAX_VALUE); when(response.body()).thenReturn(body);
-            assertSame(response, handler.handleHttpResponseReceived(response).response()); verify(body, never()).getBytes();
-            TrafficEntry row = controller.traffic().getFirst(); assertTrue(row.responseCapture().bodyOmitted()); assertTrue(row.truncated());
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
-        }
+    @Test void originalsAreCompleteWhileInspectionSlotIsHeldAndOnlyDemandedInspectionIsUnavailable() throws Exception {
+        GuardConfig base = config(Mode.ALLOW, 5, 60_000);
+        GuardConfig policy = new GuardConfig(2, base.allowScope(), List.of(), List.of(new GuardConfig.Rule("ex", "body exemption", true,
+                Mode.EXEMPT, GuardConfig.Condition.leaf(GuardConfig.Field.BODY, GuardConfig.Match.CONTAINS, "SYNTH-SLOT-BODY"))), Mode.ALLOW, base.limits());
+        GuardController controller = new GuardController(new MemoryProject(policy)); Actions actions = new Actions();
+        ExecutorService worker = Executors.newSingleThreadExecutor();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions, 2, 1)) {
+            HttpRequestToBeSent first = request(1);
+            when(first.body().getBytes()).thenAnswer(i -> { entered.countDown(); if (!release.await(3, TimeUnit.SECONDS)) throw new IllegalStateException(); return new byte[0]; });
+            Future<RequestToBeSentAction> pending = worker.submit(() -> handler.handleHttpRequestToBeSent(first));
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            HttpRequestToBeSent second = request(2);
+            when(second.headers()).thenReturn(List.of(header("Authorization", "Bearer SYNTH-SLOT-AUTH"), header("Content-Type", "text/plain")));
+            doReturn(bytes("SYNTH-SLOT-BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8))).when(second).body();
+            assertSame(second, handler.handleHttpRequestToBeSent(second).request(), "saturation is not an automatic 451");
+            TrafficEntry row = controller.traffic().getFirst();
+            assertEquals("forwarded", row.outcome(), "missing demanded inspection never grants EXEMPT");
+            assertEquals(List.of("BODY_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY"), row.inspectionWarnings());
+            String raw = controller.rawRequest(row.id());
+            assertTrue(raw.contains("Bearer SYNTH-SLOT-AUTH") && raw.contains("SYNTH-SLOT-BODY"));
+            assertEquals(true, controller.rawCaptureInfo(row.id()).get("headersComplete"));
+            assertEquals(true, controller.rawCaptureInfo(row.id()).get("bodyComplete"));
+            release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(3, TimeUnit.SECONDS).action());
+            handler.handleHttpResponseReceived(response(1, "{}")); handler.handleHttpResponseReceived(response(2, "{}"));
+        } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
-    @Test void responseCapacityOmissionDoesNotWaitOrReadRawBodyAndStillClosesActualPermit() throws Exception {
+    @Test void originalsResponseIsCapturedWhileRequestInspectionSlotIsHeld() throws Exception {
         GuardController controller = controller(); Actions actions = new Actions(); ExecutorService worker = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions, 2, 1)) {
@@ -333,17 +351,27 @@ class ProxyGuardHandlerTest {
             when(second.body().getBytes()).thenAnswer(i -> { entered.countDown(); if (!release.await(3, TimeUnit.SECONDS)) throw new IllegalStateException(); return new byte[0]; });
             Future<RequestToBeSentAction> pending = worker.submit(() -> handler.handleHttpRequestToBeSent(second));
             assertTrue(entered.await(3, TimeUnit.SECONDS));
-            HttpResponseReceived firstResponse = response(1, "{\"token\":\"SYNTHETIC-OMITTED-SECRET\"}");
-            assertSame(firstResponse, handler.handleHttpResponseReceived(firstResponse).response());
-            verify(firstResponse).body(); verify(firstResponse.body()).length(); verify(firstResponse.body(), never()).getBytes();
-            verify(firstResponse, never()).headers(); assertEquals(200, controller.traffic().getFirst().statusCode());
-            assertEquals(0, gate(controller).get("active")); assertTrue(controller.traffic().getFirst().responseCapture().bodyOmitted());
+            handler.handleHttpResponseReceived(response(1, "{\"token\":\"SYNTH-RESPONSE-ORIGINAL\"}"));
+            assertEquals(0, gate(controller).get("active"), "the actual completion closes its permit");
+            TrafficEntry row = controller.traffic().stream().filter(e -> e.statusCode() != null && e.statusCode() == 200).findFirst().orElseThrow();
+            assertFalse(row.responseCapture().bodyOmitted());
+            assertTrue(controller.rawResponse(row.id()).contains("SYNTH-RESPONSE-ORIGINAL"));
+            assertTrue(controller.exportJson(controller.traffic()).contains("SYNTH-RESPONSE-ORIGINAL"));
             release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(3, TimeUnit.SECONDS).action());
             handler.handleHttpResponseReceived(response(2, "{}")); assertEquals(0, gate(controller).get("active"));
-            assertFalse(controller.exportJson(controller.traffic()).contains("SYNTHETIC"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
-    @Test void responseCaptureFailureAndHeaderOverflowUseCategoricalOmissionWithoutLeaking() {
+    @Test void oversizedResponseUsesExplicitOmissionNotZeroSentinelAndContinuesOriginal() {
+        GuardController controller = controller(); Actions actions = new Actions();
+        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
+            handler.handleHttpRequestToBeSent(request(1)); HttpResponseReceived response = response(1, "{}");
+            ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(Integer.MAX_VALUE); when(response.body()).thenReturn(body);
+            assertSame(response, handler.handleHttpResponseReceived(response).response()); // mocked getBytes() supplies nothing
+            TrafficEntry row = controller.traffic().getFirst(); assertTrue(row.responseCapture().bodyOmitted()); assertTrue(row.truncated());
+            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+        }
+    }
+    @Test void responseCaptureFailureIsCategoricalOmissionAndManyHeadersAreRetainedWhole() {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             handler.handleHttpRequestToBeSent(request(1)); HttpResponseReceived response = response(1, "{}");
@@ -353,9 +381,12 @@ class ProxyGuardHandlerTest {
             handler.handleHttpRequestToBeSent(request(2)); HttpResponseReceived second = response(2, "{}");
             when(second.headers()).thenReturn(java.util.Collections.nCopies(257, header("X-Secret", "SYNTHETIC-HEADER-SECRET")));
             assertSame(second, handler.handleHttpResponseReceived(second).response()); verify(second).body();
-            assertEquals(false, controller.rawCaptureInfo(controller.traffic().getFirst().id()).get("responseHeadersComplete"));
-            assertTrue(controller.traffic().getFirst().responseCapture().bodyOmitted());
-            assertFalse(controller.exportJson(controller.traffic()).contains("SYNTHETIC")); assertEquals(0, gate(controller).get("active"));
+            assertEquals(true, controller.rawCaptureInfo(controller.traffic().getFirst().id()).get("responseHeadersComplete"));
+            assertEquals(257, controller.traffic().getFirst().responseCapture().headers().size());
+            assertFalse(controller.traffic().getFirst().responseCapture().bodyOmitted());
+            String exported = controller.exportJson(controller.traffic());
+            assertFalse(exported.contains("SYNTHETIC-RESPONSE-SECRET"), "native exception text is never captured");
+            assertTrue(exported.contains("SYNTHETIC-HEADER-SECRET")); assertEquals(0, gate(controller).get("active"));
         }
     }
     @Test void responseContinuationFailureStillClosesActualCompletionWithoutExceptionContent() {
@@ -406,7 +437,7 @@ class ProxyGuardHandlerTest {
     @Test void malformedEvidenceIdIsNeverEchoedIntoLocalJson() throws Exception {
         GuardController controller = spy(controller()); Actions actions = new Actions();
         doReturn(new GuardController.Prepared("SYNTHETIC-EVIDENCE-SECRET", "fixture-project", 1, "blocked.invalid",
-                dev.cairnguard.model.Decision.blocked("RULE_BLOCK"))).when(controller).prepare(any());
+                dev.cairnguard.model.Decision.blocked("RULE_BLOCK"))).when(controller).prepare(any(), anyBoolean());
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
             assertEquals("unavailable", local(actions, "RULE_BLOCK").path("evidenceId").asText()); assertFalse(actions.local.contains("SYNTHETIC"));

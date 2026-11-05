@@ -189,6 +189,299 @@ class GuardControllerV2Test {
         handoff(prepare("GET", "/a", "one"));
     }
 
+    @Test void enforcingOmissionDebtIsReportedAsCapacityOnlyWhileConfiguredAndProtectionIsOn() {
+        GuardConfig warn = policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN), 20, false), List.of());
+        projects.document = PolicyCodec.encode(warn);
+        openStored(warn.limits(), 4096, 2, 4096);
+        for (String path : List.of("/a", "/b", "/c")) {
+            Prepared p = prepare("GET", path, "one");
+            handoff(p);
+            controller.response(p.evidenceId(), 200, List.of(), new byte[0], 0);
+        }
+        assertEquals("PROTECTED", controller.status().get("guardState"));
+        assertEquals(60_000, metric("watchers", "fanoutHistoryRemainingMillis"));
+        for (FanoutAction action : List.of(FanoutAction.BLOCK, FanoutAction.PAUSE)) {
+            save(policy(limits(0, null, new Fanout(60_000, 10, action), 20, false), List.of()));
+            assertEquals("CAPACITY", controller.status().get("guardState"), action.name());
+            assertEquals(true, watchers().get("fanoutHistoryEnforcing"));
+            assertEquals("RESPONSE_WATCHER_CAPACITY", controller.authorize(prepare("GET", "/a", "one")).reason());
+        }
+        save(warn);
+        assertEquals("PROTECTED", controller.status().get("guardState"), "WARN retains debt without a gate");
+        assertEquals(60_000, metric("watchers", "fanoutHistoryRemainingMillis"));
+        save(policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.BLOCK), 20, false), List.of()));
+        assertEquals("CAPACITY", controller.status().get("guardState"), "re-enabled before the deadline");
+        controller.passthrough(true, "a", revision());
+        assertEquals("PROTECTED", controller.status().get("guardState"), "OFF has no active watcher gate");
+        assertEquals(true, watchers().get("fanoutHistoryEnforcing"), "watcher-local configuration diagnostic");
+        controller.passthrough(false, "a", revision());
+        assertEquals("CAPACITY", controller.status().get("guardState"));
+        advance(59_999);
+        assertEquals("CAPACITY", controller.status().get("guardState"));
+        advance(1);
+        assertEquals("PROTECTED", controller.status().get("guardState"));
+        assertEquals(0, metric("watchers", "fanoutHistoryRemainingMillis"));
+        assertEquals(3, metric("intents", "consumed"), "rejections spent no budget");
+    }
+
+    @Test void globalOmissionCapacityStatusOutranksPerHostCircuitOnlyWhileEnforcing() {
+        Circuit5xx circuit = new Circuit5xx(60_000, 1, 60_000, 1);
+        GuardConfig warn = policy(limits(0, circuit, new Fanout(60_000, 10, FanoutAction.WARN), 20, false), List.of());
+        projects.document = PolicyCodec.encode(warn);
+        openStored(warn.limits(), 4096, 2, 4096);
+        for (String path : List.of("/a", "/b", "/c")) {
+            Prepared p = prepare("GET", path, "one");
+            handoff(p);
+            controller.response(p.evidenceId(), path.equals("/c") ? 503 : 200, List.of(), new byte[0], 0);
+        }
+        assertEquals(1, metric("watchers", "circuits"));
+        assertEquals("CIRCUIT_OPEN", controller.status().get("guardState"));
+        save(policy(limits(0, circuit, new Fanout(60_000, 10, FanoutAction.BLOCK), 20, false), List.of()));
+        assertEquals("CAPACITY", controller.status().get("guardState"));
+        assertEquals("CIRCUIT_OPEN", controller.authorize(prepare("GET", "/a", "one")).reason(), "per-request gate order unchanged");
+    }
+
+    private static Limits withCircuit(Limits l, Circuit5xx circuit, List<ProbePath> exceptions) {
+        return new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), circuit,
+                l.fanout(), l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(), l.heavyPathLimits(), exceptions);
+    }
+
+    @Test void exactCircuitExceptionPassesAnOpenCircuitButScopeRulesAskAndPauseStillApply() {
+        List<ProbePath> exceptions = List.of(new ProbePath("https", "owned.test", 443, "/expected-error"),
+                new ProbePath("https", "owned.test", 443, "/blocked-error"));
+        Limits on = withCircuit(limits(0, null, null, 0, false), new Circuit5xx(60_000, 1, 60_000, 1), exceptions);
+        open(policy(on, List.of(rule("block", Mode.BLOCK, "/blocked-error"), rule("ask", Mode.ASK, "/ask-error"))));
+        Prepared failing = prepare("GET", "/x", null);
+        handoff(failing);
+        controller.response(failing.evidenceId(), 503, List.of(), new byte[0], 0);
+        assertEquals("CIRCUIT_OPEN", controller.status().get("guardState"));
+        assertEquals("CIRCUIT_OPEN", controller.authorize(prepare("GET", "/y", null)).reason());
+        handoff(prepare("POST", "/expected-error", null));
+        assertEquals("RULE_BLOCK", controller.authorize(prepare("GET", "/blocked-error", null)).reason(), "ordinary rules still win");
+        controller.pause(true);
+        assertEquals("PAUSED", controller.authorize(prepare("GET", "/expected-error", null)).reason());
+        assertEquals(1, metric("watchers", "circuits"), "exception traffic never heals the circuit");
+    }
+
+    @Test void explicitCircuitOffSaveImmediatelyEndsCircuitGatingButKeepsActiveNativePermits() {
+        Limits on = withCircuit(limits(0, null, null, 0, false), new Circuit5xx(60_000, 1, 60_000, 1), List.of());
+        open(policy(on, List.of()));
+        Prepared failing = prepare("GET", "/x", null);
+        handoff(failing);
+        Prepared outstanding = prepare("GET", "/slow", null);
+        handoff(outstanding); // physical permit held
+        controller.response(failing.evidenceId(), 503, List.of(), new byte[0], 0);
+        assertEquals("CIRCUIT_OPEN", controller.status().get("guardState"));
+        long active = metric("gate", "active");
+        assertEquals(2, active, "both synthetic native permits are still held by the adapter");
+        save(policy(withCircuit(on, null, List.of()), List.of()));
+        assertEquals("PROTECTED", controller.status().get("guardState"));
+        assertEquals(0, metric("watchers", "circuits"));
+        assertEquals(active, metric("gate", "active"), "OFF is not a native permit reset");
+        handoff(prepare("GET", "/x", null));
+        save(policy(on, List.of())); // OFF -> ON: fresh generation, the old flight cannot trip it
+        controller.response(outstanding.evidenceId(), 503, List.of(), new byte[0], 0);
+        assertEquals(0, metric("watchers", "circuits"));
+        assertEquals("PROTECTED", controller.status().get("guardState"));
+        assertTrue(GuardConfig.defaults().limits().circuit5xx() == null, "fresh profiles have no circuit");
+    }
+
+    private static Limits detectors(Limits l, boolean heavy, Fanout fanout, List<ProbePath> fanoutExceptions) {
+        return new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), l.circuit5xx(),
+                fanout, l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(), l.heavyPathLimits(),
+                l.circuit5xxExceptions(), heavy, fanoutExceptions);
+    }
+
+    @Test void selectiveDetectorSavesEndOnlyTheirOwnGatingAndNeverResumeAnOperatorPauseOrReleasePermits() {
+        Limits base = limits(10, null, new Fanout(60_000, 2, FanoutAction.PAUSE), 0, false);
+        open(policy(base, List.of()));
+        Prepared large = prepare("GET", "/large", null);
+        handoff(large);
+        controller.response(large.evidenceId(), 200, List.of(), new byte[0], 11); // heavy overlay
+        assertThrows(AssertionError.class, () -> handoff(prepare("GET", "/second", null))); // fan-out PAUSE
+        long active = metric("gate", "active");
+        assertEquals("OVERLAY_BLOCK", controller.status().get("guardState"));
+        save(policy(detectors(base, true, new Fanout(60_000, 2, FanoutAction.WARN), List.of()), List.of()));
+        assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", controller.authorize(prepare("GET", "/large", null)).reason(), "heavy is independent");
+        handoff(prepare("GET", "/third", null));
+        controller.pause(true);
+        save(policy(detectors(base, false, null, List.of(new ProbePath("https", "owned.test", 443, "/batch"))), List.of()));
+        assertEquals("PAUSED", controller.authorize(prepare("GET", "/large", null)).reason(), "operator pause is never resumed by detector saves");
+        controller.pause(false);
+        handoff(prepare("GET", "/large", null));
+        assertEquals(0, metric("watchers", "overlays"));
+        assertTrue(metric("gate", "active") >= active, "no native permit is released by detector changes");
+    }
+
+    @Test void overlayExceptionReviewPersistsOnlyTheSelectedKindRelativeToTheCurrentPolicy() {
+        for (String kind : List.of("HEAVY", "CIRCUIT", "FANOUT")) {
+            Limits base = switch (kind) {
+                case "HEAVY" -> limits(10, null, null, 0, false);
+                case "CIRCUIT" -> withCircuit(limits(0, null, null, 0, false), new Circuit5xx(60_000, 1, 60_000, 1), List.of());
+                default -> limits(0, null, new Fanout(60_000, 2, FanoutAction.BLOCK), 0, false);
+            };
+            open(policy(base, List.of(rule("keep", Mode.BLOCK, "/never"))));
+            String path = switch (kind) { case "HEAVY" -> "/large"; case "CIRCUIT" -> "/x"; default -> "/two"; };
+            if (kind.equals("FANOUT")) {
+                Prepared one = prepare("GET", "/one", null); handoff(one); controller.response(one.evidenceId(), 200, List.of(), new byte[0], 0);
+                Prepared two = prepare("GET", "/two", null); authorize(two);
+                assertFalse(controller.commitDetailed(two).allowed());
+            } else {
+                Prepared p = prepare("GET", path, null); handoff(p);
+                controller.response(p.evidenceId(), kind.equals("CIRCUIT") ? 503 : 200, List.of(), new byte[0], 11);
+            }
+            var overlay = controller.humanOverlays().getFirst();
+            assertEquals(kind.equals("HEAVY") ? path : "", overlay.path(), "host-scoped rows never invent a path");
+            var exception = overlay.exception();
+            assertEquals(kind, exception.kind()); assertEquals(path, exception.path()); assertNull(exception.unavailable());
+            assertEquals("OverlaySource[opaque]", exception.source().toString());
+            GuardConfig before = controller.config();
+            GuardConfig draft = dev.cairnguard.ui.GuardUiAccess.withDetectorException(before, kind, "https", "owned.test", 443, path);
+            // forged: an unrelated extra change is refused, nothing written
+            GuardConfig unrelated = new GuardConfig(2, draft.allowScope(), draft.blockScope(), List.of(), draft.defaultMode(), draft.limits(), draft.guardListenerPorts());
+            int saves = projects.saves.get();
+            assertThrows(IllegalStateException.class, () -> controller.updateConfig(unrelated, "a", revision(), exception.source()));
+            // type substitution: another kind's change with this token
+            String other = kind.equals("HEAVY") ? "CIRCUIT" : "HEAVY";
+            GuardConfig substituted = dev.cairnguard.ui.GuardUiAccess.withDetectorException(before, other, "https", "owned.test", 443, path);
+            assertThrows(IllegalStateException.class, () -> controller.updateConfig(substituted, "a", revision(), exception.source()));
+            assertEquals(saves, projects.saves.get());
+            assertTrue(controller.overlayExceptionCurrent(exception.source()));
+            controller.updateConfig(draft, "a", revision(), exception.source());
+            assertEquals(saves + 1, projects.saves.get());
+            Limits after = controller.config().limits();
+            switch (kind) {
+                case "HEAVY" -> assertEquals(List.of(new PathByteLimit("https", "owned.test", 443, "/large", 0)), after.heavyPathLimits());
+                case "CIRCUIT" -> assertEquals(List.of(new ProbePath("https", "owned.test", 443, "/x")), after.circuit5xxExceptions());
+                default -> assertEquals(List.of(new ProbePath("https", "owned.test", 443, "/two")), after.fanoutExceptions());
+            }
+            assertEquals(before.rules(), controller.config().rules());
+            assertEquals(before.limits().circuit5xx(), after.circuit5xx(), "a disabled/enabled detector is never toggled");
+            assertEquals(before.limits().fanout(), after.fanout());
+            assertEquals(before.limits().heavyResponseEnabled(), after.heavyResponseEnabled());
+            assertEquals(1, metric("watchers", "overlays"), "saving an exception is not a release");
+            var done = controller.humanOverlays().getFirst().exception();
+            assertEquals("ALREADY_EXCEPTED", done.unavailable(), kind + ": the retained overlay is conditional, the route is already excepted");
+            assertNull(done.source(), "no authority to re-save the same exception");
+            controller.close(); controller = null;
+        }
+    }
+
+    @Test void withDetectorExceptionReplacesInPlaceNeverReordersAndNeverDuplicates() {
+        GuardConfig base = policy(limits(10, null, null, 0, false), List.of());
+        Limits l = base.limits();
+        PathByteLimit first = new PathByteLimit("https", "owned.test", 443, "/large", 7), second = new PathByteLimit("https", "owned.test", 443, "/other", 9);
+        GuardConfig two = new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), null, null, 0,
+                        false, List.of(), List.of(first, second), List.of(), true, List.of()));
+        GuardConfig once = dev.cairnguard.ui.GuardUiAccess.withDetectorException(two, "HEAVY", "https", "OWNED.test.", 443, "/large");
+        assertEquals(List.of(new PathByteLimit("https", "OWNED.test.", 443, "/large", 0), second), once.limits().heavyPathLimits(),
+                "an existing positive entry is replaced at the same position");
+        GuardConfig again = dev.cairnguard.ui.GuardUiAccess.withDetectorException(once, "HEAVY", "https", "owned.test", 443, "/large");
+        assertEquals(once, again, "an already excepted route is not reordered, re-added or rewritten");
+        GuardConfig zeroFirst = new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), null, null, 0,
+                        false, List.of(), List.of(new PathByteLimit("https", "owned.test", 443, "/large", 0), second), List.of(), true, List.of()));
+        assertEquals(zeroFirst, dev.cairnguard.ui.GuardUiAccess.withDetectorException(zeroFirst, "HEAVY", "https", "owned.test", 443, "/large"),
+                "an existing exception that is not last stays exactly where it is");
+    }
+
+    @Test void alreadyExceptedHeavyRouteGivesNoAuthorityAndNoMutationEvenWithSeveralEntries() {
+        GuardConfig base = policy(limits(10, null, null, 0, false), List.of());
+        Limits l = base.limits();
+        open(new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), null, null, 0,
+                        false, List.of(), List.of(new PathByteLimit("https", "owned.test", 443, "/large", 7)), List.of(), true, List.of()),
+                base.guardListenerPorts()));
+        Prepared p = prepare("GET", "/large", null); handoff(p);
+        controller.response(p.evidenceId(), 200, List.of(), new byte[0], 11);
+        var exception = controller.humanOverlays().getFirst().exception();
+        assertNull(exception.unavailable());
+        GuardConfig draft = dev.cairnguard.ui.GuardUiAccess.withDetectorException(controller.config(), "HEAVY", "https", "owned.test", 443, "/large");
+        controller.updateConfig(draft, "a", revision(), exception.source());
+        long revision = revision(); int saves = projects.saves.get();
+        var after = controller.humanOverlays().getFirst().exception();
+        assertEquals("ALREADY_EXCEPTED", after.unavailable());
+        assertNull(after.source());
+        assertEquals(revision, revision(), "reviewing never bumps the revision");
+        assertEquals(saves, projects.saves.get());
+        assertEquals(1, metric("watchers", "overlays"));
+    }
+
+    @Test void clearInvalidatesJsonHarAndIncidentSnapshotsButUnrelatedRowsAndLaterUpdatesDoNot() throws Exception {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        // never answered, so it is in no event/top row of the incident either (an incident USES every row's original)
+        Prepared unrelated = prepare("GET", "/unrelated", null); handoff(unrelated);
+        Prepared used = prepare("GET", "/large", null); handoff(used);
+        controller.response(used.evidenceId(), 200, List.of(new Header("X-Original", "kept")), bytes("first"), 11);
+        var json = controller.humanExport(List.of(used.evidenceId()), false);
+        var har = controller.humanExport(List.of(used.evidenceId()), true);
+        var incident = controller.humanIncident(999_999, 1_000_001);
+        byte[] before = json.serialize();
+        assertTrue(new String(incident.serialize(), StandardCharsets.UTF_8).contains("/large"));
+        for (var export : List.of(json, har, incident)) assertTrue(controller.humanExportCurrent(export));
+        // an ordinary later response update neither cancels the export nor injects newer data into the frozen snapshot
+        controller.response(used.evidenceId(), 200, List.of(new Header("X-Original", "newer")), bytes("later"), 11);
+        for (var export : List.of(json, har, incident)) assertTrue(controller.humanExportCurrent(export), "later update");
+        assertArrayEquals(before, json.serialize(), "the frozen snapshot is unchanged");
+        // many unrelated captures: nothing is evicted (no quota), every original and export stays valid
+        for (int i = 0; i < 2100; i++) controller.prepareRejected("CAPTURE_FAILED");
+        assertEquals(Boolean.TRUE, controller.rawCaptureInfo(unrelated.evidenceId()).get("available"), "no quota eviction");
+        assertEquals(Boolean.TRUE, controller.rawCaptureInfo(used.evidenceId()).get("available"));
+        for (var export : List.of(json, har, incident)) assertTrue(controller.humanExportCurrent(export), "unrelated captures");
+        // an explicit clear releases the used original and must fail the final predicate
+        controller.clearEvidence();
+        assertEquals(Boolean.FALSE, controller.rawCaptureInfo(used.evidenceId()).get("available"));
+        for (var export : List.of(json, har, incident)) assertFalse(controller.humanExportCurrent(export), "clear");
+        // a fresh snapshot taken after the clear is independent of it and is valid
+        controller.prepareRejected("CAPTURE_FAILED");
+        var late = controller.humanExport(List.of(controller.traffic().getFirst().id()), false);
+        assertTrue(controller.humanExportCurrent(late));
+    }
+
+    @Test void staleReleasedClearedOrForeignOverlayAuthorityWritesNothing() {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        Prepared p = prepare("GET", "/large", null); handoff(p);
+        controller.response(p.evidenceId(), 200, List.of(), new byte[0], 11);
+        var exception = controller.humanOverlays().getFirst().exception();
+        GuardConfig draft = dev.cairnguard.ui.GuardUiAccess.withDetectorException(controller.config(), "HEAVY", "https", "owned.test", 443, "/large");
+        int saves = projects.saves.get();
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(draft, "a", revision(), (dev.cairnguard.ui.GuardUiAccess.OverlaySource) null));
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(draft, "a", revision(), new dev.cairnguard.ui.GuardUiAccess.OverlaySource() {}));
+        controller.releaseAllOverlays("a", revision());
+        assertFalse(controller.overlayExceptionCurrent(exception.source()), "released overlay");
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(draft, "a", revision(), exception.source()));
+        Prepared again = prepare("GET", "/large", null); handoff(again);
+        controller.response(again.evidenceId(), 200, List.of(), new byte[0], 11);
+        var fresh = controller.humanOverlays().getFirst().exception();
+        controller.clearEvidence();
+        assertFalse(controller.overlayExceptionCurrent(fresh.source()), "raw clear");
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(draft, "a", revision(), fresh.source()));
+        assertEquals(saves, projects.saves.get());
+        assertEquals("ORIGINAL_UNAVAILABLE", controller.humanOverlays().getFirst().unavailable());
+    }
+
+    @Test void overlayExceptionIsUnavailableForAmbiguousRoutesFullTablesAndTheCapacityFence() {
+        List<ProbePath> sixteen = new java.util.ArrayList<>();
+        for (int i = 0; i < 16; i++) sixteen.add(new ProbePath("https", "owned.test", 443, "/e/" + i));
+        open(policy(withCircuit(limits(0, null, null, 0, false), new Circuit5xx(60_000, 1, 60_000, 1), sixteen), List.of()));
+        Prepared p = prepare("GET", "/x", null); handoff(p);
+        controller.response(p.evidenceId(), 503, List.of(), new byte[0], 0);
+        assertEquals("EXCEPTION_TABLE_FULL", controller.humanOverlays().getFirst().exception().unavailable());
+        assertNull(controller.humanOverlays().getFirst().exception().source());
+        controller.close();
+        open(policy(withCircuit(limits(0, null, null, 0, false), new Circuit5xx(60_000, 1, 60_000, 1), List.of()), List.of()));
+        Prepared encoded = controller.prepare(new RequestData("GET", "https://owned.test/c/%2c", "owned.test", 443, true, List.of(), new byte[0], true, true, "/c/%2c"));
+        handoff(encoded);
+        controller.response(encoded.evidenceId(), 503, List.of(), new byte[0], 0);
+        assertEquals("ENCODED_OR_AMBIGUOUS_ROUTE", controller.humanOverlays().getFirst().exception().unavailable());
+    }
+
     @Test void finalCommitRejectsEnforcingIdentityWithoutHistorySlotBeforeIntentSpend() {
         GuardConfig warn = policy(limits(0, null, new Fanout(60_000, 10, FanoutAction.WARN), 20, false), List.of());
         projects.document = PolicyCodec.encode(warn);
@@ -406,7 +699,7 @@ class GuardControllerV2Test {
         handoff(prepare("GET", "/large", "one"));
     }
 
-    @Test void rawHistoryIsHumanLocalResponseDiscoveryRemasksAllWatcherViewsAndStaleExports() throws Exception {
+    @Test void responseDiscoveryNeverRemasksWatcherViewsAndStaleSelectionsExportTheCurrentOriginalRow() throws Exception {
         open(policy(limits(10, null, null, 0, false), List.of()));
         Prepared first = prepare("GET", "/download/" + SECRET, null);
         handoff(first);
@@ -419,29 +712,139 @@ class GuardControllerV2Test {
         controller.response(second.evidenceId(), 200, headers, body, 20, true, true);
         assertTrue(controller.rawResponse(second.evidenceId()).contains(SECRET));
         assertTrue(controller.rawUrl(second.evidenceId()).contains(SECRET));
-        // Evidence uses same-entry fingerprints; watcher display refresh also covers older route
-        // observations. A selected stale snapshot of THIS entry cannot undo response discovery.
-        assertFalse(controller.exportJson(List.of(row(second))).contains(SECRET));
-        assertFalse(controller.exportJson(stale).contains(SECRET));
-        assertFalse(controller.exportHar(stale).contains(SECRET));
-        assertFalse(controller.overlays().toString().contains(SECRET));
-        assertFalse(controller.heavyCandidates().toString().contains(SECRET));
-        assertEquals("", controller.heavyCandidates().getFirst().policyUrl());
+        assertTrue(controller.exportJson(List.of(row(second))).contains(SECRET));
+        assertTrue(controller.exportJson(stale).contains("X-Broker-Grant"), "a stale seal exports the current retained row");
+        assertTrue(controller.exportHar(stale).contains("X-Broker-Grant"));
+        assertTrue(controller.overlays().toString().contains(SECRET));
+        assertTrue(controller.heavyCandidates().toString().contains(SECRET));
+        assertEquals("https://owned.test/download/" + SECRET, controller.heavyCandidates().getFirst().policyUrl());
         var incident = Json.MAPPER.readTree(controller.exportIncident(999_999, 1_000_001));
         assertTrue(incident.has("events"));
-        assertFalse(incident.toString().contains(SECRET));
+        assertTrue(incident.toString().contains(SECRET));
         assertEquals(20, row(second).responseBytes());
     }
 
-    @Test void actualBytesSurviveCaptureOmissionRawLabelsAreHonestAndExportsOmitPrefix() {
+    // ---- 0.2.0: human originals via opaque source references; safe projections stay masked ----
+    @Test void humanCandidateOverlayAndExportsUseOriginalsAndSafeViewsAreOriginalToo() throws Exception {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        Prepared first = prepare("GET", "/download/" + SECRET + "?q=1", null);
+        handoff(first);
+        controller.response(first.evidenceId(), 200, List.of(new Header("X-Broker-Grant", SECRET), new Header("Set-Cookie", "a=1"),
+                new Header("Set-Cookie", "b=2")), new byte[]{0, (byte) 0xff, 'x'}, 20, true, true);
+        // machine projections are original too; counters/status stay payload-free
+        assertTrue(controller.heavyCandidates().toString().contains(SECRET));
+        assertTrue(controller.overlays().toString().contains(SECRET));
+        assertTrue(controller.exportIncident(999_999, 1_000_001).contains(SECRET));
+        assertFalse(controller.status().toString().contains(SECRET));
+        // human projections use the retained original actual-service route
+        var candidate = controller.humanCandidates().getFirst();
+        assertEquals("owned.test", candidate.host());
+        assertEquals("/download/" + SECRET, candidate.path(), "no query in the route identity");
+        assertEquals("https://owned.test/download/" + SECRET, candidate.ruleUrl());
+        assertEquals("/download/" + SECRET, candidate.limitPath());
+        assertNull(candidate.ruleUnavailable());
+        assertNotNull(candidate.source());
+        assertEquals("CandidateSource[opaque]", candidate.source().toString());
+        var overlay = controller.humanOverlays().getFirst();
+        assertEquals("owned.test", overlay.host());
+        assertEquals("/download/" + SECRET, overlay.path());
+        dev.cairnguard.ui.GuardUiAccess.HumanExport json = controller.humanExport(List.of(first.evidenceId()), false);
+        String text = new String(json.serialize(), StandardCharsets.UTF_8);
+        assertTrue(text.contains("\"cairn-human-inspection\""));
+        assertTrue(text.contains("HUMAN_ORIGINAL"));
+        assertTrue(text.contains(SECRET), "explicit human export is plaintext");
+        var tree = Json.MAPPER.readTree(text);
+        var response = tree.at("/entries/0/original/response");
+        assertArrayEquals(new byte[]{0, (byte) 0xff, 'x'}, java.util.Base64.getDecoder().decode(response.at("/body/base64").asText()));
+        assertEquals("BINARY_OR_UNSUPPORTED", response.at("/body/encoding").asText());
+        assertEquals("a=1", response.at("/headers/1/value").asText());
+        assertEquals("b=2", response.at("/headers/2/value").asText(), "duplicate header order is preserved");
+        assertFalse(text.contains("[REDACTED]"));
+        String har = new String(controller.humanExport(List.of(first.evidenceId()), true).serialize(), StandardCharsets.UTF_8);
+        var harTree = Json.MAPPER.readTree(har);
+        assertEquals("1.2", harTree.at("/log/version").asText());
+        assertEquals("HUMAN_ORIGINAL", harTree.at("/log/_cairnGuard/exportMode").asText());
+        assertEquals("base64", harTree.at("/log/entries/0/response/content/encoding").asText());
+        assertTrue(harTree.at("/log/entries/0/request/url").asText().contains(SECRET));
+        String incident = new String(controller.humanIncident(999_999, 1_000_001).serialize(), StandardCharsets.UTF_8);
+        assertTrue(incident.contains("\"cairn-human-incident\""));
+        assertTrue(incident.contains("/download/" + SECRET));
+        assertFalse(incident.contains("_source"), "opaque references never reach files");
+        assertTrue(controller.humanExportCurrent(json));
+        controller.clearEvidence();
+        assertFalse(controller.humanExportCurrent(json), "a clear invalidates the consented snapshot before publication");
+        assertEquals("ORIGINAL_UNAVAILABLE", controller.humanCandidates().stream().findFirst().map(c -> c.ruleUnavailable()).orElse("ORIGINAL_UNAVAILABLE"));
+        assertTrue(controller.humanOverlays().stream().allMatch(o -> o.host().isEmpty() && "ORIGINAL_UNAVAILABLE".equals(o.unavailable())),
+                "protections stay, their originals are gone; no masked substitute");
+        assertEquals(1, controller.overlays().size());
+    }
+
+    @Test void humanRoutesSeparateServicesIgnoreHostFuzzAndExplainEncodedRouteLimits() {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        for (String path : List.of("/same", "/c/%2c")) {
+            Prepared p = controller.prepare(new RequestData("GET", "https://evil.invalid" + path, "owned.test", 443, true,
+                    List.of(new Header("Host", "evil.invalid")), new byte[0], true, true, path));
+            handoff(p);
+            controller.response(p.evidenceId(), 200, List.of(), new byte[0], 1);
+        }
+        var byPath = controller.humanCandidates().stream().collect(java.util.stream.Collectors.toMap(c -> c.path(), c -> c));
+        assertEquals("owned.test", byPath.get("/same").host(), "actual service, never the fuzzed Host header");
+        assertEquals("/same", byPath.get("/same").limitPath());
+        var encoded = byPath.get("/c/%2c");
+        assertEquals("https://owned.test/c/%2c", encoded.ruleUrl(), "ordinary BLOCK draft keeps the raw spelling");
+        assertNull(encoded.limitPath());
+        assertEquals("ENCODED_OR_AMBIGUOUS_ROUTE", encoded.limitUnavailable());
+    }
+
+    @Test void candidateSaveRevalidatesTheCurrentSourceAfterConfirmationsAndWritesNothingWhenStale() {
+        GuardConfig base = policy(limits(10, null, null, 0, false), List.of());
+        open(base);
+        Prepared first = prepare("GET", "/large", null);
+        handoff(first);
+        controller.response(first.evidenceId(), 200, List.of(), new byte[0], 5);
+        var candidate = controller.humanCandidates().getFirst();
+        GuardConfig withLimit = withPathLimit(base, new PathByteLimit("https", "owned.test", 443, "/large", 7));
+        int saves = projects.saves.get();
+        // wrong route for a byte-limit save
+        GuardConfig wrong = withPathLimit(base, new PathByteLimit("https", "owned.test", 443, "/other", 7));
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(wrong, "a", revision(), candidate.source(), true));
+        assertEquals(saves, projects.saves.get());
+        // a newer observation replaces the candidate's latest source
+        Prepared second = prepare("GET", "/large", null);
+        handoff(second);
+        controller.response(second.evidenceId(), 200, List.of(), new byte[0], 5);
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(withLimit, "a", revision(), candidate.source(), true));
+        assertEquals(saves, projects.saves.get());
+        var current = controller.humanCandidates().getFirst();
+        controller.updateConfig(withLimit, "a", revision(), current.source(), true);
+        assertEquals(saves + 1, projects.saves.get());
+        assertEquals(7, controller.config().limits().heavyPathLimits().getFirst().maxBytes());
+        // clear/epoch invalidates
+        var again = controller.humanCandidates().getFirst();
+        controller.clearEvidence();
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(withLimit, "a", revision(), again.source(), false));
+        assertEquals(saves + 1, projects.saves.get());
+        assertThrows(IllegalStateException.class, () -> controller.updateConfig(withLimit, "a", revision(), null, false));
+    }
+    private static GuardConfig withPathLimit(GuardConfig base, PathByteLimit limit) {
+        Limits l = base.limits();
+        return new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(),
+                        l.circuit5xx(), l.fanout(), l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(),
+                        List.of(limit), l.circuit5xxExceptions()), base.guardListenerPorts());
+    }
+
+    @Test void actualBytesSurvivePartialCopyAndLabelsAreHonestWhileTheSuppliedPrefixIsExportedAsIncomplete() {
         open(policy(limits(10, null, null, 0, false), List.of()));
         Prepared p = prepare("GET", "/large", null);
         handoff(p);
         controller.response(p.evidenceId(), 200, List.of(new Header("Content-Type", "application/json")), bytes("{\"grant\":\"partial"),
                 6L * 1_048_576, true, false);
         assertEquals(6L * 1_048_576, row(p).responseBytes());
-        assertTrue(row(p).responseCapture().bodyOmitted());
-        assertFalse(controller.exportJson(controller.traffic()).contains("partial"));
+        assertFalse(row(p).responseCapture().bodyOmitted());
+        assertTrue(row(p).responseCapture().truncated(), "supplied copy is incomplete");
+        assertTrue(controller.exportJson(controller.traffic()).contains("partial"));
         assertTrue(controller.rawResponse(p.evidenceId()).contains("partial"));
         assertEquals(false, controller.rawCaptureInfo(p.evidenceId()).get("responseBodyComplete"));
         assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", controller.authorize(prepare("GET", "/large", null)).reason());
@@ -481,6 +884,69 @@ class GuardControllerV2Test {
         assertEquals(0, metric("intents", "consumed"));
         assertEquals(1, metric("gate", "active"));
         assertEquals("PROJECT_UNVERIFIED", controller.status().get("guardState"));
+    }
+
+    @Test void originalsSurviveResponseDiscoveryAcrossControllerSurfacesAndStatusProjectName() throws Exception {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        Prepared first = prepare("GET", "/download/" + SECRET, null);
+        handoff(first);
+        controller.response(first.evidenceId(), 200, List.of(new Header("Content-Type", "application/json"), new Header("X-Broker-Grant", SECRET)),
+                bytes("{\"grant\":\"" + SECRET + "\"}"), 20, true, true);
+        assertTrue(controller.exportJson(controller.traffic()).contains("/download/" + SECRET));
+        assertTrue(controller.exportJson(controller.traffic()).contains("X-Broker-Grant"));
+        assertTrue(controller.exportHar(controller.traffic()).contains("/download/" + SECRET));
+        assertTrue(row(first).response().contains(SECRET));
+        assertEquals("/download/" + SECRET, controller.heavyCandidates().getFirst().path());
+        assertEquals("https://owned.test/download/" + SECRET, controller.heavyCandidates().getFirst().policyUrl());
+        assertEquals("/download/" + SECRET, controller.overlays().getFirst().path());
+        assertTrue(controller.exportIncident(999_999, 1_000_001).contains("/download/" + SECRET));
+        assertEquals("Synthetic project", controller.status().get("projectName"));
+    }
+
+    @Test void originalsProjectChangeAndCloseReleaseOriginalBearingHistory() {
+        open(policy(limits(0, null, null, 0, false), List.of()));
+        Prepared old = prepare("GET", "/old/" + SECRET, null);
+        handoff(old);
+        controller.response(old.evidenceId(), 200, List.of(), new byte[0], 0);
+        List<TrafficEntry> stale = controller.traffic();
+        assertEquals(1, stale.size());
+        projects.id = "b";
+        assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> controller.exportJson(stale)).getMessage(),
+                "an export that discovers the change releases old rows first and rejects their seals");
+        assertThrows(IllegalArgumentException.class, () -> controller.exportHar(stale));
+        assertFalse(controller.exportJson(List.of()).contains(SECRET), "an empty selection is an original-free document");
+        assertFalse(controller.exportIncident(999_999, 1_000_001).contains(SECRET), "watcher history was reset with the epoch");
+        assertTrue(controller.traffic().isEmpty(), "a read that discovers a project change must not return old originals");
+        controller.refreshProject();
+        assertTrue(controller.traffic().isEmpty());
+        controller.response(old.evidenceId(), 200, List.of(), bytes(SECRET), 6, true, true);
+        assertTrue(controller.traffic().isEmpty(), "late old-project response cannot recreate a row");
+        Prepared fresh = prepare("GET", "/fresh", null);
+        assertEquals(1, controller.traffic().size());
+        controller.close();
+        assertTrue(controller.traffic().isEmpty(), "unload releases retained originals");
+        controller.response(fresh.evidenceId(), 200, List.of(), bytes(SECRET), 6, true, true);
+        assertTrue(controller.traffic().isEmpty());
+    }
+
+    @Test void originalsExplicitClearRemovesWatcherDisplayOriginalsButKeepsProtection() throws Exception {
+        open(policy(limits(10, null, null, 0, false), List.of()));
+        Prepared heavy = prepare("GET", "/clear/" + SECRET, null);
+        handoff(heavy);
+        Prepared pending = prepare("GET", "/pending/" + SECRET, null);
+        controller.response(heavy.evidenceId(), 200, List.of(), new byte[0], 20);
+        controller.clearEvidence();
+        assertEquals(1, controller.overlays().size());
+        assertFalse(controller.overlays().toString().contains(SECRET), "explicit clear releases protection display originals");
+        assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", controller.authorize(prepare("GET", "/clear/" + SECRET, null)).reason());
+        handoff(pending);
+        controller.response(pending.evidenceId(), 200, List.of(), new byte[0], 20);
+        assertFalse(controller.overlays().toString().contains("/pending/" + SECRET), "pre-clear endpoint cannot resurrect originals");
+        assertFalse(controller.exportIncident(999_999, 1_000_001).contains(SECRET));
+        Prepared after = prepare("GET", "/after/" + SECRET, null);
+        handoff(after);
+        controller.response(after.evidenceId(), 200, List.of(), new byte[0], 1);
+        assertTrue(controller.heavyCandidates().stream().anyMatch(c -> c.path().equals("/after/" + SECRET)));
     }
 
     @Test void clearEvidenceRemovesIncidentsAndRawButNeverProtectionBudgetOrNativePermit() {
@@ -623,12 +1089,13 @@ class GuardControllerV2Test {
     }
     private void openStored(Limits limits, int ticketCapacity, int pathCapacity, int intentCapacity) {
         watcher = new ResponseWatcher(limits, nano::get, () -> 1_000_000 + TimeUnit.NANOSECONDS.toMillis(nano.get()),
-                1024, pathCapacity, 1024, 4096, 8192);
+                1024, pathCapacity, 1024);
         controller = new GuardController(projects, watcher, new IntentBudget(intentCapacity), new RateGate(limits),
                 new ListenerRegistry(nano::get, 4096, TimeUnit.SECONDS.toNanos(30)), nano::get, ticketCapacity);
     }
     private void save(GuardConfig config) { controller.updateConfig(config, projects.id, revision()); }
     private long revision() { return ((Number) controller.status().get("revision")).longValue(); }
+    private Map<?, ?> watchers() { return (Map<?, ?>) controller.status().get("watchers"); }
     private long metric(String section, String key) { return ((Number) ((Map<?, ?>) controller.status().get(section)).get(key)).longValue(); }
     private TrafficEntry row(Prepared p) { return controller.traffic().stream().filter(row -> row.id().equals(p.evidenceId())).findFirst().orElseThrow(); }
     private void advance(long millis) { nano.addAndGet(TimeUnit.MILLISECONDS.toNanos(millis)); }

@@ -40,7 +40,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             "INTENT_BUDGET_CAPACITY", "LISTENER_UNVERIFIED");
 
     /**
-     * Only opaque references, masked policy/display metadata and keyed attribution survive a wait.
+     * Only opaque references, categorical decision/watcher endpoint and keyed attribution survive a wait.
      * No RequestData/body/native object is retained. The old constructor/accessors remain available;
      * caller-constructed projections have no admission provenance and cannot commit a send.
      */
@@ -127,9 +127,6 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     private final LongSupplier nanoTime;
     private final int ticketCapacity;
     private final Map<String, Tracked> tickets = new LinkedHashMap<>();
-    // Diagnostic correlation may evict; unlike tickets it owns no enforcement/permit. Prevents old
-    // project/cleared responses from applying display sanitizers to a new project epoch.
-    private final Map<String, Long> captures = new LinkedHashMap<>();
     private final byte[] attributionKey = new byte[32];
     private final AtomicReference<State> state = new AtomicReference<>(new State(
             new ProjectAccess.Ref("unavailable", "Current Burp project"), GuardConfig.defaults(), 0));
@@ -170,7 +167,10 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     }
 
     /** This entire raw inspection frame ends before authorize() can wait. */
-    public Prepared prepare(RequestData request) {
+    public Prepared prepare(RequestData request) { return prepare(request, true); }
+
+    /** Adapter overload: false means no bounded content-inspection slot; the complete copy is still recorded. */
+    public Prepared prepare(RequestData request, boolean contentInspectionAvailable) {
         Objects.requireNonNull(request);
         synchronized (mutation) {
             reconcileProjectFailure();
@@ -182,32 +182,31 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             // against recording new contents through OFF, shutdown or an unverified project.
             if (passthrough || closed || reloadRequired || projectUnverified)
                 return rejectedLocked(s, failure == null ? "POLICY_CHANGED" : failure);
-            Decision decision = failure == null ? engine.evaluate(s.config(), request) : Decision.blocked(failure);
+            Decision decision = failure == null ? engine.evaluate(s.config(), request, contentInspectionAvailable) : Decision.blocked(failure);
             String id = evidence.begin(s.project().id(), s.project().name(), request, decision, s.revision());
-            rememberCapture(id);
-            TrafficEntry safe = evidence.entry(id);
-            Decision masked = new Decision(decision.mode(), category(decision.reason()), safe == null ? List.of() : safe.hits(),
-                    safe == null ? List.of() : safe.inspectionWarnings());
+            TrafficEntry row = evidence.entry(id);
+            Decision projected = new Decision(decision.mode(), category(decision.reason()), row == null ? List.of() : row.hits(),
+                    row == null ? List.of() : row.inspectionWarnings());
             ResponseWatcher.Endpoint endpoint = null;
             String host = "blocked.invalid";
             if (decision.mode() != Mode.BLOCK) {
                 try {
                     host = PolicyEngine.canonicalHost(request.host());
-                    endpoint = watcher.endpoint(request, safe == null ? "https://redacted.invalid/" : safe.url(),
-                            PolicyEngine.routingPaths(request));
+                    endpoint = watcher.endpoint(request, PolicyEngine.routingPaths(request));
+                    evidence.bindRawSource(id, endpoint.source());
                 } catch (RuntimeException ignored) {
-                    masked = Decision.blocked("RESPONSE_WATCHER_CAPACITY");
+                    projected = Decision.blocked("RESPONSE_WATCHER_CAPACITY");
                     host = "blocked.invalid";
                 }
             }
             RequestAttribution attribution = request.headersComplete() ? RequestAttribution.parse(request.headers())
                     : new RequestAttribution("?", "?", false);
-            return new Prepared(id, s.project().id(), s.revision(), host, masked, endpoint,
+            return new Prepared(id, s.project().id(), s.revision(), host, projected, endpoint,
                     hashAttribution(attribution), health, identity);
         }
     }
 
-    /** No raw/native data is captured on adapter or listener failures. */
+    /** No native data is captured on adapter or listener failures: a fixed capture-omitted placeholder row. */
     public Prepared prepareRejected(String reason) {
         synchronized (mutation) {
             reconcileProjectFailure();
@@ -215,11 +214,10 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         }
     }
     private Prepared rejectedLocked(State s, String reason) {
-        RequestData omitted = new RequestData("UNKNOWN", "https://redacted.invalid/", "redacted.invalid", 443, true,
+        RequestData omitted = new RequestData("UNKNOWN", "https://capture-omitted.invalid/", "capture-omitted.invalid", 443, true,
                 List.of(new RequestData.Header("X-Cairn-Guard-Capture", "OMITTED")), new byte[0]);
         Decision decision = Decision.blocked(category(reason));
-        String id = evidence.begin(s.project().id(), "Current Burp project", omitted, decision, s.revision());
-        rememberCapture(id);
+        String id = evidence.begin(s.project().id(), s.project().name(), omitted, decision, s.revision());
         Prepared p = new Prepared(id, s.project().id(), s.revision(), "blocked.invalid", decision,
                 null, new RequestAttribution("-", "-", true), false, identity);
         p.denied = denialFor(reason, "");
@@ -447,39 +445,31 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     private boolean owned(Prepared p) { return p != null && p.owner == identity; }
 
     public void response(String id, int status, List<RequestData.Header> headers, byte[] body) {
-        response(id, status, headers, body, body == null || body.length > RequestData.MAX_INSPECT_BYTES ? -1 : body.length, true, true);
+        response(id, status, headers, body, body == null ? -1 : body.length, true, true);
     }
     public void response(String id, int status, List<RequestData.Header> headers, byte[] body, long actualResponseBytes) {
         response(id, status, headers, body, actualResponseBytes, true, true);
     }
-    /** Actual native byte scalar is independent of optional bounded inspection/display copies. */
+    /** Actual native byte scalar is independent of the content copy. Nothing is recorded after close. */
     public void response(String id, int status, List<RequestData.Header> headers, byte[] body,
                          long actualResponseBytes, boolean headersComplete, boolean bodyComplete) {
         synchronized (mutation) {
+            if (closed) return;
             if (!closed && !liveProject(state.get().project().id())) reconcileProjectFailure();
             reconcileProjectFailure();
             reapTickets();
             evidence.responseBytes(id, actualResponseBytes);
             evidence.response(id, status, headers, body, headersComplete, bodyComplete);
-            // Learn response-only grants FIRST, then re-mask all existing watcher display state and
-            // its pending flights. Never call a raw UI getter or replace text in serialized JSON.
             Tracked tracked = tickets.remove(id);
-            boolean currentEpoch = tracked != null && tracked.epoch == runtimeEpoch
-                    || Objects.equals(captures.get(id), runtimeEpoch);
-            if (currentEpoch) watcher.refreshDisplay(evidence.displaySanitizer(id));
             if (tracked != null && tracked.epoch == runtimeEpoch) watcher.observe(tracked.ticket, status, actualResponseBytes);
         }
     }
     public void localResponse(String id, byte[] body) {
         synchronized (mutation) {
+            if (closed) return;
             evidence.response(id, 451, List.of(new RequestData.Header("Content-Type", "application/json"),
                     new RequestData.Header("X-Cairn-Guard", "blocked")), body);
-            if (Objects.equals(captures.get(id), runtimeEpoch)) watcher.refreshDisplay(evidence.displaySanitizer(id));
         }
-    }
-    private void rememberCapture(String id) {
-        if (captures.size() >= EvidenceStore.MAX_ENTRIES) captures.remove(captures.keySet().iterator().next());
-        captures.put(id, runtimeEpoch);
     }
     private void reapTickets() {
         long now = nanoTime.getAsLong();
@@ -491,7 +481,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 iterator.remove();
                 watcher.cancel(tracked.ticket);
             } else if (!tracked.expired && now - tracked.started >= tracked.timeout) {
-                // Logical failure is not physical completion. Keep this bounded masked ticket
+                // Logical failure is not physical completion. Keep this bounded ticket
                 // until the real response (or epoch reset), so slow heavy/5xx scalars are observed.
                 watcher.abandon(tracked.ticket);
                 entry.setValue(new Tracked(tracked.ticket, tracked.epoch, tracked.started, tracked.timeout, true));
@@ -587,15 +577,14 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             passthrough = false;
         }
     }
-    /** mutation lock only. Never touches native permits. */
+    /** mutation lock only. Releases every retained original and logical state; never touches native permits. */
     private void resetEpoch() {
         runtimeEpoch++;
         tickets.clear();
-        captures.clear();
         watcher.reset();
         intents.reset();
         listeners.reset();
-        evidence.clearRawUi();
+        evidence.clear();
         new SecureRandom().nextBytes(attributionKey);
     }
     private void reconcileProjectFailure() {
@@ -653,11 +642,15 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 else if (((Number) gating.get("stalled")).longValue() > 0) guard = GuardState.IN_FLIGHT_STALLED;
                 else if (Boolean.TRUE.equals(watching.get("capacityBlocked"))) guard = GuardState.CAPACITY;
                 else if (Boolean.TRUE.equals(watching.get("automaticPause"))) guard = GuardState.OVERLAY_BLOCK;
+                // After a global PAUSE overlay (which the watcher gate reports first), before per-host states.
+                else if (Boolean.TRUE.equals(watching.get("fanoutHistoryEnforcing"))) guard = GuardState.CAPACITY;
                 else if (((Number) watching.get("circuits")).longValue() > 0) guard = GuardState.CIRCUIT_OPEN;
                 else if (((Number) watching.get("overlays")).longValue() > 0) guard = GuardState.OVERLAY_BLOCK;
             }
             result.put("projectId", s.project().id());
-            result.put("projectName", "Current Burp project");
+            // The verified current project's name; never stale metadata from an unverified/old project.
+            result.put("projectName", !closed && lifecycle != GuardState.PROJECT_UNVERIFIED && liveProject(s.project().id())
+                    ? Objects.toString(s.project().name(), "") : "PROJECT_NAME_UNAVAILABLE");
             result.put("revision", s.revision());
             result.put("policyRevision", s.revision());
             result.put("guardState", guard.name());
@@ -686,14 +679,28 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             return Map.copyOf(result);
         }
     }
-    @Override public List<TrafficEntry> traffic() { return evidence.snapshot(); }
+    /** Original-bearing rows of the verified current project only; a read that discovers a change clears them. */
+    @Override public List<TrafficEntry> traffic() { synchronized (mutation) { return evidenceReadable() ? evidence.snapshot() : List.of(); } }
+    /** Same-project policy invalidity still shows its (already project-bound) rows; shutdown/unverified project does not. */
+    private boolean evidenceReadable() {
+        reconcileProjectFailure();
+        if (closed) return false;
+        if (!liveProject(state.get().project().id())) { reconcileProjectFailure(); return false; }
+        return true;
+    }
     @Override public List<ApprovalQueue.Pending> approvals() { return approvals.snapshot(); }
     @Override public boolean decideApproval(String id, boolean allow) { return approvals.decide(id, allow); }
     @Override public void bookmark(String id, boolean value) { evidence.bookmark(id, value); }
-    @Override public String exportJson(List<TrafficEntry> rows) { synchronized (mutation) { return evidence.exportJson(rows); } }
-    @Override public String exportHar(List<TrafficEntry> rows) { synchronized (mutation) { return evidence.exportHar(rows); } }
+    // The read first reconciles a discovered project change/close (which releases old rows), so an
+    // older project's sealed selection can only be rejected, never exported.
+    @Override public String exportJson(List<TrafficEntry> rows) {
+        synchronized (mutation) { evidenceReadable(); return evidence.exportJson(rows); }
+    }
+    @Override public String exportHar(List<TrafficEntry> rows) {
+        synchronized (mutation) { evidenceReadable(); return evidence.exportHar(rows); }
+    }
     @Override public void clearEvidence() {
-        synchronized (mutation) { evidence.clear(); captures.clear(); watcher.clearEvidence(); }
+        synchronized (mutation) { evidence.clear(); watcher.clearEvidence(); }
     }
     @Override public List<ResponseWatcher.Overlay> overlays() {
         synchronized (mutation) { verifyReadProject(); return watcher.overlays(); }
@@ -719,9 +726,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     }
     @Override public String exportIncident(long fromMillis, long toMillis) {
         synchronized (mutation) {
-            verifyReadProject();
-            // Response discovery and watcher display refresh share this lock with every display/
-            // export projection; an export cannot race between learning and re-masking a secret.
+            evidenceReadable(); // a discovered change/close has already reset the watcher's history
             return watcher.incidentJson(fromMillis, toMillis);
         }
     }
@@ -740,6 +745,291 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     @Override public String rawRequest(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawRequest(id) : null; } }
     @Override public String rawResponse(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawResponse(id) : null; } }
     @Override public String rawUrl(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawUrl(id) : null; } }
+    /** Opaque, instance-issued candidate draft authority. Holds identities and a keyed seal, never raw traffic. */
+    private static final class CandidateSource implements GuardUiAccess.CandidateSource {
+        private final Object owner;
+        private final String projectId;
+        private final long runtimeEpoch;
+        private final long rawGeneration;
+        private final String candidateId;
+        private final String source;
+        private final String seal;
+        private CandidateSource(Object owner, String projectId, long runtimeEpoch, long rawGeneration,
+                                String candidateId, String source, String seal) {
+            this.owner = owner; this.projectId = projectId; this.runtimeEpoch = runtimeEpoch; this.rawGeneration = rawGeneration;
+            this.candidateId = candidateId; this.source = source; this.seal = seal;
+        }
+        @Override public String toString() { return "CandidateSource[opaque]"; }
+    }
+
+    @Override public List<HumanCandidate> humanCandidates() {
+        synchronized (mutation) {
+            verifyReadProject();
+            boolean current = rawProjectCurrent();
+            List<HumanCandidate> out = new java.util.ArrayList<>();
+            for (ResponseWatcher.SourcedCandidate sc : watcher.sourcedCandidates()) {
+                EvidenceStore.HumanRoute route = current ? evidence.humanRoute(sc.source()) : null;
+                if (route == null) {
+                    out.add(new HumanCandidate(sc.candidate(), "", "", 0, "", null, "ORIGINAL_UNAVAILABLE", null,
+                            "ORIGINAL_UNAVAILABLE", null));
+                    continue;
+                }
+                String path = pathPart(route.rawTarget());
+                String ruleUrl = null, ruleUnavailable = null;
+                try {
+                    if (!path.startsWith("/")) ruleUnavailable = "NON_ORIGIN_FORM_TARGET";
+                    else ruleUrl = serviceUrl(route) + path;
+                } catch (RuntimeException e) { ruleUnavailable = "INVALID_ROUTE"; }
+                String limitPath = null, limitUnavailable = null;
+                if (route.exactPath() == null) limitUnavailable = "ENCODED_OR_AMBIGUOUS_ROUTE";
+                else if (!strictByteRoute(route)) limitUnavailable = "INVALID_ROUTE";
+                else limitPath = route.exactPath();
+                CandidateSource token = new CandidateSource(identity, state.get().project().id(), runtimeEpoch,
+                        evidence.rawGeneration(), sc.candidate().id(), sc.source(), seal(route));
+                out.add(new HumanCandidate(sc.candidate(), route.scheme(), route.host(), route.port(), path, ruleUrl,
+                        ruleUnavailable, limitPath, limitUnavailable, token));
+            }
+            return List.copyOf(out);
+        }
+    }
+    @Override public List<HumanOverlay> humanOverlays() {
+        synchronized (mutation) {
+            verifyReadProject();
+            boolean current = rawProjectCurrent();
+            List<HumanOverlay> out = new java.util.ArrayList<>();
+            for (ResponseWatcher.SourcedOverlay so : watcher.sourcedOverlays()) {
+                if (so.source() == null) { out.add(new HumanOverlay(so.overlay(), "", "", "NO_SERVICE_SOURCE")); continue; }
+                EvidenceStore.HumanRoute route = current ? evidence.humanRoute(so.source()) : null;
+                if (route == null) out.add(new HumanOverlay(so.overlay(), "", "", "ORIGINAL_UNAVAILABLE"));
+                else out.add(new HumanOverlay(so.overlay(), route.host(), so.pathScoped() ? pathPart(route.rawTarget()) : "", null,
+                        overlayException(so, route)));
+            }
+            return List.copyOf(out);
+        }
+    }
+    /** Opaque overlay-exception authority: identities plus a keyed route seal, never raw traffic. */
+    private static final class OverlaySourceToken implements GuardUiAccess.OverlaySource {
+        private final Object owner;
+        private final String projectId;
+        private final long runtimeEpoch;
+        private final long rawGeneration;
+        private final String overlayId;
+        private final String kind;
+        private final String source;
+        private final String seal;
+        private OverlaySourceToken(Object owner, String projectId, long runtimeEpoch, long rawGeneration,
+                                   String overlayId, String kind, String source, String seal) {
+            this.owner = owner; this.projectId = projectId; this.runtimeEpoch = runtimeEpoch; this.rawGeneration = rawGeneration;
+            this.overlayId = overlayId; this.kind = kind; this.source = source; this.seal = seal;
+        }
+        @Override public String toString() { return "OverlaySource[opaque]"; }
+    }
+    private static String detectorKind(String reason) {
+        return switch (reason) {
+            case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "HEAVY";
+            case "CIRCUIT_OPEN" -> "CIRCUIT";
+            case "FANOUT_SUSPECTED" -> "FANOUT";
+            default -> null;
+        };
+    }
+    private OverlayException overlayException(ResponseWatcher.SourcedOverlay so, EvidenceStore.HumanRoute route) {
+        String kind = detectorKind(so.overlay().reason());
+        if (kind == null) return new OverlayException("NONE", "", "", 0, "", "NO_SERVICE_SOURCE", null);
+        if (route.exactPath() == null || !strictByteRoute(route))
+            return new OverlayException(kind, route.scheme(), route.host(), route.port(), pathPart(route.rawTarget()), "ENCODED_OR_AMBIGUOUS_ROUTE", null);
+        if (GuardUiAccess.detectorExceptionPresent(state.get().config(), kind, route.scheme(), route.host(), route.port(), route.exactPath()))
+            return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), "ALREADY_EXCEPTED", null);
+        try {
+            GuardUiAccess.withDetectorException(state.get().config(), kind, route.scheme(), route.host(), route.port(), route.exactPath());
+        } catch (IllegalStateException e) {
+            return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), "EXCEPTION_TABLE_FULL", null);
+        }
+        return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), null,
+                new OverlaySourceToken(identity, state.get().project().id(), runtimeEpoch, evidence.rawGeneration(),
+                        so.overlay().id(), kind, so.source(), seal(route)));
+    }
+    /** Current overlay of the same id, kind and source whose retained original still has the sealed exact route. */
+    private EvidenceStore.HumanRoute currentOverlayRoute(GuardUiAccess.OverlaySource opaque) {
+        if (!(opaque instanceof OverlaySourceToken token) || token.owner != identity || closed || !rawProjectCurrent()
+                || !token.projectId.equals(state.get().project().id()) || token.runtimeEpoch != runtimeEpoch
+                || token.rawGeneration != evidence.rawGeneration()) return null;
+        boolean present = watcher.sourcedOverlays().stream().anyMatch(o -> o.overlay().id().equals(token.overlayId)
+                && token.source.equals(o.source()) && token.kind.equals(detectorKind(o.overlay().reason())));
+        EvidenceStore.HumanRoute route = present ? evidence.humanRoute(token.source) : null;
+        return route != null && route.exactPath() != null && seal(route).equals(token.seal) ? route : null;
+    }
+    @Override public boolean overlayExceptionCurrent(GuardUiAccess.OverlaySource source) {
+        synchronized (mutation) { return currentOverlayRoute(source) != null; }
+    }
+    @Override public void updateConfig(GuardConfig config, String expectedProjectId, long expectedRevision,
+                                       GuardUiAccess.OverlaySource source) {
+        synchronized (mutation) {
+            EvidenceStore.HumanRoute route = currentOverlayRoute(source);
+            if (route == null) throw new IllegalStateException("OVERLAY_EXCEPTION_STALE");
+            GuardConfig expected;
+            try {
+                expected = PolicyCodec.toV2(GuardUiAccess.withDetectorException(state.get().config(), ((OverlaySourceToken) source).kind,
+                        route.scheme(), route.host(), route.port(), route.exactPath()));
+            } catch (IllegalStateException e) { throw new IllegalStateException("OVERLAY_EXCEPTION_STALE"); }
+            // Exactly the selected detector's route exception relative to the CURRENT policy; nothing else.
+            if (!expected.equals(PolicyCodec.toV2(config))) throw new IllegalStateException("OVERLAY_EXCEPTION_STALE");
+            updateConfig(config, expectedProjectId, expectedRevision);
+        }
+    }
+    @Override public void updateConfig(GuardConfig config, String expectedProjectId, long expectedRevision,
+                                       GuardUiAccess.CandidateSource opaque, boolean byteLimit) {
+        synchronized (mutation) {
+            // Authoritative final source check, after every human confirmation and adjacent to the CAS save.
+            if (!(opaque instanceof CandidateSource token) || token.owner != identity || closed || !rawProjectCurrent()
+                    || !token.projectId.equals(state.get().project().id()) || token.runtimeEpoch != runtimeEpoch
+                    || token.rawGeneration != evidence.rawGeneration()) throw new IllegalStateException("CANDIDATE_STALE");
+            boolean present = watcher.sourcedCandidates().stream()
+                    .anyMatch(c -> c.candidate().id().equals(token.candidateId) && token.source.equals(c.source()));
+            EvidenceStore.HumanRoute route = present ? evidence.humanRoute(token.source) : null;
+            if (route == null || !seal(route).equals(token.seal)) throw new IllegalStateException("CANDIDATE_STALE");
+            if (byteLimit) {
+                String host;
+                try { host = PolicyEngine.canonicalHost(route.host()); } catch (RuntimeException e) { throw new IllegalStateException("CANDIDATE_STALE"); }
+                boolean matches = route.exactPath() != null && config.limits().heavyPathLimits().stream().anyMatch(l ->
+                        l.scheme().equals(route.scheme()) && l.port() == route.port() && l.path().equals(route.exactPath())
+                                && sameHost(l.host(), host));
+                if (!matches) throw new IllegalStateException("CANDIDATE_STALE");
+            }
+            updateConfig(config, expectedProjectId, expectedRevision);
+        }
+    }
+    private static boolean sameHost(String a, String canonical) {
+        try { return PolicyEngine.canonicalHost(a).equals(canonical); } catch (RuntimeException e) { return false; }
+    }
+    private static String pathPart(String rawTarget) {
+        int question = rawTarget.indexOf('?');
+        return question < 0 ? rawTarget : rawTarget.substring(0, question);
+    }
+    private static String serviceUrl(EvidenceStore.HumanRoute route) {
+        String host = PolicyEngine.canonicalHost(route.host());
+        if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
+        boolean defaultPort = route.scheme().equals("https") ? route.port() == 443 : route.port() == 80;
+        return route.scheme() + "://" + host + (defaultPort ? "" : ":" + route.port());
+    }
+    private static boolean strictByteRoute(EvidenceStore.HumanRoute route) {
+        try {
+            GuardConfig.Limits d = GuardConfig.defaults().limits();
+            new PolicyEngine().validate(new GuardConfig(2, List.of(), List.of(), List.of(), Mode.BLOCK,
+                    new GuardConfig.Limits(d.globalRps(), d.perHostRps(), d.hostRps(), d.maxConcurrent(), d.maxQueued(),
+                            d.queueTimeoutMillis(), d.approvalTimeoutMillis(), d.requestTimeoutMillis(), d.perPathMaxResponseBytes(),
+                            d.autoBlockMillis(), null, null, 0, false, List.of(),
+                            List.of(new GuardConfig.PathByteLimit(route.scheme(), route.host(), route.port(), route.exactPath(), 0)), List.of(), true, List.of())));
+            return true;
+        } catch (RuntimeException e) { return false; }
+    }
+    private String seal(EvidenceStore.HumanRoute route) {
+        String value = route.scheme() + "\n" + route.host() + "\n" + route.port() + "\n"
+                + route.rawTarget() + "\n" + route.exactPath() + "\n" + route.evidenceId();
+        // hashLabel is ASCII-only: encode every UTF-16 code unit losslessly first.
+        StringBuilder exact = new StringBuilder(value.length() * 4);
+        for (int i = 0; i < value.length(); i++) exact.append(HexFormat.of().toHexDigits(value.charAt(i)));
+        return hashLabel("candidate-route", exact.toString());
+    }
+
+    /** Explicitly consented HUMAN export snapshot: validated under the lock; serialization/disk happen outside. */
+    private static final class HumanExport implements GuardUiAccess.HumanExport {
+        private final Object owner;
+        private final String projectId;
+        private final long revision;
+        private final long runtimeEpoch;
+        private final long rawGeneration;
+        private final EvidenceStore.HumanEvidence evidence;
+        private final boolean har;
+        private final Map<String, Object> incident;
+        private final Map<String, Object> snapshot;
+        // Private, job-local, deduplicated source references of the incident originals actually used; never
+        // serialized, no native objects, no persistent cache.
+        private final java.util.Set<String> usedSources;
+        private HumanExport(Object owner, String projectId, long revision, long runtimeEpoch, long rawGeneration,
+                            EvidenceStore.HumanEvidence evidence, boolean har, Map<String, Object> incident, Map<String, Object> snapshot,
+                            java.util.Set<String> usedSources) {
+            this.owner = owner; this.projectId = projectId; this.revision = revision; this.runtimeEpoch = runtimeEpoch;
+            this.rawGeneration = rawGeneration; this.evidence = evidence; this.har = har; this.incident = incident; this.snapshot = snapshot;
+            this.usedSources = java.util.Set.copyOf(usedSources);
+        }
+        /** UTF-8 bytes (no size cap); call OFF the EDT and outside every runtime lock. */
+        @Override public byte[] serialize() {
+            if (incident != null) return EvidenceStore.jsonBytes(incident);
+            return har ? evidence.har(snapshot) : evidence.json(snapshot);
+        }
+        @Override public String toString() { return "HumanExport[opaque]"; }
+    }
+    @Override public GuardUiAccess.HumanExport humanExport(List<String> evidenceIds, boolean har) {
+        synchronized (mutation) {
+            if (!rawProjectCurrent()) throw new IllegalStateException("PROJECT_UNAVAILABLE");
+            State s = state.get();
+            EvidenceStore.HumanEvidence snapshot = evidence.humanEvidence(evidenceIds);
+            return new HumanExport(identity, s.project().id(), s.revision(), runtimeEpoch, evidence.rawGeneration(),
+                    snapshot, har, null, exportSnapshot(s, snapshot.size()), java.util.Set.of());
+        }
+    }
+    @Override public GuardUiAccess.HumanExport humanIncident(long fromMillis, long toMillis) {
+        synchronized (mutation) {
+            if (!rawProjectCurrent()) throw new IllegalStateException("PROJECT_UNAVAILABLE");
+            State s = state.get();
+            Map<String, Object> safe = watcher.incidentDocument(fromMillis, toMillis, true);
+            java.util.Set<String> used = new java.util.LinkedHashSet<>();
+            Map<String, Object> document = new LinkedHashMap<>();
+            document.put("format", "cairn-human-incident");
+            document.put("formatVersion", 1);
+            document.put("_cairnGuard", EvidenceStore.humanProvenance(exportSnapshot(s, -1)));
+            for (Map.Entry<String, Object> entry : safe.entrySet()) {
+                Object value = entry.getValue();
+                if (entry.getKey().equals("events") || entry.getKey().equals("top5xx") || entry.getKey().equals("topBytes"))
+                    value = ((List<?>) value).stream().map(row -> originalIncidentRow((Map<?, ?>) row,
+                            !entry.getKey().equals("events") || "HEAVY_ENDPOINT_AUTO_BLOCKED".equals(((Map<?, ?>) row).get("kind")), used)).toList();
+                document.put(entry.getKey(), value);
+            }
+            return new HumanExport(identity, s.project().id(), s.revision(), runtimeEpoch, evidence.rawGeneration(),
+                    null, false, document, null, used);
+        }
+    }
+    /** Resolve one row by ITS OWN opaque source; never a display-string join or a later source. */
+    private Map<String, Object> originalIncidentRow(Map<?, ?> row, boolean pathScoped, java.util.Set<String> used) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> e : row.entrySet()) {
+            String key = String.valueOf(e.getKey());
+            if (!key.equals("_source") && !key.equals("host") && !key.equals("path") && !key.equals("policyUrl")) out.put(key, e.getValue());
+        }
+        Object source = row.get("_source");
+        EvidenceStore.HumanRoute route = source instanceof String ref && !ref.isEmpty() ? evidence.humanRoute(ref) : null;
+        if (route == null) {
+            out.put("host", null);
+            out.put("path", null);
+            out.put("originalUnavailable", "NOT_RETAINED_OR_CLEARED");
+        } else {
+            used.add((String) source);
+            out.put("service", Map.of("scheme", route.scheme(), "host", route.host(), "port", route.port()));
+            out.put("host", route.host());
+            out.put("path", pathScoped ? pathPart(route.rawTarget()) : "");
+        }
+        return out;
+    }
+    private Map<String, Object> exportSnapshot(State s, int entries) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("projectId", s.project().id());
+        snapshot.put("projectName", s.project().name() == null ? "" : s.project().name());
+        snapshot.put("revision", s.revision());
+        snapshot.put("createdAt", java.time.Instant.now().toString());
+        if (entries >= 0) snapshot.put("selectedEntries", entries);
+        snapshot.put("consented", "EXPLICIT_HUMAN_CONFIRMATION");
+        return snapshot;
+    }
+    @Override public boolean humanExportCurrent(GuardUiAccess.HumanExport opaque) {
+        synchronized (mutation) {
+            return opaque instanceof HumanExport export && export.owner == identity && rawProjectCurrent()
+                    && export.projectId.equals(state.get().project().id()) && export.revision == state.get().revision()
+                    && export.runtimeEpoch == runtimeEpoch && export.rawGeneration == evidence.rawGeneration()
+                    // Every used original must still be the retained one: memory-only check, under the lock.
+                    && evidence.humanOriginalsRetained(export.evidence, export.usedSources);
+        }
+    }
+
     @Override public Map<String, Object> rawCaptureInfo(String id) {
         synchronized (mutation) { return rawProjectCurrent() ? evidence.rawCaptureInfo(id) : Map.of("available", false); }
     }
@@ -788,8 +1078,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             lifecycle = GuardState.SHUTDOWN;
             passthrough = false;
             note = "SHUTDOWN";
-            listeners.reset();
-            evidence.clearRawUi();
+            resetEpoch(); // terminal logical cleanup of originals/tickets/watcher; physical permits stay adapter-owned
             approvals.close();
             gate.close();
         }

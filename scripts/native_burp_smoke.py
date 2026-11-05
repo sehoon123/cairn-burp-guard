@@ -195,7 +195,7 @@ class Run:
             ("multipart", b"--fixture\r\nopaque\r\n--fixture--", {"Content-Type": "multipart/form-data; boundary=fixture"}),
             ("encoded", b"not-decompressed-by-guard", {"Content-Encoding": "gzip", "Content-Type": "text/plain"}),
             ("malformed JSON", b'{"broken":', {"Content-Type": "application/json"}),
-            ("optional capture overflow", b"C" * (1024 * 1024 + 1), {"Content-Type": "application/octet-stream"}),
+            ("body above the policy inspection size", b"C" * (1024 * 1024 + 1), {"Content-Type": "application/octet-stream"}),
         ]:
             self.case("same native payload: " + name,
                       lambda b=body, h=headers: self.assert_arrives(method="POST", body=b, headers=h))
@@ -552,24 +552,48 @@ class Run:
                              "block_category": reason, "arrivals": len(self.state.snapshot())})
 
 
+HUMAN_INCIDENT_FORMAT = "cairn-human-incident"
+
+
 def validate_incident(document):
-    """Offline shape/window/retention checks of a human-exported REDACTED incident, no Burp API."""
+    """Offline shape/window/retention checks of an exported incident, no Burp API.
+
+    Two distinct formats are dispatched EXPLICITLY, never by generic acceptance:
+    - legacy-shaped incident (no "format" key): the controller's incident JSON; display fields are the
+      ORIGINAL actual-service host/path (plaintext, nothing is masked);
+    - "cairn-human-incident" v1: explicitly consented HUMAN_ORIGINAL plaintext; originals are allowed,
+      a missing original must be categorical (null + originalUnavailable).
+    Neither format has an input-size, event-count, string-length or 24-hour window limit (retention mode is
+    UNTIL_CLEAR_PROJECT_OR_UNLOAD). An actual private "_source" object KEY is rejected structurally at any
+    depth; string VALUES (including literal "_source", "[REDACTED]" or JSON-looking original text) are
+    preserved and never searched or reparsed. Offline shape validation cannot authenticate that a value is
+    the original capture. The top5xx/topBytes lists keep their documented top-20 aggregate format.
+    """
     assert isinstance(document, dict)
+    human = "format" in document
+    if human:
+        assert document["format"] == HUMAN_INCIDENT_FORMAT, "unknown incident format"
+        assert type(document["formatVersion"]) is int and document["formatVersion"] == 1
+        provenance = document["_cairnGuard"]
+        assert isinstance(provenance, dict) and provenance["exportMode"] == "HUMAN_ORIGINAL"
+        assert isinstance(provenance["warning"], str) and provenance["warning"].startswith("PLAINTEXT_ORIGINALS")
+        assert provenance["completeWireCapture"] is False
+        assert isinstance(provenance["snapshot"], dict)
+    else:
+        assert "_cairnGuard" not in document and "formatVersion" not in document
     window = document["window"]
     assert set(window) == {"from", "to"}
     assert all(type(window[k]) is int for k in window)
-    assert 0 < window["to"] - window["from"] <= 86_400_000
+    assert window["to"] > window["from"]
     events = document["events"]
-    assert isinstance(events, list) and len(events) <= 4096
+    assert isinstance(events, list)
     for event in events:
         assert event["kind"] in {"HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN", "FANOUT_SUSPECTED"}
         assert type(event["ts"]) is int and window["from"] <= event["ts"] < window["to"]
         for key in ("bytes", "5xx", "distinctPaths"):
             if key in event:
                 assert type(event[key]) is int and event[key] >= 0
-        for key in ("path", "host"):
-            if key in event:
-                assert isinstance(event[key], str) and len(event[key]) <= 16_384
+        _route_fields(event, human)
     for key in ("top5xx", "topBytes"):
         assert isinstance(document[key], list) and len(document[key]) <= 20
         for candidate in document[key]:
@@ -579,15 +603,20 @@ def validate_incident(document):
             assert all(char in "0123456789abcdef" for char in identifier)
             for scalar in ("maxBytes", "p95Bytes", "count", "lastSeen", "count5xx"):
                 assert type(candidate[scalar]) is int and candidate[scalar] >= 0
-            for text in ("host", "path", "policyUrl"):
-                assert isinstance(candidate[text], str) and len(candidate[text]) <= 16_384
+            if human:
+                assert "policyUrl" not in candidate, "human rows carry originals, not the safe policy URL"
+                _route_fields(candidate, True)
+            else:
+                for text in ("host", "path", "policyUrl"):
+                    assert isinstance(candidate[text], str)
     for flag in ("complete", "truncated", "approximate"):
         assert type(document[flag]) is bool
     assert document["approximate"] is True
     assert document["complete"] is not document["truncated"]
     assert isinstance(document["approximation"], dict)
     retention = document["retention"]
-    assert retention["maxMillis"] == 86_400_000 and type(retention["startedAt"]) is int
+    assert retention["mode"] == "UNTIL_CLEAR_PROJECT_OR_UNLOAD" and "maxMillis" not in retention
+    assert type(retention["startedAt"]) is int
     for flag in ("eventsComplete", "observationsComplete", "eventsDropped", "observationsDropped", "clockRegressed"):
         assert type(retention[flag]) is bool
     # Epoch-wide conservative fan-out history disclosure: any omission makes the incident incomplete.
@@ -595,10 +624,38 @@ def validate_incident(document):
     assert type(omitted) is int and omitted >= 0
     assert type(document["fanoutHistoryComplete"]) is bool and document["fanoutHistoryComplete"] is (omitted == 0)
     assert document["fanoutHistoryComplete"] or not document["complete"]
-    encoded = json.dumps(document)
-    for secret in (SYNTHETIC_AUTH, SYNTHETIC_COOKIE, "synthetic-native-password", "synthetic-native-response"):
-        assert secret not in encoded, "Synthetic secret must not be in exported incident"
-    return {"events": len(events), "top5xx": len(document["top5xx"]), "topBytes": len(document["topBytes"])}
+    pending = [document]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            assert "_source" not in node, "opaque source references must never reach files"
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    result = {"events": len(events), "top5xx": len(document["top5xx"]), "topBytes": len(document["topBytes"])}
+    if human:
+        result["format"] = HUMAN_INCIDENT_FORMAT
+        result["originalsUnavailable"] = sum(1 for row in events + document["top5xx"] + document["topBytes"]
+                                             if "originalUnavailable" in row)
+    return result
+
+
+def _route_fields(row, human):
+    if not human:
+        for key in ("path", "host"):
+            if key in row:
+                assert isinstance(row[key], str)
+        return
+    assert "host" in row and "path" in row
+    if "originalUnavailable" in row:
+        assert row["host"] is None and row["path"] is None and "service" not in row
+        assert isinstance(row["originalUnavailable"], str) and row["originalUnavailable"]
+    else:
+        assert isinstance(row["host"], str) and row["host"]
+        assert isinstance(row["path"], str)
+        service = row["service"]
+        assert set(service) == {"scheme", "host", "port"} and service["scheme"] in {"http", "https"}
+        assert type(service["port"]) is int and 1 <= service["port"] <= 65535 and service["host"] == row["host"]
 
 
 def main():
@@ -611,7 +668,7 @@ def main():
     parser.add_argument("--expected-concurrent", default=5, type=int)
     parser.add_argument("--unselected-proxy-port", default=8081, type=int)
     parser.add_argument("--open-seconds", default=1.0, type=float, help="Must match human circuit open duration;1s in disposable test profile")
-    parser.add_argument("--incident-file", help="Human-exported redacted incident JSON, checked offline only")
+    parser.add_argument("--incident-file", help="Exported incident JSON (plaintext originals; legacy-shaped or cairn-human-incident v1), checked offline only")
     parser.add_argument("--https", action="store_true")
     parser.add_argument("--fixture-cert")
     parser.add_argument("--fixture-key")
@@ -623,9 +680,7 @@ def main():
         if not args.incident_file:
             parser.error("incident phase needs --incident-file; no fixture/client is started")
         with open(args.incident_file, "rb") as source:
-            content = source.read(4 * 1024 * 1024 + 1)
-        if len(content) > 4 * 1024 * 1024:
-            parser.error("incident input exceeds bounded4MiB")
+            content = source.read()  # no input-size limit: the exporter has no output cap either
         print(json.dumps({"offline_incident_schema": "PASS", **validate_incident(json.loads(content))}))
         return
     if not 1 <= args.open_seconds <= 3600 or any(not 1 <= p <= 65535 for p in

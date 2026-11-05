@@ -1,7 +1,7 @@
 plugins { id 'java' }
 
 group = 'dev.cairnguard'
-version = '0.1.0-SNAPSHOT'
+version = '0.2.0'
 repositories { mavenCentral() }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
@@ -45,8 +45,34 @@ jar {
     from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'module-info.class', 'META-INF/versions/**/module-info.class'
     manifest { attributes('Implementation-Title': 'Cairn Proxy Guard (independent)', 'Implementation-Version': project.version, 'Burp-Extension-Class': 'dev.cairnguard.GuardExtension') }
-    from(files('NOTICE', 'LICENSE')) { into 'META-INF' }
+    // Unique entries: root META-INF/LICENSE and NOTICE belong to bundled upstream libraries (first wins).
+    from(files('NOTICE', 'LICENSE')) { into 'META-INF/cairn-proxy-guard' }
     from('legal') { into 'META-INF/legal' }
+    doLast {
+        def jarFile = new java.util.zip.ZipFile(archiveFile.get().asFile)
+        try {
+            def read = { String entry ->
+                def e = jarFile.getEntry(entry)
+                if (e == null) throw new GradleException("JAR legal assertion: missing ${entry}")
+                jarFile.getInputStream(e).bytes
+            }
+            ['LICENSE', 'NOTICE'].each { name ->
+                if (!java.util.Arrays.equals(read("META-INF/cairn-proxy-guard/${name}"), file(name).bytes))
+                    throw new GradleException("JAR legal assertion: project ${name} entry differs from repository file")
+            }
+            if (!new String(read('META-INF/cairn-proxy-guard/LICENSE'), 'UTF-8').contains('MIT License'))
+                throw new GradleException('JAR legal assertion: project LICENSE is not the MIT text')
+            // Upstream root notices must stay upstream, and every bundled legal copy must be intact.
+            if (!new String(read('META-INF/LICENSE'), 'UTF-8').contains('Apache License'))
+                throw new GradleException('JAR legal assertion: upstream root META-INF/LICENSE was replaced')
+            if (java.util.Arrays.equals(read('META-INF/NOTICE'), file('NOTICE').bytes))
+                throw new GradleException('JAR legal assertion: upstream root META-INF/NOTICE was replaced')
+            fileTree('legal').files.each { f ->
+                if (!java.util.Arrays.equals(read("META-INF/legal/${f.name}"), f.bytes))
+                    throw new GradleException("JAR legal assertion: META-INF/legal/${f.name} differs")
+            }
+        } finally { jarFile.close() }
+    }
 }
 tasks.withType(AbstractArchiveTask).configureEach { preserveFileTimestamps = false; reproducibleFileOrder = true }
 dependencyLocking { lockAllConfigurations() }

@@ -15,7 +15,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
 /**
- * Bounded human approvals containing only opaque references to already-masked evidence, never
+ * Bounded human approvals containing only opaque references to retained evidence, never
  * native requests, URLs, headers or bodies. No rate permit is acquired or held by this class.
  * All waits are caller-thread condition waits; there are no watcher/timer threads.
  */

@@ -52,13 +52,13 @@ class EvidenceStoreTest {
         assertThrows(UnsupportedOperationException.class, () -> store.stats().clear());
     }
 
-    @Test void masksCredentialsAcrossMetadataHeadersBodiesAndExportsIncludingResponses() throws Exception {
+    @Test void credentialsMetadataHeadersBodiesAndResponsesAreKeptAsOriginalsWhileReasonsStayCategorical() throws Exception {
         String secret = "fixture-credential-needle";
         EvidenceStore store = new EvidenceStore();
-        RequestData request = request("https://user:" + secret + "@fixture.test/echo/" + secret + "?api_key=" + secret + "&echo=" + secret,
-                List.of(new Header("Authorization", "Bearer " + secret), new Header("Cookie", "sid=" + secret),
-                        new Header("X-Debug", "echo " + secret), new Header("Content-Type", "application/json")),
-                "{\"password\":\"" + secret + "\",\"echo\":\"prefix-" + secret + "-suffix\",\"ok\":\"safe\"}");
+        String url = "https://user:" + secret + "@fixture.test/echo/" + secret + "?api_key=" + secret + "&echo=" + secret;
+        String body = "{\"password\":\"" + secret + "\",\"echo\":\"prefix-" + secret + "-suffix\",\"ok\":\"safe\"}";
+        RequestData request = request(url, List.of(new Header("Authorization", "Bearer " + secret), new Header("Cookie", "sid=" + secret),
+                        new Header("X-Debug", "echo " + secret), new Header("Content-Type", "application/json")), body);
         Decision decision = new Decision(Mode.BLOCK, "exception: " + secret,
                 List.of(new Decision.RuleHit("id-" + secret, "rule " + secret, Mode.BLOCK)));
         String id = store.begin("project-" + secret, "Review " + secret, request, decision, 2);
@@ -66,48 +66,25 @@ class EvidenceStoreTest {
         store.response(id, 451, List.of(new Header("Set-Cookie", "session=" + secret), new Header("X-Echo", secret),
                 new Header("Content-Type", "application/json")), ("{\"echo\":\"" + secret + "\",\"ok\":true}").getBytes(StandardCharsets.UTF_8));
         TrafficEntry entry = only(store);
-        String all = Json.write(entry) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot());
-        assertFalse(all.contains(secret), all);
-        assertFalse(entry.url().contains("user:"));
-        assertTrue(entry.request().contains("[REDACTED]"));
+        assertEquals(url, entry.url());
+        assertEquals("Review " + secret, entry.projectName());
+        assertEquals("rule " + secret, entry.hits().getFirst().name());
+        assertTrue(entry.request().contains("Authorization: Bearer " + secret));
+        assertTrue(entry.response().contains("Set-Cookie: session=" + secret));
+        assertEquals(body, entry.requestCapture().body(), "the original body text is not re-rendered");
+        assertEquals("UTF8_TEXT", entry.requestCapture().bodyEncoding());
+        for (String export : List.of(store.exportJson(store.snapshot()), store.exportHar(store.snapshot())))
+            assertTrue(export.contains("session=" + secret) && export.contains("prefix-" + secret + "-suffix"));
+        assertFalse(Json.write(store.stats()).contains(secret), "counters stay payload-free");
         assertEquals("OUTCOME_RECORDED", entry.reason());
+        assertFalse(store.exportJson(store.snapshot()).contains("exception: "), "decision reason text is categorical, not copied");
         assertEquals("BLOCKED", entry.disposition());
         assertEquals(451, entry.statusCode());
         assertEquals(1, count(store, "blocked"));
         assertEquals(0, count(store, "forwarded"));
         assertEquals(1, count(store, "localResponses"));
         assertEquals(0, count(store, "upstreamResponses"));
-        assertDoesNotThrow(() -> URI.create(entry.url()));
         assertEquals("safe", Json.MAPPER.readTree(entry.requestCapture().body()).path("ok").asText());
-    }
-
-    @Test void newlyIssuedGrantValuesAreMaskedEvenWithoutARequestHeaderFingerprint() {
-        for (String name : List.of("grant", "brokerGrant", "grant_value", "x-broker-grant")) {
-            String issued = "synthetic-issued-grant-819753";
-            EvidenceStore store = new EvidenceStore();
-            String id = store.begin("local", "Synthetic", request("https://fixture.test/issue", List.of(), ""), ALLOW, 1);
-            store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
-                    ("{\"" + name + "\":\"" + issued + "\",\"echo\":\"" + issued + "\"}").getBytes(StandardCharsets.UTF_8));
-            String captures = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot());
-            assertFalse(captures.contains(issued)); assertTrue(captures.contains("[REDACTED]"));
-        }
-    }
-
-    @Test void brokerGrantIsMaskedAndCannotLeakViaReflectionsOrEitherExport() {
-        for (String headerName : List.of("X-Broker-Grant", "x-broker-grant", "X-BROKER-GRANT")) {
-            String grant = "synthetic-broker-grant-value-753951";
-            EvidenceStore store = new EvidenceStore();
-            String id = store.begin("local", "Synthetic", request("https://fixture.test/echo/" + grant,
-                    List.of(new Header(headerName, grant), new Header("Authorization", "Bearer synthetic-auth-value"),
-                            new Header("Cookie", "sid=synthetic-cookie-value"), new Header("Content-Type", "application/json")),
-                    "{\"echo\":\"" + grant + "\"}"), ALLOW, 1);
-            store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
-                    ("{\"echo\":\"" + grant + "\"}").getBytes(StandardCharsets.UTF_8));
-            String captures = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot());
-            assertFalse(captures.contains(grant));
-            assertFalse(captures.contains("synthetic-auth-value")); assertFalse(captures.contains("synthetic-cookie-value"));
-            assertTrue(captures.contains("[REDACTED]"));
-        }
     }
 
     static java.util.stream.Stream<String> nativeDenialReasons() {
@@ -136,7 +113,7 @@ class EvidenceStoreTest {
         assertFalse(store.exportHar(store.snapshot()).contains("fixture-secret-not-a-category"));
     }
 
-    @Test void responseCredentialDiscoveryRemasksEarlierCopiesWithoutRetainingPlaintextSecrets() {
+    @Test void responseValuesNeverRemaskEarlierCopiesAndStaleSelectionsExportTheCurrentOriginalRow() {
         String secret = "response-only-fixture-needle";
         EvidenceStore store = new EvidenceStore();
         String id = store.begin(secret, "review " + secret,
@@ -144,26 +121,10 @@ class EvidenceStoreTest {
         List<TrafficEntry> stale = store.snapshot();
         store.response(id, 200, List.of(new Header("Set-Cookie", "sid=" + secret), new Header("Content-Type", "application/json")),
                 ("{\"echo\":\"" + secret + "\"}").getBytes(StandardCharsets.UTF_8));
-        assertFalse(Json.write(only(store)).contains(secret));
-        assertFalse(store.exportHar(store.snapshot()).contains(secret));
-        assertFalse(store.exportJson(stale).contains(secret));
-        assertFalse(store.exportHar(stale).contains(secret));
-    }
-
-    @Test void responseSecretsRemaskEscapedStructuredValuesNotJustSerializedSubstrings() throws Exception {
-        String secret = "fixture\nmultiline-value";
-        EvidenceStore store = new EvidenceStore();
-        String id = store.begin("local", "review", request("https://fixture.test/", List.of(new Header("Content-Type", "application/json")),
-                "{\"echo\":\"fixture\\nmultiline-value\",\"safe\":\"visible\"}"), ALLOW, 1);
-        List<TrafficEntry> stale = store.snapshot();
-        store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
-                "{\"password\":\"fixture\\nmultiline-value\"}".getBytes(StandardCharsets.UTF_8));
-        JsonNode body = Json.MAPPER.readTree(only(store).requestCapture().body());
-        assertEquals(Redactor.REDACTED, body.path("echo").asText());
-        assertEquals("visible", body.path("safe").asText());
-        assertFalse(store.exportJson(stale).contains("multiline-value"));
-        assertFalse(store.exportHar(stale).contains("multiline-value"));
-        assertFalse(only(store).request().contains(secret));
+        assertEquals("https://fixture.test/" + secret, only(store).url());
+        assertTrue(only(store).request().contains("X-Echo: " + secret));
+        assertTrue(store.exportJson(stale).contains("sid=" + secret), "a stale seal exports the current retained row");
+        assertTrue(store.exportHar(stale).contains("sid=" + secret));
     }
 
     @Test void releasesAreNotDeliveryAndLocalBlockCannotBeOverwrittenByGenericCallback() throws Exception {
@@ -192,68 +153,101 @@ class EvidenceStoreTest {
         assertEquals("NATIVE_RELEASE_NOT_PROVEN_DELIVERY", har.at("/log/_cairnGuard/forwardedMeans").asText());
     }
 
-    @Test void countEvictionIsOldestFirstEvenForBookmarksAndCountersSurviveClear() {
-        EvidenceStore store = new EvidenceStore(2, 1024 * 1024, 1024);
+    @Test void noCountEvictionAndCountersSurviveClear() {
+        EvidenceStore store = new EvidenceStore();
         String first = store.begin("p", "p", empty(), ALLOW, 1);
         store.bookmark(first, true);
         store.outcome(first, "FORWARDED", "NATIVE_RELEASED", null);
         store.begin("p", "p", empty(), ALLOW, 1);
         store.begin("p", "p", empty(), ALLOW, 1);
-        assertEquals(2, store.snapshot().size());
-        assertEquals(1, count(store, "evictions"));
-        assertFalse(store.snapshot().stream().anyMatch(e -> e.id().equals(first)));
-        assertEquals(0, count(store, "bookmarked"));
+        assertEquals(3, store.snapshot().size());
+        assertEquals(0, count(store, "evictions"));
+        assertEquals(first, store.snapshot().getLast().id());
+        assertEquals(1, count(store, "bookmarked"));
+        store.clear();
         store.response(first, 200, List.of(), new byte[0]);
         assertEquals(1, count(store, "orphanUpdates"));
-        store.clear();
         assertTrue(store.snapshot().isEmpty());
         assertEquals(0, count(store, "retainedBytes"));
         assertEquals(3, count(store, "begun"));
         assertEquals(1, count(store, "forwarded"));
-        assertEquals(1, count(store, "evictions"));
+        assertEquals(0, count(store, "evictions"));
         assertEquals(1, count(store, "clears"));
-        assertEquals(2, count(store, "clearedEntries"));
+        assertEquals(3, count(store, "clearedEntries"));
     }
 
-    @Test void totalBytesAndEachPartAreBoundedAfterMaskingNotBefore() {
-        EvidenceStore store = new EvidenceStore(20, 20_000, 2048);
-        String secret = "needle-after-the-capture-limit";
-        String large = "x".repeat(12_000);
-        RequestData request = request("https://fixture.test/?echo=" + secret,
-                List.of(new Header("Content-Type", "application/json")),
-                "{\"padding\":\"" + large + "\",\"password\":\"" + secret + "\"}");
-        for (int i = 0; i < 20; i++) {
-            String id = store.begin("p", "p", request, ALLOW, 1);
-            store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
-                    ("{\"echo\":\"" + secret + "\",\"pad\":\"" + large + "\"}").getBytes(StandardCharsets.UTF_8));
-        }
-        assertTrue(count(store, "retainedBytes") <= 20_000);
-        assertTrue(count(store, "evictions") > 0);
-        assertEquals(20, count(store, "truncations"));
-        assertFalse(store.snapshot().isEmpty());
-        for (TrafficEntry entry : store.snapshot()) {
-            assertTrue(entry.truncated());
-            assertTrue(Redactor.bytes(entry.request()) <= 2048);
-            assertTrue(Redactor.bytes(entry.response()) <= 2048);
-            assertFalse(entry.url().contains(secret), entry.url());
-        }
-        assertFalse(store.exportJson(store.snapshot()).contains(secret));
-    }
-
-    @Test void defaultBoundsAreEnforcedAndNeverDisabledByResponseGrowth() {
+    @Test void pathInterpretationAndSuppliedWarningsSurviveEveryResealAndExportVerbatim() throws Exception {
         EvidenceStore store = new EvidenceStore();
-        String payload = "{\"safe\":\"" + "z".repeat(80_000) + "\"}";
-        for (int i = 0; i < 300; i++) {
-            String id = store.begin("p", "p", empty(), ALLOW, i);
-            store.response(id, 200, List.of(new Header("Content-Type", "application/json")), payload.getBytes(StandardCharsets.UTF_8));
+        var request = new RequestData("GET", "https://owned.test/c/%zz/main.do", "owned.test", 443, true, List.of(), new byte[0]);
+        String id = store.begin("p", "Synthetic", request,
+                new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of(), List.of("PATH_INTERPRETATION_INCOMPLETE", "unsafe free form [REDACTED]")), 1);
+        store.context(id, "forwarded", "PROTECTED", "");
+        store.outcome(id, "FORWARDED", "NATIVE_RELEASED", null);
+        store.responseBytes(id, 0);
+        store.response(id, 200, List.of(), new byte[0]);
+        store.bookmark(id, true);
+        assertEquals(List.of("PATH_INTERPRETATION_INCOMPLETE", "unsafe free form [REDACTED]"), store.entry(id).inspectionWarnings());
+        var document = Json.MAPPER.readTree(store.exportJson(store.snapshot()));
+        assertEquals("PATH_INTERPRETATION_INCOMPLETE", document.path("entries").get(0).path("inspectionWarnings").get(0).asText());
+        assertEquals("unsafe free form [REDACTED]", document.path("entries").get(0).path("inspectionWarnings").get(1).asText());
+        assertTrue(store.exportHar(store.snapshot()).contains("PATH_INTERPRETATION_INCOMPLETE"));
+    }
+
+    @Test void clearedSnapshotsCannotExportAloneOrMixedWithLiveRows() throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        String oldId = store.begin("p", "Synthetic", new RequestData("GET", "https://owned.test/old", "owned.test", 443, true, List.of(), new byte[0]), ALLOW, 1);
+        TrafficEntry old = store.entry(oldId);
+        store.clear();
+        String liveId = store.begin("p", "Synthetic", new RequestData("GET", "https://owned.test/benign", "owned.test", 443, true, List.of(), new byte[0]), ALLOW, 2);
+        TrafficEntry live = store.entry(liveId);
+        for (List<TrafficEntry> selection : List.of(List.of(old), List.of(old, live), List.of(live, old))) {
+            assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportJson(selection)).getMessage());
+            assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportHar(selection)).getMessage());
         }
-        assertTrue(count(store, "retainedBytes") <= EvidenceStore.MAX_TOTAL_BYTES);
-        assertTrue(count(store, "evictions") > 0);
-        for (TrafficEntry e : store.snapshot()) assertTrue(Redactor.bytes(e.response()) <= EvidenceStore.MAX_PART_BYTES);
-        EvidenceStore smallMessages = new EvidenceStore();
-        for (int i = 0; i <= EvidenceStore.MAX_ENTRIES; i++) smallMessages.begin("p", "p", empty(), ALLOW, i);
-        assertEquals(EvidenceStore.MAX_ENTRIES, smallMessages.snapshot().size());
-        assertEquals(1, count(smallMessages, "evictions"));
+        assertEquals(liveId, Json.MAPPER.readTree(store.exportJson(List.of(live))).path("entries").get(0).path("id").asText());
+        assertTrue(store.exportHar(List.of(live)).contains("/benign"));
+    }
+
+    private static RequestData routed(String target) {
+        return new RequestData("GET", "https://fixture.test:443" + target, "fixture.test", 443, true, List.of(), new byte[0], true, true, target);
+    }
+
+    @Test void legacyHarKeepsTheAuthoritativeRouteAndFillsTheStandardUrlOnlyWhenTheUnchangedTargetIsFaithful() throws Exception {
+        for (String good : List.of("/a", "/a?x=1&y=%41", "/c/%2e/main.do", "/c/;/main.do", "/a%2fb")) {
+            EvidenceStore store = new EvidenceStore();
+            store.begin("p", "p", routed(good), ALLOW, 1);
+            JsonNode request = Json.MAPPER.readTree(store.exportHar(store.snapshot())).at("/log/entries/0/request");
+            assertEquals("https://fixture.test:443" + good, request.get("url").asText(), good);
+            assertTrue(request.path("_urlUnavailable").isMissingNode(), good);
+            assertEquals(good, request.get("_rawTarget").asText(), good);
+            assertEquals("https", request.at("/_service/scheme").asText());
+            assertEquals("fixture.test", request.at("/_service/host").asText());
+            assertEquals(443, request.at("/_service/port").asInt());
+            assertEquals(good.contains("?") ? 2 : 0, request.get("queryString").size(), good);
+        }
+        for (String bad : List.of("/raw#part", "/a%zz", "*", "/a b", "/\u00e9")) {
+            EvidenceStore store = new EvidenceStore();
+            store.begin("p", "p", routed(bad), ALLOW, 1);
+            String url = store.snapshot().getFirst().url();
+            JsonNode request = Json.MAPPER.readTree(store.exportHar(store.snapshot())).at("/log/entries/0/request");
+            assertEquals("", request.get("url").asText(), bad + ": no unfaithful standard URL");
+            assertFalse(request.get("_urlUnavailable").asText().isEmpty(), bad);
+            assertEquals(bad, request.get("_rawTarget").asText(), bad + ": the exact untouched target is preserved");
+            assertEquals("fixture.test", request.at("/_service/host").asText());
+            assertEquals(url, request.get("_displayUrl").asText(), "the retained display text stays available, labelled as display only");
+            assertEquals(0, request.get("queryString").size(), bad);
+        }
+    }
+
+    @Test void legacyHarWithoutAnAuthoritativeRouteNeverGuessesOneFromTheDisplayUrl() throws Exception {
+        EvidenceStore store = new EvidenceStore();
+        store.begin("p", "p", new RequestData("GET", "https://fixture.test/raw#part", "", 443, true, List.of(), new byte[0]), ALLOW, 1);
+        JsonNode request = Json.MAPPER.readTree(store.exportHar(store.snapshot())).at("/log/entries/0/request");
+        assertEquals("NO_SERVICE_ROUTE", request.get("_urlUnavailable").asText());
+        assertEquals("", request.get("url").asText());
+        assertTrue(request.path("_rawTarget").isMissingNode());
+        assertTrue(request.path("_service").isMissingNode());
+        assertEquals("https://fixture.test/raw#part", request.get("_displayUrl").asText());
     }
 
     @Test void validHarHasRequiredFieldsNoClaimedWireSizesOrFakeMissingResponses() throws Exception {
@@ -279,28 +273,33 @@ class EvidenceStoreTest {
         assertEquals(0, e.at("/timings/receive").asInt());
         assertTrue(e.at("/_cairnGuard/responseObserved").asBoolean());
         assertFalse(e.at("/_cairnGuard/completeWireCapture").asBoolean());
-        assertEquals("REDACTED_EVIDENCE_NOT_WIRE_CAPTURE", e.at("/_cairnGuard/label").asText());
+        assertEquals("ORIGINAL_EVIDENCE_NOT_WIRE_CAPTURE", e.at("/_cairnGuard/label").asText());
         assertFalse(store.exportJson(store.snapshot()).contains("provenanceSeal"));
     }
 
-    @Test void exportRejectsForeignForgedAndEvictedRecordsButRetainedSnapshotsExport() {
-        EvidenceStore store = new EvidenceStore(1, 100_000, 1024);
+    @Test void exportRejectsForeignForgedAndClearedRecordsButRetainedSnapshotsExport() {
+        EvidenceStore store = new EvidenceStore();
         store.begin("p", "p", empty(), ALLOW, 1);
         List<TrafficEntry> old = store.snapshot();
         TrafficEntry e = old.getFirst();
         // Forgery and foreign-store checks run while the row is still retained, so row disposal cannot mask a broken seal check.
         assertDoesNotThrow(() -> store.exportJson(old));
         assertDoesNotThrow(() -> store.exportHar(old));
-        TrafficEntry forged = new TrafficEntry(e.id(), e.projectId(), "raw-secret-must-not-export", e.timestamp(), e.method(), e.url(), e.mode(),
+        TrafficEntry forged = new TrafficEntry(e.id(), e.projectId(), "forged-name-must-not-export", e.timestamp(), e.method(), e.url(), e.mode(),
                 e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), e.requestCapture(), e.responseCapture(), e.truncated(), e.provenanceSeal());
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(forged)));
         assertEquals("INVALID_EVIDENCE_SELECTION", failure.getMessage());
         assertThrows(IllegalArgumentException.class, () -> store.exportHar(List.of(forged)));
-        EvidenceStore foreign = new EvidenceStore(1, 100_000, 1024);
+        TrafficEntry.Message hex = new TrafficEntry.Message(e.requestCapture().headers(), e.requestCapture().body(), e.requestCapture().mimeType(),
+                e.requestCapture().bodyOmitted(), e.requestCapture().truncated(), e.requestCapture().present(), "UNAVAILABLE");
+        TrafficEntry recoded = new TrafficEntry(e.id(), e.projectId(), e.projectName(), e.timestamp(), e.method(), e.url(), e.mode(),
+                e.disposition(), e.reason(), e.statusCode(), e.hits(), e.revision(), e.bookmarked(), hex, e.responseCapture(), e.truncated(), e.provenanceSeal());
+        assertThrows(IllegalArgumentException.class, () -> store.exportJson(List.of(recoded)), "the body encoding is sealed");
+        EvidenceStore foreign = new EvidenceStore();
         foreign.begin("p", "p", empty(), ALLOW, 1);
         assertThrows(IllegalArgumentException.class, () -> foreign.exportJson(old));
-        // Eviction disposes the only masked row; the historical seal alone no longer authorizes export.
-        store.begin("p", "p", empty(), ALLOW, 2);
+        // A clear disposes the row; the historical seal alone no longer authorizes export.
+        store.clear();
         assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportJson(old)).getMessage());
         assertEquals("INVALID_EVIDENCE_SELECTION", assertThrows(IllegalArgumentException.class, () -> store.exportHar(old)).getMessage());
     }
@@ -382,7 +381,7 @@ class EvidenceStoreTest {
     }
 
     @ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings = {"Authorization", "Cookie", "X-Broker-Grant"})
-    void secretReflectedIntoIntentRunPathAndStructuredCopiesNeverExports(String header) {
+    void valuesReflectedIntoIntentRunPathAndStructuredCopiesExportAsOriginals(String header) {
         String secret = "synthetic-reflected-label-753951";
         String value = header.equals("Authorization") ? "Bearer " + secret : header.equals("Cookie") ? "sid=" + secret : secret;
         EvidenceStore store = new EvidenceStore();
@@ -394,16 +393,18 @@ class EvidenceStoreTest {
         store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
                 ("{\"grant\":\"" + secret + "\",\"mirror\":\"" + secret + "\"}").getBytes(StandardCharsets.UTF_8));
         store.bookmark(id, true);
-        String masked = Json.write(store.snapshot()) + store.exportJson(store.snapshot()) + store.exportHar(store.snapshot()) + Json.write(store.stats());
-        assertFalse(masked.contains(secret));
-        assertTrue(only(store).intentId().contains(Redactor.REDACTED));
-        assertTrue(only(store).runId().contains(Redactor.REDACTED));
+        assertEquals(secret, only(store).intentId());
+        assertEquals("run-" + secret, only(store).runId());
+        for (String export : List.of(store.exportJson(store.snapshot()), store.exportHar(store.snapshot())))
+            assertTrue(export.contains(secret) && export.contains("run-" + secret));
+        assertTrue(only(store).request().contains(header + ": " + value));
+        assertFalse(Json.write(store.stats()).contains(secret), "counters stay payload-free");
         assertTrue(store.rawRequest(id).contains(secret));
         assertTrue(store.rawResponse(id).contains(secret));
         assertEquals(secret, store.rawCaptureInfo(id).get("intentId"));
     }
 
-    @Test void responseGrantIssuanceRemasksTagsPathAndOverlayIncludingStaleSelections() {
+    @Test void responseValuesNeverRemaskTagsPathOrOverlayIncludingStaleSelections() {
         String secret = "9437cd9e-f397-4187-8e4d-f0d9d34ac726";
         EvidenceStore store = new EvidenceStore();
         String id = store.begin("p", "p", request("https://fixture.test/" + secret,
@@ -412,12 +413,11 @@ class EvidenceStoreTest {
         List<TrafficEntry> stale = store.snapshot();
         store.response(id, 200, List.of(new Header("Content-Type", "application/json")),
                 ("{\"brokerGrant\":\"" + secret + "\",\"echo\":\"" + secret + "\"}").getBytes(StandardCharsets.UTF_8));
-        assertFalse(Json.write(store.snapshot()).contains(secret));
-        assertFalse(store.exportJson(stale).contains(secret));
-        assertFalse(store.exportHar(stale).contains(secret));
-        assertEquals(Redactor.REDACTED, only(store).overlayId());
+        assertTrue(store.exportJson(stale).contains("brokerGrant"));
+        assertEquals(secret, only(store).overlayId());
+        assertEquals(secret, only(store).intentId());
         assertEquals("half_open", only(store).outcome());
-        assertTrue(store.rawUrl(id).contains(secret));
+        assertTrue(only(store).url().contains(secret));
     }
 
     @Test void allNewMetadataParticipatesInProvenanceAndUnsealedRecordsAreRejected() {
@@ -450,7 +450,7 @@ class EvidenceStoreTest {
                 e.provenanceSeal(), intent, run, outcome, guard, overlay, bytes, warnings);
     }
 
-    @Test void arbitraryContextWarningsAndInvalidOverlayAreNeverFreeTextExportChannels() {
+    @Test void arbitraryContextIsCategoricalWhileSuppliedWarningsAreKeptVerbatim() {
         String secret = "synthetic-untrusted-metadata-2468";
         EvidenceStore store = new EvidenceStore();
         String id = store.begin("p", "p", empty(), new Decision(Mode.ALLOW, "ALLOW", List.of(), List.of(secret)), 1);
@@ -458,27 +458,24 @@ class EvidenceStoreTest {
         assertEquals("pending", only(store).outcome());
         assertEquals("", only(store).guardState());
         assertEquals("", only(store).overlayId());
-        assertEquals(List.of("INSPECTION_UNAVAILABLE"), only(store).inspectionWarnings());
-        assertFalse(store.exportJson(store.snapshot()).contains(secret));
-        assertFalse(store.exportHar(store.snapshot()).contains(secret));
+        assertEquals(List.of(secret), only(store).inspectionWarnings());
+        assertTrue(store.exportJson(store.snapshot()).contains(secret));
         store.outcome(id, "BLOCKED", "CIRCUIT_OPEN", 451);
         store.context(id, "exempt", "CIRCUIT_OPEN", "");
         assertEquals("blocked", only(store).outcome());
     }
 
-    @Test void warningsAreCategoricalBoundedAndCannotHideCaptureIncompleteness() {
+    @Test void warningsAreNotCountCappedAndCannotHideCaptureIncompleteness() {
         EvidenceStore store = new EvidenceStore();
         RequestData partial = new RequestData("POST", "https://fixture.test/", "fixture.test", 443, true,
                 List.of(), new byte[0], false, false);
-        store.begin("p", "p", partial, new Decision(Mode.ALLOW, "ALLOW", List.of(),
-                java.util.Collections.nCopies(1000, "untrusted-warning-secret")), 1);
+        List<String> supplied = java.util.stream.IntStream.range(0, 40).mapToObj(i -> "warning-" + i).toList();
+        store.begin("p", "p", partial, new Decision(Mode.ALLOW, "ALLOW", List.of(), supplied), 1);
         TrafficEntry entry = only(store);
-        assertTrue(entry.truncated());
-        assertTrue(entry.inspectionWarnings().size() <= 32);
-        assertTrue(entry.inspectionWarnings().contains("HEADERS_INCOMPLETE"));
-        assertTrue(entry.inspectionWarnings().contains("BODY_INCOMPLETE"));
-        assertFalse(store.exportJson(store.snapshot()).contains("untrusted-warning-secret"));
-        assertFalse(store.exportHar(store.snapshot()).contains("untrusted-warning-secret"));
+        assertTrue(entry.truncated(), "an incomplete supplied copy is truthfully incomplete");
+        assertEquals(42, entry.inspectionWarnings().size());
+        assertEquals(List.of("HEADERS_INCOMPLETE", "BODY_INCOMPLETE"), entry.inspectionWarnings().subList(0, 2));
+        assertEquals("UNAVAILABLE", entry.requestCapture().bodyEncoding());
     }
 
     @Test void v2RuntimeReasonsAndFixedCountersRemainCategoricalAndCumulative() {

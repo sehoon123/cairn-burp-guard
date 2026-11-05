@@ -123,7 +123,7 @@ class ProxyPassthroughTest {
             handler.handleHttpResponseReceived(response(1, "{\"token\":\"SYNTHETIC-OLD-SECRET\"}"));
             assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
             assertEquals(1, controller.traffic().size());
-            assertFalse(controller.exportJson(controller.traffic()).contains("SYNTHETIC-OLD-SECRET"));
+            assertTrue(controller.exportJson(controller.traffic()).contains("SYNTHETIC-OLD-SECRET"));
             off(controller, false);
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(200)).action());
             assertEquals(1, handler.inFlightCount());

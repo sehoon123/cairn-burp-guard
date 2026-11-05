@@ -2,7 +2,7 @@ Cairn Proxy Guard — independent MVP development candidate.
 Not affiliated with, endorsed by, or maintained by PortSwigger or CAIRN upstream.
 
 Bundled runtime libraries: Jackson (Apache-2.0) and RE2/J (BSD-3-Clause).
-Their upstream copyright/license notices, including Jackson's embedded parser notices, are retained in legal/ and bundled as META-INF/legal/. The project's own code is MIT licensed; third-party licenses are unchanged.
+Their upstream copyright/license notices, including Jackson's embedded parser notices, are retained in legal/ and bundled as META-INF/legal/. The JAR's root META-INF/LICENSE and META-INF/NOTICE are the bundled libraries' own files; this project's MIT LICENSE and this NOTICE are packaged unchanged as META-INF/cairn-proxy-guard/LICENSE and META-INF/cairn-proxy-guard/NOTICE. The project's own code is MIT licensed; third-party licenses are unchanged.
 Montoya API is compile-only and is NOT bundled; use is subject to PortSwigger API/product terms.
 Gradle wrapper bootstrap files originate from the standard Gradle wrapper distribution (Apache-2.0), copied from the local existing Gradle wrapper, not from MCP extension implementation.
 No CAIRN or Independent MCP Bridge implementation code is included.

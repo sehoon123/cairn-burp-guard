@@ -1,5 +1,14 @@
 # Owned native A–G plus OFF checklist — unreleased v2
 
+> **2026-11-05 note (current source):** nothing is masked and there is no collection,
+> retention or export quota. Wherever a step below expects a redacted/masked "safe" export,
+> `[REDACTED]`, remasking, eviction at 2000 entries, a 64 MiB export cap or a 24-hour
+> incident window, the current source instead shows/exports the **plaintext originals**,
+> retains everything until clear/project change/unload, has no export cap and accepts any
+> ordered incident window. Run such checks only with synthetic credentials in a disposable
+> profile, and watch heap use. These native steps are UNRUN for the current source.
+
+
 **Latest user scope: H per-port protection is explicitly DEFERRED, not a current gate or PASS.** Use all Proxy listeners (`guardListenerPorts=[]`); new restrictions cannot be saved. Current exact-artifact observations are in [ALL_LISTENERS_ACCEPTANCE.md](ALL_LISTENERS_ACCEPTANCE.md).
 
 **Procedure, not a PASS log. Historical H is FAIL/UNSUPPORTED.**
@@ -113,6 +122,69 @@ External clients cannot establish the extension's internal inspection-completene
 or actual service source alone; pair fixture data with human UI/current source
 observations and label unobservable aspects as pending.
 
+## 0.2.0 prospective cases — NOT RUN (observe on the exact 0.2.0 JAR bytes before any claim)
+
+Every case below is UNRUN until the parent records it on the exact candidate JAR;
+unit/loopback results do not transfer. Use two distinct numeric owned services
+(for example `127.0.0.1:18080` as A and `127.0.0.2:18081` as B) and synthetic data only.
+
+- **Burp Target Scope vs Cairn scope.** Cairn allow scope is independent of Burp's
+  Target Scope. With Burp `Out-of-scope request handling -> Drop all out-of-scope
+  requests` enabled, a request outside Burp Target Scope can be dropped by Burp
+  before transmission even if Cairn allows it or protection is OFF, and the client
+  may see a Burp built-in error (for example `No response received from remote
+  server`). A typed local 451 (`X-Cairn-Guard: blocked`) is a positive indication of
+  a Cairn denial, not an authenticated proof or an exhaustive list of denial modes;
+  the absence of a 451 or of a Cairn evidence row is inconclusive (OFF, retention
+  limits, drop-only/failure paths), and a row does not prove network delivery.
+  Record both settings, the client-visible page and whether a Cairn row exists.
+  Cairn must not read or change the Burp setting.
+- **IN_FLIGHT_TIMEOUT explanation.** Not a 5xx circuit and not proof the target
+  failed: one actual outstanding permit of a host past `응답 대기 제한` (default 60 s)
+  quarantines that canonical host only; other hosts use only real remaining slots;
+  stalled permits >= max concurrent deny globally. Raising the timeout or saving/
+  resuming does not unstall an already-expired permit. Top-level protection OFF
+  skips this quarantine for NEW callbacks (and every other protection) and ON
+  keeps the old unresolved ownership. UNRUN until observed.
+- **Add a second allowed service while the first is active.** Add B through the human
+  UI while A traffic is in flight; confirm B forwards (with Burp scope including B),
+  A's in-flight requests are not cancelled, and there are no unexpected 451 rows.
+- **`%2c` and other encoded targets.** Exact raw targets with `%2c`, matrix `;`,
+  dot segments and doubly encoded spellings reach the fixture byte-for-byte; scope
+  uses the actual service; undecodable variants pass an explicit all-path scope with
+  `PATH_INTERPRETATION_INCOMPLETE` only.
+- **Fuzzed Host with actual-service scope.** A mismatched `Host`/`:authority` neither
+  denies an in-scope actual service nor authorizes an out-of-scope one.
+- **Body/charset representatives.** Malformed JSON, unsupported charset, binary and
+  oversized optional bodies on an in-scope path forward unchanged. The Traffic table
+  shows separate fixed labels: capture incomplete (not a rule demand) versus a field
+  the enabled rule asked for that could not be inspected; with an explicit body/JSON
+  rule the latter appears and no EXEMPT is granted from it. Unknown IDs and synthetic
+  credentials are never echoed in the warning column.
+- **Host churn, omission debt and status.** With fan-out WARN and a small host
+  count, churn more services than the host capacity: idle history is reclaimed
+  without 451, `fanoutHistoryOmitted` rises and the overview shows retained,
+  not-enforced debt with remaining time. Switch fan-out to BLOCK/PAUSE: the state
+  becomes CAPACITY with `RESPONSE_WATCHER_CAPACITY` 451 and a countdown; WARN or
+  disabled shows retained-not-enforced; OFF shows no active gate and restoring
+  protection shows the retained condition again; expiry clears it without any reset.
+
+- **Selective automatic-block controls (UNRUN).** With heavy ON while circuit OFF and
+  fan-out WARN, confirm a large response still auto-blocks its route. Turn heavy OFF,
+  circuit OFF and fan-out BLOCK/PAUSE -> WARN on existing overlays: each corresponding
+  logical gate ends at once; operator pause and held/late native work (gate active)
+  are unchanged; omission debt keeps its original expiry.
+- **Selected exceptions (UNRUN).** From an automatic-block row use "예외 검토" and save:
+  heavy -> route limit 0, circuit -> circuit exception, fan-out -> fan-out exception,
+  nothing else in the policy changes; one-time release stays separate. Check query
+  variants/all methods/non-default port are covered, fuzzed Host and `%2c`/matrix/dot
+  routes are not, and the heavy alias rule (positive alias wins) is visible.
+- **Original human views and exports (UNRUN).** Both candidate buttons on a remasked
+  candidate, approval/overlay/history originals, and consented plaintext JSON/HAR/
+  incident files containing originals (safe diagnostics still masked).
+- **Upstream failure (PLATFORM_BLOCKED).** Closed-port/recovered-origin characterization
+  is a separate parent case; no automatic recovery is claimed for 0.2.0.
+
 ## A — EXEMPT and default false positives
 
 Human creates ordinary BLOCK PATH `/broker` and matching narrow EXEMPT on the
@@ -140,8 +212,8 @@ first **6MiB** response reaches client intact; next same path gives
 releases that overlay in UI, then acknowledges the helper's prompt; a subsequent
 large response passes and can re-open protection. This is not an automated release.
 
-Inspect actual responseBytes=6291456 even though >copy bounds means raw/masked
-body omitted. No Content-Length/copy-size shortcut. Test TTL expiry, route-alias
+Inspect actual responseBytes=6291456 even though >copy bounds means the retained
+original body is omitted/labelled. No Content-Length/copy-size shortcut. Test TTL expiry, route-alias
 protection, another path's independence and explicit zero override separately.
 First-heavy detection is **post-response**; it cannot prevent/cut off the first
 large transfer or undo target work. Record these limitations.
@@ -168,7 +240,12 @@ BLOCK, separate automatic global PAUSE; query-only variants are not distinct pat
 Overlay list retains cause/created/expiry, selected/all release confirmations and
 reopen-on-new-detection. No persistent policy edit: compare a reviewed local policy
 export/hash before/after; no native console/control endpoint or profile/log export.
-Disabling a detector/same-project save/OFF does not erase active protection/debt.
+Same-project save and top-level OFF do not erase active protection/debt. Current (0.2.0)
+per-kind semantics: heavy OFF, circuit OFF and fan-out OFF or BLOCK/PAUSE -> WARN
+end ONLY that kind's open logical blocks at once (history, omission debt with its
+original deadline, held/late native slots and operator pause remain; the OFF/WARN
+fan-out transition does not clear Seen history; BLOCK<->PAUSE keeps the episode id/TTL).
+Prospective, UNRUN until observed on the exact JAR.
 WARN saturation: more sequentially completed distinct paths than the history
 capacity on one service must keep arriving at the fixture; the path/history budget
 alone must not deny them. Separate host, physical-flight and enforcing-protection
@@ -203,7 +280,7 @@ client requests only, never extension-generated health polling.
 
 Human sets perIntentMaxRequests20; no unrelated watcher failure. `--phase intent`
 sends20 with one synthetic(run,intent), requires21st `INTENT_BUDGET_EXCEEDED`,
-another intent passes. Inspect human raw tag columns/filter and masked export
+another intent passes. Inspect human raw tag columns/filter and the human export/safe-export
 metadata; client tags remain unchanged and **untrusted**, not authenticated quotas.
 Missing intent is unbudgeted. Duplicate/invalid or incomplete captured headers
 reject when enabled; disabling accounting preserves debt, explicit human reset
@@ -222,23 +299,36 @@ Human inspects maximum-descending candidates, max/p95/count/lastSeen/5xx and
 retention/truncation indicators. p95 is a **log2 upper-bound approximation**, count/
 max/5xx/lastSeen are exact for retained observations, not lifetime traffic.
 
-- Safe unchanged query-free actual-service `policyUrl` can open an **unsaved**
-  ordinary BLOCK draft; cancel must not save. A saved ordinary BLOCK is still
-  outranked by matching EXEMPT, unlike an automatic overlay.
+- The candidate's retained ORIGINAL actual-service route (query-free, never the Host
+  header; shown even after response-time remasking) opens an **unsaved** ordinary
+  BLOCK draft (case-sensitive anchored URL; all query variants; internal alias
+  disclosure); cancel must not save. A saved ordinary BLOCK is still outranked by a
+  matching EXEMPT, unlike an automatic overlay. The controller re-validates the
+  source after every confirmation.
 - Exact path NMiB threshold draft is separate from a rule, warns first-heavy
-  limitation, validates exact bytes and strict route.0 disables only that route's
-  size detection. Save leaves pre-existing overlay until expiry/release.
+  limitation, validates exact bytes and strict route (encoded/ambiguous routes are
+  disabled with a reason; the BLOCK draft stays). A positive limit leaves a
+  pre-existing overlay until expiry/release. **0 is a size exception** (authored
+  matching route, positive alias wins): the confirmation differs from a positive
+  value and promises only that heavy blocking stops applying to that request; the
+  overlay row stays as a retained conditional state, not proof the route is still blocked.
 - Ignore suppresses candidate display only, not policy/incident/active overlay.
-- Masked/changed/unrepresentable URL has no actionable policyUrl. Buttons must not
-  copy raw history into policy. Response-only synthetic grant echoed in earlier
-  path must remask watcher values and invalidate the draft, including older
-  pending endpoints. No raw getter for runtime watcher/export.
+- Expired/evicted/cleared originals disable both buttons with "원문 없음" (no masked
+  autofill). Response remasking alone does not invalidate a still-retained original.
+  Source replaced/removed/cleared/project changed inside any confirmation => no write.
+- Selected-kind "예외 검토" on an automatic-block row saves only that kind's exception
+  seeded by the overlay's own retained triggering request; after saving, the row is
+  labelled "예외 저장됨 · 보존된 조건부 상태", the action is disabled (ALREADY_EXCEPTED),
+  and no reorder-only policy write or revision bump occurs. Unrun until observed.
 
 Human history is **unmasked by request**, unlike older preview expectations:
-Authorization/Cookie/grant may appear **only in local bounded raw UI getters**,
-with UTF8/HEX/omitted/truncated inspection-copy labels. JSON/HAR/incident remain
-masked/sealed as appropriate. Test eviction/clear/project uncertainty and no late
-raw resurrection; clipboard/screenshots/private exports never enter Git.
+Authorization/Cookie/grant appear in local bounded human screens (history, approvals,
+overlay/candidate host/path) with UTF8/HEX/omitted/truncated inspection-copy labels.
+The safe machine APIs (status, logs, safe `exportJson`/`exportHar`/`incidentJson`) stay
+masked/sealed; the HUMAN JSON/HAR/incident buttons write plaintext originals only after a
+per-file cancel-default consent. Test eviction/clear/project uncertainty and no late
+raw resurrection (a relevant raw-source eviction before the final checkpoint aborts the
+export); clipboard/screenshots/private exports never enter Git.
 
 ## F — Human incident / evidence export
 
@@ -246,13 +336,20 @@ Choose a `[from,to)` window (max24hours) in human UI and export one owner-only
 file. Verify `window`, `events`, top20 `top5xx`/`topBytes`, numeric scalars,
 `complete`/`truncated`/`approximate`, retention/clock/ring-loss and approximation
 metadata. Startup/clear/out-of-retention/capacity loss cannot be claimed complete.
-No raw auth/cookie/grant/path reflections; no original response body in incidents.
+HUMAN incident (`cairn-human-incident` v1, after plaintext consent): original host/path rows
+resolved by each event's own source, missing originals as `originalUnavailable`; no original
+response body, no private `_source` object key (original route/value text that merely contains `_source` or `[REDACTED]` is legitimate and preserved), enforcement key or token; the offline checker validates shape and cannot authenticate originals. The SAFE incident API (no consent,
+`incidentJson`) must keep the old redacted shape: no raw auth/cookie/grant/path reflections.
 
-JSON/HAR uses sealed masked TrafficEntry, including actual responseBytes/warnings/
-state/outcome; stale retained selections use latest redaction; cleared/evicted selections
-are rejected rather than exported from a historical snapshot. Full/selected/filtered
-counts, local451 vs callback status, unknown sizes/timings and missing-response
-labels must remain honest. Exports are inspection copies, not replay/wire proof.
+HUMAN JSON/HAR (consent each time) carry structured originals: base64 retained body prefix,
+duplicate header order, `completeWireCapture:false`, actual responseBytes/warnings/state/
+outcome. HAR `postData.text` only for valid UTF-8 under an accepted declared charset (else
+`_bodyBase64`); the standard `url` only when the unchanged target is a faithful ordinary URL
+(`/a#b`, `/a%zz`, spaces/controls give `_urlUnavailable` with exact `_rawTarget`/`_service`).
+Cleared/evicted-before-snapshot originals are `originalUnavailable`; an original evicted
+AFTER the snapshot but before the final checkpoint aborts publication (unrelated eviction
+and later response updates do not). The check-to-rename race remains. Exports are inspection
+copies, not replay/wire proof. The SAFE exports keep sealed masked TrafficEntry semantics.
 
 Optional offline helper after human export:
 

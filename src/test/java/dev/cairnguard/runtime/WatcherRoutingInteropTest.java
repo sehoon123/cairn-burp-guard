@@ -29,7 +29,7 @@ class WatcherRoutingInteropTest {
     }
     private static ResponseWatcher watcher() { return new ResponseWatcher(limits(false), () -> 0, () -> 1_000_000); }
     private static ResponseWatcher.Endpoint endpoint(ResponseWatcher watcher, String target, List<String> views) {
-        return watcher.endpoint(request(target), "not a redacted URL", views);
+        return watcher.endpoint(request(target), views);
     }
 
     @ParameterizedTest
@@ -47,8 +47,9 @@ class WatcherRoutingInteropTest {
         for (String view : views) {
             assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", watcher.check(endpoint(watcher, view, List.of(view)), false).reason());
         }
-        assertEquals("[REDACTED]", watcher.candidates().getFirst().path());
-        assertEquals("", watcher.candidates().getFirst().policyUrl());
+        assertEquals(target, watcher.candidates().getFirst().path(), "the original untouched first view");
+        assertEquals("owned.test", watcher.candidates().getFirst().host());
+        assertEquals(target.startsWith("/") && !target.contains("?") ? "https://owned.test" + target : "", watcher.candidates().getFirst().policyUrl());
         assertEquals(target, request.nativeTarget(), "Inspection must not rewrite the request model");
     }
 
@@ -62,9 +63,32 @@ class WatcherRoutingInteropTest {
         var endpoint = endpoint(watcher, target, views);
         watcher.observe(watcher.commit(endpoint, false, ""), 503, 2);
         assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", watcher.check(endpoint, false).reason());
-        assertEquals("[REDACTED]", endpoint.path());
-        assertEquals("[REDACTED]", endpoint.host());
-        assertEquals("", endpoint.policyUrl());
+        assertEquals(target, endpoint.path(), "raw controls and lone surrogates stay original");
+        assertEquals("owned.test", endpoint.host());
+        assertEquals("", endpoint.policyUrl(), "an unfaithful ordinary URL is never drafted");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/expected-error", "/expected-error?x=1", "/expected-error?x=%zz"})
+    void nativeTargetExactRouteGetsCircuitExceptionThroughTheControllerRoutingViews(String target) throws Exception {
+        Limits on = new Limits(100, 100, Map.of(), 100, 100, 1000, 1000, 1000, 0, 60_000,
+                new GuardConfig.Circuit5xx(60_000, 1, 60_000, 1), null, 0, false, List.of(), List.of(),
+                List.of(new ProbePath("https", "owned.test", 443, "/expected-error")));
+        ResponseWatcher watcher = new ResponseWatcher(on, () -> 0, () -> 1_000_000);
+        watcher.observe(watcher.commit(endpoint(watcher, "/x", PolicyEngine.routingPaths(request("/x"))), false, ""), 503, 0);
+        assertTrue(watcher.check(endpoint(watcher, target, PolicyEngine.routingPaths(request(target))), false).allowed(), target);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/c/%2c", "/expected-error%2f", "/expected-error;v", "/./expected-error", "expected-error",
+            "*", "http://owned.test/expected-error", "/expected-%65rror"})
+    void encodedAliasOrNonOriginTargetsNeverGetTheExceptionAndKeepTheirTraffic(String target) throws Exception {
+        Limits on = new Limits(100, 100, Map.of(), 100, 100, 1000, 1000, 1000, 0, 60_000,
+                new GuardConfig.Circuit5xx(60_000, 1, 60_000, 1), null, 0, false, List.of(), List.of(),
+                List.of(new ProbePath("https", "owned.test", 443, "/expected-error"), new ProbePath("https", "owned.test", 443, "/c/,")));
+        ResponseWatcher watcher = new ResponseWatcher(on, () -> 0, () -> 1_000_000);
+        watcher.observe(watcher.commit(endpoint(watcher, "/x", PolicyEngine.routingPaths(request("/x"))), false, ""), 503, 0);
+        assertEquals("CIRCUIT_OPEN", watcher.check(endpoint(watcher, target, PolicyEngine.routingPaths(request(target))), false).reason(), target);
     }
 
     @Test void hashingIsLosslessForLoneSurrogatesAndLiteralQuestionMark() {

@@ -127,6 +127,29 @@ class AvailabilityPolicyTest {
         assertFalse(routingExempt.inspectionWarnings().isEmpty());
     }
 
+    @Test void pathOnlyPolicyReportsCaptureFlagsWithoutClaimingADemandedFieldWasUninspected() {
+        RequestData partial = new RequestData("POST", "https://example.test/safe", "example.test", 443, true,
+                List.of(new Header("Content-Type", "application/json; charset=unsupported")), "{broken".getBytes(StandardCharsets.UTF_8), false, false);
+        Decision result = engine.evaluate(v2(List.of(rule("path", Mode.BLOCK, leaf(Field.PATH, Match.EXACT, "/never"))), Mode.ALLOW), partial);
+        assertEquals(Mode.ALLOW, result.mode());
+        assertEquals(List.of("HEADERS_INCOMPLETE", "BODY_INCOMPLETE"), result.inspectionWarnings(),
+                "Capture provenance only; field-unavailable IDs appear solely for rule-demanded fields");
+    }
+
+    @Test void exactRoutingPathIsOnlyAnUnambiguousCompleteNativeTargetAndIgnoresQueryAndHostFuzz() {
+        java.util.function.Function<String, RequestData> native_ = target -> new RequestData("POST", "https://synthetic.invalid" + target,
+                "example.test", 443, true, List.of(new Header("Host", "synthetic.invalid")), new byte[0], true, true, target);
+        assertEquals("/expected-error", PolicyEngine.exactRoutingPath(native_.apply("/expected-error")));
+        assertEquals("/expected-error", PolicyEngine.exactRoutingPath(native_.apply("/expected-error?x=1")), "query is not an identity");
+        assertEquals("/expected-error", PolicyEngine.exactRoutingPath(native_.apply("/expected-error?x=%zz")));
+        assertEquals("/", PolicyEngine.exactRoutingPath(native_.apply("/")));
+        for (String ambiguous : List.of("/c/%2c", "/a%2fb", "/a;b", "/a/./b", "/a/../b", "/a//b", "/a%252fb", "/a%zz", "/a\\b",
+                "relative", "*", "@h/x", "/a\u0001b")) {
+            assertNull(PolicyEngine.exactRoutingPath(native_.apply(ambiguous)), ambiguous);
+        }
+        assertNull(PolicyEngine.exactRoutingPath(null));
+    }
+
     @Test void unsupportedContentCannotGrantExemptThroughAnyAndOrOrBranches() {
         RequestData binary = request("GET", "/safe", "application/octet-stream", "synthetic");
         for (Condition condition : List.of(leaf(Field.ANY, Match.CONTAINS, "safe"),
@@ -169,5 +192,22 @@ class AvailabilityPolicyTest {
         Decision copy = new Decision(Mode.ALLOW, "DEFAULT_ALLOW", List.of(), warnings); warnings.clear();
         assertEquals(List.of("BODY_INCOMPLETE"), copy.inspectionWarnings());
         assertThrows(UnsupportedOperationException.class, () -> copy.inspectionWarnings().clear());
+    }
+
+    @Test void missingContentInspectionCapacitySkipsOnlyDemandedContentAndNeverGrantsExempt() {
+        RequestData request = request("GET", "/safe", "application/json", "{\"action\":\"ok\"}");
+        GuardConfig content = v2(List.of(rule("exempt", Mode.EXEMPT, leaf(Field.JSON, "/action", Match.EXACT, "ok", true)),
+                rule("header", Mode.BLOCK, leaf(Field.HEADER, Match.CONTAINS, "never"))), Mode.ASK);
+        assertEquals("RULE_EXEMPT", engine.evaluate(content, request, true).reason(), "control: capacity available");
+        Decision saturated = engine.evaluate(content, request, false);
+        assertEquals(Mode.ASK, saturated.mode(), "no EXEMPT from unavailable inspection and no automatic denial");
+        assertEquals(List.of("HEADER_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY", "JSON_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY"),
+                saturated.inspectionWarnings(), "only demanded content fields; completeness is not falsified");
+        GuardConfig routing = v2(List.of(rule("block", Mode.BLOCK, safeGet())), Mode.ALLOW);
+        Decision path = engine.evaluate(routing, request, false);
+        assertEquals("RULE_BLOCK", path.reason(), "METHOD/PATH rules still enforce");
+        assertTrue(path.inspectionWarnings().isEmpty(), "path-only rules never claim unavailable content inspection");
+        Decision any = engine.evaluate(v2(List.of(rule("any", Mode.BLOCK, leaf(Field.ANY, Match.CONTAINS, "/safe"))), Mode.ALLOW), request, false);
+        assertEquals("RULE_BLOCK", any.reason(), "ANY keeps conservative known positives");
     }
 }

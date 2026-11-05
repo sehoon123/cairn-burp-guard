@@ -82,6 +82,12 @@ children. CONTAINS/EXACT are literal; REGEX uses bounded RE2/J `find` semantics;
 EXACT and scope expressions full-match. Unsupported RE2 syntax is rejected, never
 run by Java backtracking regex. Case-insensitive matching uses RE2 case folding.
 
+Automatic protections (large-response, 5xx circuit, distinct-path fan-out) are
+NOT rules and never act as EXEMPT/ALLOW: their per-kind ON/OFF switches and exact
+route exceptions (heavy size 0, circuit/fan-out exact routes) bypass only that
+automatic actuator. Scope, these rules, approval, operator pause, rate, intent,
+lifecycle, timeout and physical capacity still apply. See INTERFACES.md.
+
 ## Inspection views and limitations
 
 - METHOD/PATH/URL/BODY use raw and bounded textual views. Path `+` is literal;
@@ -97,6 +103,15 @@ run by Java backtracking regex. Case-insensitive matching uses RE2 case folding.
 - ANY combines supported known views, not arbitrary application semantics or a
   proof that an operation is harmless.
 
+Field scope, in brief: BODY matches the raw and bounded decoded text of the whole
+body (it does not parse JSON or forms, so it can still match malformed JSON). JSON
+with an empty selector examines every object key and scalar value; a RFC6901
+pointer selects only that value and its nested keys/scalars. ANY is the broadest:
+method, query, headers, BODY/JSON/FORM views and URL/PATH routing views together.
+Prefer the narrowest field that expresses the rule.
+`HEADERS_INCOMPLETE`/`BODY_INCOMPLETE` only report optional capture; a
+field-unavailable warning appears only for a field that an enabled rule demanded.
+
 Textual percent decoding uses strict UTF-8 and at most three transforming rounds;
 replacement characters are not silently substituted. A malformed escape, literal
 percent, unsupported charset/media/encoding, binary/multipart data, malformed JSON,
@@ -108,8 +123,9 @@ rule can still match a malformed JSON body without claiming JSON parsing worked.
 There is no general interpretation of XML/HTML entities, Base64, encryption,
 custom serialization, recursive JSON-in-strings, WebSocket frames or unseen native
 traffic. Inspection warnings disclose this limitation rather than pretend to
-provide server-equivalent parsing. Raw human UI capture is separate from masked
-exportable evidence; see `EVIDENCE.md` and the runtime/UI integration requirements.
+provide server-equivalent parsing. Evidence capture is complete and unmasked regardless
+of these policy inspection bounds (an oversized/unsupported body is retained but
+unavailable to rules); see `EVIDENCE.md` and the runtime/UI integration requirements.
 
 ## Authorities and bounds
 

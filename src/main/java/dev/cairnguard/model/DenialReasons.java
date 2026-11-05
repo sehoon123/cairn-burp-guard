@@ -2,7 +2,7 @@ package dev.cairnguard.model;
 
 import java.util.Set;
 
-/** Fixed native denial vocabulary shared by the adapter and masked evidence boundary. */
+/** Fixed native denial vocabulary shared by the adapter and evidence (categorical, never exception/traffic text). */
 public final class DenialReasons {
     private DenialReasons() {}
 

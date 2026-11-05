@@ -88,6 +88,9 @@ class SettingsEditorTest {
             assertFalse(get(editor, "settings.advanced", JPanel.class).isVisible());
             assertFalse(get(editor, "settings.advanced.toggle", JCheckBox.class).isSelected());
             assertTrue(get(editor, "settings.guidance", JTextArea.class).getText().contains("세션 갱신 기능은 없습니다"));
+            String timing = get(editor, "settings.timing.help", JTextArea.class).getText();
+            assertTrue(timing.contains("같은 호스트") && timing.contains("5xx 회로가 아니") && timing.contains("늘려도"), timing);
+            assertTrue(get(editor, "settings.requestTimeoutSeconds.label", JLabel.class).getText().contains("같은 호스트 격리"));
             Set<String> names = new HashSet<>();
             for (String field : Stream.concat(INTEGER_FIELDS.stream(), TIME_FIELDS.stream()).toList()) {
                 JSpinner spinner = spinner(editor, field);

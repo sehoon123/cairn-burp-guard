@@ -124,4 +124,57 @@ class GuardPanelExportTest {
         if (Files.getFileStore(target).supportsFileAttributeView("posix"))
             assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(target));
     }
+
+    @Test void finalCheckpointRefusalPublishesNothingAndRemovesOnlyTheTaskTempAndReservation() throws Exception {
+        Path target = directory.resolve("checkpoint.json");
+        GuardPanel.ExportTarget fresh = GuardPanel.inspectTarget(target);
+        IOException refused = assertThrows(IOException.class, () -> GuardPanel.writeAtomic(fresh, "plaintext".getBytes(java.nio.charset.StandardCharsets.UTF_8), () -> false));
+        assertEquals("STALE_EXPORT", refused.getMessage());
+        assertFalse(Files.exists(target));
+        assertEquals(List.of(), children());
+        Files.writeString(target, "keep");
+        GuardPanel.ExportTarget existing = GuardPanel.inspectTarget(target);
+        assertThrows(IOException.class, () -> GuardPanel.writeAtomic(existing, "new".getBytes(java.nio.charset.StandardCharsets.UTF_8), () -> false));
+        assertEquals("keep", Files.readString(target));
+        assertEquals(List.of(target), children());
+        // accepted checkpoint publishes the exact bytes, owner-only
+        byte[] binary = {0, 1, (byte) 0xff, 'x'};
+        GuardPanel.writeAtomic(existing, binary, () -> true);
+        assertArrayEquals(binary, Files.readAllBytes(target));
+        assertOwnerOnly(target);
+    }
+
+    @Test void relevantRawSourceClearThroughTheRealControllerPredicateAbortsPublicationLeavesNothingAndKeepsUnrelatedTargets() throws Exception {
+        dev.cairnguard.model.GuardConfig config = new dev.cairnguard.model.GuardConfig(2,
+                List.of(new dev.cairnguard.model.GuardConfig.ScopeEntry(true, "owned.test", "https", 443, "")), List.of(), List.of(),
+                dev.cairnguard.model.GuardConfig.Mode.ALLOW, dev.cairnguard.model.GuardConfig.defaults().limits());
+        String[] stored = {dev.cairnguard.model.PolicyCodec.encode(config)};
+        dev.cairnguard.runtime.GuardController controller = new dev.cairnguard.runtime.GuardController(new dev.cairnguard.runtime.ProjectAccess() {
+            @Override public Ref current() { return new Ref("p", "Synthetic"); }
+            @Override public String load() { return stored[0]; }
+            @Override public void save(String value) { stored[0] = value; }
+        });
+        try {
+            var prepared = controller.prepare(new dev.cairnguard.model.RequestData("GET", "https://owned.test/original", "owned.test", 443, true, List.of(), new byte[0]));
+            var admission = controller.authorize(prepared);
+            assertTrue(admission.allowed(), admission.reason());
+            assertTrue(controller.commitDetailed(prepared).allowed());
+            controller.response(prepared.evidenceId(), 200, List.of(), "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8), 2);
+            var export = controller.humanExport(List.of(prepared.evidenceId()), false);
+            byte[] bytes = export.serialize();
+            Path target = directory.resolve("evicted.json");
+            Path unrelated = directory.resolve("unrelated.json"); Files.writeString(unrelated, "keep");
+            GuardPanel.ExportTarget choice = GuardPanel.inspectTarget(target);
+            for (int i = 0; i < 2000; i++) controller.prepareRejected("CAPTURE_FAILED"); // ordinary traffic evicts nothing (no quota)
+            assertEquals(Boolean.TRUE, controller.rawCaptureInfo(prepared.evidenceId()).get("available"));
+            assertTrue(controller.humanExportCurrent(export));
+            controller.clearEvidence(); // an explicit clear releases the original
+            assertEquals(Boolean.FALSE, controller.rawCaptureInfo(prepared.evidenceId()).get("available"));
+            IOException refused = assertThrows(IOException.class, () -> GuardPanel.writeAtomic(choice, bytes, () -> controller.humanExportCurrent(export)));
+            assertEquals("STALE_EXPORT", refused.getMessage());
+            assertFalse(Files.exists(target));
+            assertEquals(List.of(unrelated), children(), "no publication, no leftover task-owned temp, unrelated target untouched");
+            assertEquals("keep", Files.readString(unrelated));
+        } finally { controller.close(); }
+    }
 }

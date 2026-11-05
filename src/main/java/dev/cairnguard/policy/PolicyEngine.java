@@ -48,13 +48,29 @@ public final class PolicyEngine {
         catch (RuntimeException e) { throw new IllegalArgumentException("INVALID_REQUEST"); }
     }
 
+    /**
+     * The single complete routing path of a request for exact route identity (e.g. 5xx circuit
+     * exceptions), or null when the interpretation is incomplete or ambiguous (several views: encodings,
+     * dot/matrix/separator aliases). Derived transiently from the ACTUAL native target, never from a
+     * Host header or display URL; the query is not part of the identity. Nothing is retained.
+     */
+    public static String exactRoutingPath(RequestData request) {
+        try {
+            RequestInspection.Target target = RequestInspection.target(request, new Budget());
+            return target.routingComplete() && target.paths().size() == 1 ? target.paths().getFirst() : null;
+        } catch (RuntimeException e) { return null; }
+    }
+
     /** Validates even disabled entries, so enabling them cannot activate an unvalidated expression. */
     public void validate(GuardConfig config) {
         compiled(config);
     }
 
     /** Actual destination/routing scope gates cannot be overridden by any mode or rule order. */
-    public Decision evaluate(GuardConfig config, RequestData request) {
+    public Decision evaluate(GuardConfig config, RequestData request) { return evaluate(config, request, true); }
+
+    /** contentInspectionAvailable=false: optional content conditions are unavailable (never EXEMPT-granting). */
+    public Decision evaluate(GuardConfig config, RequestData request, boolean contentInspectionAvailable) {
         CompiledPolicy policy;
         try { policy = compiled(config); }
         catch (RuntimeException e) { return Decision.blocked("INVALID_CONFIG"); }
@@ -78,7 +94,7 @@ public final class PolicyEngine {
                 }
             }
             if (!allowed || unresolvedBlockScope) return Decision.blocked("SCOPE_NOT_ALLOWED");
-            RequestInspection inspection = RequestInspection.inspect(target, request, policy.demand);
+            RequestInspection inspection = RequestInspection.inspect(target, request, policy.demand, contentInspectionAvailable);
             List<RuleHit> hits = new ArrayList<>();
             Mode action = null;
             for (CompiledRule rule : policy.rules) {
@@ -336,6 +352,14 @@ public final class PolicyEngine {
         for (GuardConfig.ProbePath path : limits.healthProbePaths()) {
             require(path != null, "INVALID_LIMITS");
             require(probes.add(route(path.scheme(), path.host(), path.port(), path.path())), "INVALID_LIMITS");
+        }
+        for (List<GuardConfig.ProbePath> list : java.util.Arrays.asList(limits.circuit5xxExceptions(), limits.fanoutExceptions())) {
+            require(list != null && list.size() <= 16, "INVALID_LIMITS");
+            Set<String> exceptions = new HashSet<>();
+            for (GuardConfig.ProbePath path : list) {
+                require(path != null, "INVALID_LIMITS");
+                require(exceptions.add(route(path.scheme(), path.host(), path.port(), path.path())), "INVALID_LIMITS");
+            }
         }
         Set<String> heavyPaths = new HashSet<>();
         for (GuardConfig.PathByteLimit path : limits.heavyPathLimits()) {

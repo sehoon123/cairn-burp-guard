@@ -25,7 +25,22 @@ class PolicyCodecTest {
                 List.of(GuardConfig.defaults().rules().getFirst(), LEGACY_STRING), Mode.ALLOW,
                 new Limits(7, 3, Map.of("example.test", 2), 4, 10, 1234, 2345, 3456));
     }
-    private static ObjectNode document() { return Json.MAPPER.valueToTree(GuardConfig.defaults()); }
+    /** A historically saved schema-2 policy: circuit explicitly ON, no circuit5xxExceptions field. */
+    private static GuardConfig savedOn() { return withCircuit(GuardConfig.defaults(), new Circuit5xx(60_000, 5, 600_000, 1), List.of()); }
+    private static GuardConfig withCircuit(GuardConfig base, Circuit5xx circuit, List<ProbePath> exceptions) {
+        Limits l = base.limits();
+        return new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), circuit,
+                        l.fanout(), l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(), l.heavyPathLimits(), exceptions),
+                base.guardListenerPorts());
+    }
+    private static ObjectNode document() {
+        ObjectNode node = Json.MAPPER.valueToTree(savedOn());
+        // the exact first schema-2 shape: none of the three optional fields
+        ((ObjectNode) node.get("limits")).remove(List.of("circuit5xxExceptions", "heavyResponseEnabled", "fanoutExceptions"));
+        return node;
+    }
     private static PolicyCodec.Decoded decode(JsonNode node) { return PolicyCodec.decode(Json.write(node)); }
     private static void invalid(String document) {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> PolicyCodec.decode(document));
@@ -127,7 +142,8 @@ class PolicyCodecTest {
         assertEquals(2, cfg.schemaVersion());
         assertEquals(List.of("delete-method"), cfg.rules().stream().map(Rule::id).toList());
         assertEquals(5L * 1_048_576, cfg.limits().perPathMaxResponseBytes());
-        assertEquals(new Circuit5xx(60_000, 5, 600_000, 1), cfg.limits().circuit5xx());
+        assertNull(cfg.limits().circuit5xx(), "the 5xx circuit is optional and OFF for fresh profiles");
+        assertTrue(cfg.limits().circuit5xxExceptions().isEmpty());
         assertEquals(new Fanout(60_000, 100, FanoutAction.WARN), cfg.limits().fanout());
         assertEquals(cfg, PolicyCodec.decode(PolicyCodec.encode(cfg)).config());
         assertSame(cfg, PolicyCodec.toV2(cfg));
@@ -169,6 +185,149 @@ class PolicyCodecTest {
         ObjectNode off = document();
         ((ObjectNode) off.get("limits")).putNull("circuit5xx").putNull("fanout");
         assertDoesNotThrow(() -> decode(off));
+    }
+
+    private static final ProbePath EXPECTED = new ProbePath("https", "example.test", 443, "/expected-error");
+
+    @Test void emptyExceptionListIsOmittedOnEncodeSoOldReadersAndOldShapeStillWork() {
+        for (GuardConfig empty : List.of(GuardConfig.defaults(), savedOn())) {
+            String saved = PolicyCodec.encode(empty);
+            assertFalse(saved.contains("circuit5xxExceptions"));
+            assertEquals(Json.write(empty), saved);
+            assertEquals(empty, PolicyCodec.decode(saved).config());
+        }
+        JsonNode oldShape = document();
+        assertFalse(oldShape.get("limits").has("circuit5xxExceptions"));
+        PolicyCodec.Decoded old = PolicyCodec.decode(Json.write(oldShape));
+        assertEquals(savedOn(), old.config(), "an explicitly saved ON circuit stays ON and gains an empty list in memory only");
+        assertFalse(old.migrationPending());
+    }
+
+    @Test void nonEmptyExceptionListRoundTripsAndIsPreservedByEveryProductionCopyPath() {
+        GuardConfig cfg = withCircuit(GuardConfig.defaults(), null, List.of(EXPECTED, new ProbePath("http", "other.test", 8080, "/a/b")));
+        String saved = PolicyCodec.encode(cfg);
+        assertTrue(saved.contains("\"circuit5xxExceptions\""));
+        assertEquals(cfg, PolicyCodec.decode(saved).config());
+        assertEquals(cfg, Json.read(Json.write(cfg), GuardConfig.class));
+        assertSame(cfg, PolicyCodec.toV2(cfg));
+        assertEquals(cfg.limits().circuit5xxExceptions(), PolicyCodec.removeLegacyDeleteString(cfg).limits().circuit5xxExceptions());
+        assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encodeLegacy(withLegacySchema(cfg)),
+                "the frozen v1 shape cannot carry the field; it is validated and rejected, never silently dropped");
+        assertEquals(cfg.limits().circuit5xxExceptions(), new Limits(1, 1, Map.of(), 1, 0, 1, 1, 1, 0, 1000, null, null, 0, false, List.of(), List.of(), cfg.limits().circuit5xxExceptions()).circuit5xxExceptions());
+        assertTrue(new Limits(1, 1, Map.of(), 1, 0, 1, 1, 1).circuit5xxExceptions().isEmpty());
+    }
+    private static GuardConfig withLegacySchema(GuardConfig c) {
+        return new GuardConfig(1, c.allowScope(), c.blockScope(), c.rules(), c.defaultMode(), c.limits());
+    }
+
+    private static GuardConfig controls(GuardConfig base, boolean heavy, List<ProbePath> fanout) {
+        Limits l = base.limits();
+        return new GuardConfig(2, base.allowScope(), base.blockScope(), base.rules(), base.defaultMode(),
+                new Limits(l.globalRps(), l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(),
+                        l.approvalTimeoutMillis(), l.requestTimeoutMillis(), l.perPathMaxResponseBytes(), l.autoBlockMillis(), l.circuit5xx(),
+                        l.fanout(), l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(), l.heavyPathLimits(),
+                        l.circuit5xxExceptions(), heavy, fanout), base.guardListenerPorts());
+    }
+
+    @Test void detectorControlsDefaultToOldShapeAndRoundTripEveryOptionalCombination() {
+        GuardConfig defaults = GuardConfig.defaults();
+        assertTrue(defaults.limits().heavyResponseEnabled(), "large-response protection stays ON for fresh profiles");
+        assertTrue(defaults.limits().fanoutExceptions().isEmpty());
+        assertEquals(new Fanout(60_000, 100, FanoutAction.WARN), defaults.limits().fanout());
+        String saved = PolicyCodec.encode(defaults);
+        assertFalse(saved.contains("heavyResponseEnabled")); assertFalse(saved.contains("fanoutExceptions"));
+        PolicyCodec.Decoded old = PolicyCodec.decode(Json.write(document()));
+        assertTrue(old.config().limits().heavyResponseEnabled(), "absent master means ON");
+        assertTrue(old.config().limits().fanoutExceptions().isEmpty());
+        assertFalse(old.migrationPending());
+        for (boolean heavy : List.of(true, false)) for (List<ProbePath> fanout : List.of(List.<ProbePath>of(), List.of(EXPECTED)))
+            for (List<ProbePath> circuit : List.of(List.<ProbePath>of(), List.of(new ProbePath("http", "other.test", 8080, "/c")))) {
+                GuardConfig cfg = controls(withCircuit(GuardConfig.defaults(), null, circuit), heavy, fanout);
+                String text = PolicyCodec.encode(cfg);
+                assertEquals(!heavy, text.contains("\"heavyResponseEnabled\""));
+                assertEquals(!fanout.isEmpty(), text.contains("\"fanoutExceptions\""));
+                assertEquals(!circuit.isEmpty(), text.contains("\"circuit5xxExceptions\""));
+                assertEquals(cfg, PolicyCodec.decode(text).config());
+                assertEquals(cfg.limits(), PolicyCodec.removeLegacyDeleteString(cfg).limits());
+            }
+        // compatibility constructors keep the master ON and no fan-out exceptions
+        Limits l = defaults.limits();
+        assertTrue(new Limits(1, 1, Map.of(), 1, 0, 1, 1, 1).heavyResponseEnabled());
+        assertTrue(new Limits(1, 1, Map.of(), 1, 0, 1, 1, 1, 0, 1000, null, null, 0, false, List.of(), List.of()).fanoutExceptions().isEmpty());
+        assertTrue(new Limits(1, 1, Map.of(), 1, 0, 1, 1, 1, 0, 1000, null, null, 0, false, List.of(), List.of(), List.of(EXPECTED)).heavyResponseEnabled());
+        GuardConfig off = controls(defaults, false, List.of(EXPECTED));
+        assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encodeLegacy(withLegacySchema(off)),
+                "the frozen v1 shape cannot carry heavy=false or fan-out exceptions; never dropped silently");
+        assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encodeLegacy(withLegacySchema(controls(defaults, true, List.of(EXPECTED)))));
+        assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encodeLegacy(withLegacySchema(controls(defaults, false, List.of()))));
+    }
+
+    @Test void detectorControlFieldsAreStrictlyTypedBoundedAndNeverAcceptedByV1() throws Exception {
+        ObjectNode valid = document();
+        ((ObjectNode) valid.get("limits")).put("heavyResponseEnabled", false).putArray("fanoutExceptions").add(Json.MAPPER.valueToTree(EXPECTED));
+        assertDoesNotThrow(() -> decode(valid));
+        for (Object bad : new Object[]{null, "false", 0, List.of(), Map.of()}) {
+            ObjectNode altered = valid.deepCopy(); replace(altered, "/limits/heavyResponseEnabled", bad); invalid(altered);
+        }
+        for (Object bad : new Object[]{null, "[]", Map.of(), 1, true}) {
+            ObjectNode altered = valid.deepCopy(); replace(altered, "/limits/fanoutExceptions", bad); invalid(altered);
+        }
+        for (String field : List.of("scheme", "host", "port", "path")) {
+            ObjectNode altered = valid.deepCopy(); ((ObjectNode) altered.at("/limits/fanoutExceptions/0")).remove(field); invalid(altered);
+        }
+        ObjectNode unknown = valid.deepCopy(); ((ObjectNode) unknown.at("/limits/fanoutExceptions/0")).put("unknown", true); invalid(unknown);
+        for (String path : List.of("/a?x=1", "/a#f", "/a/../b", "/a;b", "/a%2fb", "relative")) {
+            ObjectNode altered = valid.deepCopy(); ((ObjectNode) altered.at("/limits/fanoutExceptions/0")).put("path", path); invalid(altered);
+        }
+        ObjectNode alias = valid.deepCopy();
+        ((ArrayNode) alias.at("/limits/fanoutExceptions")).add(Json.MAPPER.valueToTree(new ProbePath("https", "EXAMPLE.test.", 443, "/expected-error")));
+        invalid(alias);
+        ObjectNode sixteen = document(); ArrayNode rows = ((ObjectNode) sixteen.get("limits")).putArray("fanoutExceptions");
+        for (int i = 0; i < 16; i++) rows.add(Json.MAPPER.valueToTree(new ProbePath("https", "example.test", 443, "/f/" + i)));
+        assertDoesNotThrow(() -> decode(sixteen));
+        rows.add(Json.MAPPER.valueToTree(new ProbePath("https", "example.test", 443, "/f/16"))); invalid(sixteen);
+        for (String field : List.of("heavyResponseEnabled", "fanoutExceptions")) {
+            ObjectNode raw = (ObjectNode) Json.MAPPER.readTree(Json.write(legacy()));
+            if (field.equals("heavyResponseEnabled")) ((ObjectNode) raw.get("limits")).put(field, true);
+            else ((ObjectNode) raw.get("limits")).putArray(field);
+            invalid(raw);
+        }
+        String text = PolicyCodec.encode(controls(GuardConfig.defaults(), false, List.of()));
+        invalid(text.replace("\"heavyResponseEnabled\" :", "\"heavyResponseEnabled\" : true, \"heavyResponseEnabled\" :"));
+    }
+
+    @Test void exceptionFieldIsStrictlyTypedBoundedAndNeverAcceptedByV1() throws Exception {
+        ObjectNode valid = document();
+        ((ObjectNode) valid.get("limits")).putArray("circuit5xxExceptions").add(Json.MAPPER.valueToTree(EXPECTED));
+        assertDoesNotThrow(() -> decode(valid));
+        for (Object bad : new Object[]{null, "[]", Map.of(), 1, true}) {
+            ObjectNode altered = valid.deepCopy(); replace(altered, "/limits/circuit5xxExceptions", bad); invalid(altered);
+        }
+        for (String field : List.of("scheme", "host", "port", "path")) {
+            ObjectNode altered = valid.deepCopy(); ((ObjectNode) altered.at("/limits/circuit5xxExceptions/0")).remove(field); invalid(altered);
+        }
+        ObjectNode unknown = valid.deepCopy(); ((ObjectNode) unknown.at("/limits/circuit5xxExceptions/0")).put("unknown", true); invalid(unknown);
+        ObjectNode coerced = valid.deepCopy(); ((ObjectNode) coerced.at("/limits/circuit5xxExceptions/0")).put("port", "443"); invalid(coerced);
+        ObjectNode nullRow = valid.deepCopy(); ((ArrayNode) nullRow.at("/limits/circuit5xxExceptions")).addNull(); invalid(nullRow);
+        for (String path : List.of("", "relative", "//other.test/a", "/a?x=1", "/a#f", "/a/../b", "/a/./b", "/a;b", "/a%2fb", "/a%zz", "/a\\b", "/a b")) {
+            ObjectNode altered = valid.deepCopy(); ((ObjectNode) altered.at("/limits/circuit5xxExceptions/0")).put("path", path); invalid(altered);
+        }
+        for (String host : List.of("*.example.test", "user@example.test", "example.test:443", "")) {
+            ObjectNode altered = valid.deepCopy(); ((ObjectNode) altered.at("/limits/circuit5xxExceptions/0")).put("host", host); invalid(altered);
+        }
+        ObjectNode alias = valid.deepCopy();
+        ((ArrayNode) alias.at("/limits/circuit5xxExceptions")).add(Json.MAPPER.valueToTree(new ProbePath("https", "EXAMPLE.test.", 443, "/expected-error")));
+        invalid(alias);
+        ObjectNode sixteen = document(); ArrayNode rows = ((ObjectNode) sixteen.get("limits")).putArray("circuit5xxExceptions");
+        for (int i = 0; i < 16; i++) rows.add(Json.MAPPER.valueToTree(new ProbePath("https", "example.test", 443, "/e/" + i)));
+        assertDoesNotThrow(() -> decode(sixteen));
+        rows.add(Json.MAPPER.valueToTree(new ProbePath("https", "example.test", 443, "/e/16"))); invalid(sixteen);
+        // The raw v1 shape cannot smuggle the field, not even as an empty list.
+        ObjectNode raw = (ObjectNode) Json.MAPPER.readTree(Json.write(legacy()));
+        ((ObjectNode) raw.get("limits")).putArray("circuit5xxExceptions");
+        invalid(raw);
+        String text = PolicyCodec.encode(withCircuit(GuardConfig.defaults(), null, List.of(EXPECTED)));
+        invalid(text.replace("\"circuit5xxExceptions\" :", "\"circuit5xxExceptions\" : [ ], \"circuit5xxExceptions\" :"));
     }
 
     @Test void strictDuplicateUnknownTrailingAndBoundedDocumentChecksApplyToBothVersions() {

@@ -34,7 +34,7 @@ class LateResponseRegressionTest {
     }
     private static ResponseWatcher.Endpoint endpoint(ResponseWatcher w, String target) {
         RequestData r=request(target);
-        return w.endpoint(r,"https://owned.test"+target,PolicyEngine.routingPaths(r));
+        return w.endpoint(r,PolicyEngine.routingPaths(r));
     }
     private static long metric(ResponseWatcher w,String key) { return ((Number)w.snapshot().get(key)).longValue(); }
     private static long metric(RateGate gate,String key) { return ((Number)gate.snapshot().get(key)).longValue(); }
@@ -79,13 +79,23 @@ class LateResponseRegressionTest {
         w.cancel(replacement);
     }
 
-    @Test void timeoutRetainsMaskedEndpointUntilCompletionAndResetInvalidatesIt() throws Exception {
+    @Test void timeoutRetainsOriginalEndpointUntilCompletionAndResetInvalidatesIt() throws Exception {
         ResponseWatcher w=watcher(limits(10,null));var e=endpoint(w,"/synthetic-late-secret");var ticket=w.commit(e,false,"");
-        advance(1001);w.refreshDisplay(s->s.replace("synthetic-late-secret","[REDACTED]"));w.observe(ticket,200,11);
-        assertEquals(1,w.candidates().size(),"Privacy must preserve a masked late observation, not silently drop it");
-        assertFalse(w.incidentJson(1_000_000,1_002_000).contains("synthetic-late-secret"));
+        advance(1001);w.observe(ticket,200,11);
+        assertEquals(1,w.candidates().size(),"A late observation is preserved, not silently dropped");
+        assertEquals("/synthetic-late-secret",w.candidates().getFirst().path());
+        assertTrue(w.incidentJson(1_000_000,1_002_000).contains("/synthetic-late-secret"));
         var stale=w.commit(endpoint(w,"/different"),false,"");advance(1001);w.snapshot();w.reset();
         w.observe(stale,503,100_000);assertTrue(w.overlays().isEmpty());assertTrue(w.candidates().isEmpty());
+    }
+
+    @Test void clearBetweenCommitAndLateCompletionNeverResurrectsClearedDisplayOriginals() throws Exception {
+        ResponseWatcher w=watcher(limits(10,null));var e=endpoint(w,"/synthetic-late-secret");var ticket=w.commit(e,false,"");
+        advance(1001);w.clearEvidence();w.observe(ticket,200,11);
+        assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED",w.check(e,false).reason(),"enforcement identity is unchanged by an explicit clear");
+        assertFalse(w.overlays().toString().contains("synthetic-late-secret"));
+        assertFalse(w.candidates().toString().contains("synthetic-late-secret"));
+        assertFalse(w.incidentJson(1_000_000,1_002_000).contains("synthetic-late-secret"));
     }
 
     @Test void controllerRetainsLateObservationTicketWithoutReturningNativePermit() {

@@ -49,7 +49,7 @@
 |---|---|---|---|---|---|---|---|
 | `<<EVIDENCE_ID>>` | `<<ALIAS>>` | `미확인` | `미확인` | `미확인` | `미확인` | `미확인` | `미확인` |
 
-증거 출처를 `worker가 proxy경유 요청 후 관찰한 메타데이터 | 사람이 제공한 Guard redacted callback export | 합성 fixture | 미확인`으로 구분한다. worker 관찰만으로 Guard policy revision이나 네이티브 통과를 지어내지 않는다. 프록시 응답/캐시/다른 확장 등 대안 출처도 남긴다.
+증거 출처를 `worker가 proxy경유 요청 후 관찰한 메타데이터 | 사람이 제공한 Guard 원문 callback export(Guard는 마스킹하지 않음: 평문 비밀 가능, 보고서에 비밀 복사 금지) | 합성 fixture | 미확인`으로 구분한다. worker 관찰만으로 Guard policy revision이나 네이티브 통과를 지어내지 않는다. 프록시 응답/캐시/다른 확장 등 대안 출처도 남긴다.
 
 `FORWARDED`는 네이티브 전송의 해제만 의미하며 서버 도달/처리 성공 증명이 아니다. `BLOCKED` 및 확장 생성 local 451은 대상 서버 응답이 아니다. `statusCode`만 보고 출처를 단정하지 않는다. evictions/truncations/누락 응답과 지원 밖 트래픽은 미관찰 범위다. 다른 확장, TLS pass-through, raw CONNECT/WebSocket, 프록시를 거치지 않는 소켓 등은 이 증거로 검증하지 못한다.
 

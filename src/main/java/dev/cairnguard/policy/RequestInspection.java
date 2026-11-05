@@ -180,6 +180,14 @@ final class RequestInspection {
     }
 
     static RequestInspection inspect(Target target, RequestData request, Set<Field> demand) {
+        return inspect(target, request, demand, true);
+    }
+
+    /**
+     * contentInspectionAvailable=false (bounded inspection capacity) skips optional HEADER/BODY/JSON/FORM
+     * parsing and reports it unavailable; it never changes the copy's completeness or routing/scope work.
+     */
+    static RequestInspection inspect(Target target, RequestData request, Set<Field> demand, boolean contentInspectionAvailable) {
         RequestInspection input = new RequestInspection(target);
         if (!request.headersComplete()) input.warnings.add("HEADERS_INCOMPLETE");
         if (!request.bodyComplete()) input.warnings.add("BODY_INCOMPLETE");
@@ -189,7 +197,8 @@ final class RequestInspection {
             if (target.query == null) throw fail("REQUEST_TOO_LARGE");
             input.query = parameters(target.query, new Budget());
         });
-        if (any || demand.contains(Field.HEADER)) input.optional(Field.HEADER, () -> {
+        if ((any || demand.contains(Field.HEADER)) && !contentInspectionAvailable) input.unavailable(Field.HEADER, "INSPECTION_CAPACITY");
+        else if (any || demand.contains(Field.HEADER)) input.optional(Field.HEADER, () -> {
             validateHeaders(target.headers, request.headersComplete());
             List<Named> headers = new ArrayList<>();
             Budget budget = new Budget();
@@ -200,7 +209,10 @@ final class RequestInspection {
             input.headers = List.copyOf(headers);
         });
         boolean bodyWanted = any || demand.contains(Field.BODY) || demand.contains(Field.JSON) || demand.contains(Field.FORM);
-        if (bodyWanted) inspectBody(input, target, request, demand, any);
+        if (bodyWanted && !contentInspectionAvailable) {
+            for (Field field : List.of(Field.BODY, Field.JSON, Field.FORM))
+                if (any || demand.contains(field)) input.unavailable(field, "INSPECTION_CAPACITY");
+        } else if (bodyWanted) inspectBody(input, target, request, demand, any);
         if (any) {
             // ANY can preserve positive matches in an inspectable component. Its completeness is
             // tracked separately so incomplete ANY (or any other field) can NEVER grant EXEMPT.

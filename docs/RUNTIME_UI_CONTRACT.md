@@ -1,8 +1,8 @@
 # Runtime / human UI contract — unreleased v2 source
 
 Read [AGENTS.md](../AGENTS.md) and [INTERFACES.md](INTERFACES.md). This supersedes
-the older second-wave global-FIFO, always-masked-history, six-tab and JSON-list
-editor assumptions. It documents **source behavior**, not installed behavior,
+the older second-wave global-FIFO, masked-history/masked-evidence, bounded-capture,
+six-tab and JSON-list editor assumptions (2026-11-05: no masking, no collection quota). It documents **source behavior**, not installed behavior,
 release completion or independent approval. Exact snapshot/test limits are in
 [VERIFICATION.md](VERIFICATION.md); native acceptance is still pending.
 
@@ -13,7 +13,9 @@ management, request sending/replay, policy autosave or target polling is added.
 ## Controller ownership and lifecycle
 
 One `GuardController` owns project policy/generation, one RateGate/ApprovalQueue,
-ResponseWatcher, IntentBudget, ListenerRegistry and bounded masked/raw evidence.
+ResponseWatcher, IntentBudget, ListenerRegistry and ORIGINAL (unmasked, unbounded)
+evidence; every projection may contain plaintext credentials and memory grows until
+clear/project change/unload (OOM is a documented, user-managed risk).
 It retains no request body/native object in `Prepared` across waits. Prepared is
 a final class with original five-argument constructor/accessors; only
 controller-issued one-shot provenance can authorize/commit. Display projections
@@ -37,8 +39,10 @@ pause/recovery latch. `pause(false)` fails while reload is required. The control
 never infers safety from note strings. Runtime generation (`revision` and
 `policyRevision`) changes on saves/project/mode/pause changes, not just disk writes.
 
-Same-project saves, detector disabling and OFF/ON **retain existing overlays,
-probe cadence and intent debt**. Epoch changes/uncertainty reset watcher/budget/
+Same-project saves and OFF/ON **retain existing overlays, probe cadence and intent
+debt**. Exception (0.2.0): an explicit per-kind detector OFF (heavy master false,
+circuit null, fan-out null or BLOCK/PAUSE -> WARN) ends ONLY that kind's logical
+enforcement immediately, keeping history, omission debt and native ownership. Epoch changes/uncertainty reset watcher/budget/
 listener/tickets and dispose raw UI, but **never close true native permits**.
 Old-epoch response tickets cannot mutate new watcher state. Verified persistence
 recovery is not native in-flight recovery.
@@ -47,8 +51,8 @@ recovery is not native in-flight recovery.
 
 ```text
 nativeMode(messageId) before capture
-  -> bounded inspection copy -> actual-service/path scope and policy
-  -> Prepared with masked/keyed metadata only
+  -> complete copy (+ optional bounded inspection slot) -> actual-service/path scope and policy
+  -> Prepared with categorical/keyed metadata only
   -> hard lifecycle/watcher/budget advisory checks
   -> ASK human wait without rate permit
   -> rate/concurrency admission off EDT
@@ -65,11 +69,10 @@ permit ownership ends only at matching actual completion; controller response
 capture, deadlines, clear, settings, pause, OFF and close are not completion.
 
 Response processing carries actual native status/body length independently of
-optional copies/slots, with explicit completeness flags. Learn new response
-secrets first, remask structured watcher values/pending flights, then observe
-scalars under the controller lock also used for watcher display/incident export.
-Never use raw getters for watcher metadata or replace text in serialized JSON.
-Logical expiry fails the lease once but retains the same bounded masked ticket
+the copy, with explicit completeness flags. Record the original, then observe
+scalars under the controller lock also used for watcher display/incident export
+(no masking/remasking step). After close nothing is recorded.
+Logical expiry fails the lease once but retains the same bounded ticket
 and host/path reservations for actual late observation. Late ordinary heavy/5xx
 scalars are still processed; an expired half-open cannot heal a replacement lease.
 Status distinguishes nonexpired `watcherTickets` from `watcherLateTickets`
@@ -127,60 +130,72 @@ an open editor retains **its original** project/revision/policy baseline.
 3. **규칙**: add/edit/toggle/delete, selectors/literal/RE2/case/AND/OR, EXEMPT mode.
    EXEMPT displayed with a warning/pinned view order without reordering stored
    policy. Unavailable header/body inspection is a warning, not successful matching.
-4. **요청 기록**: separate **unmasked human-local** request/response/URL/tag display,
-   bounded literal filters including intent/run/state/outcome and diagnostic
-   masked metadata. Selected IDs/sort conversions survive bounded refresh.
+4. **요청 기록**: **original** request/response/URL/method/tag/project/hit display
+   (missing originals are labeled), literal filters including intent/run/state/outcome,
+   every retained row (no 2000-row clip). Selected IDs/sort conversions survive refresh.
 5. **승인 대기**: review-only navigation is separate from one-shot approve/deny;
    hard scope/lifecycle/automatic blocks are not approvable.
 6. **설정**: independent guided limits/safety/listener/health drafts; whole-policy
    JSON is optional advanced import/copy, not per-list JSON editors/Apply ALL.
-7. **자동 차단**: masked overlay cause/host/path/creation/expiry, selected/all
-   release with confirmation. Expired/replaced IDs cannot release another overlay.
-8. **대용량 후보**: retained-window maximum descending, approximate p95/count/
-   lastSeen/5xx and incompleteness labels. No automatic policy creation.
+7. **자동 차단**: overlay cause, ORIGINAL host (path only for heavy; host-scoped rows
+   never invent a path), creation/expiry, selected/all one-time release with
+   confirmation, and a separate selected-kind **exception review** seeded only by
+   the overlay's own retained triggering request. Expired/replaced IDs cannot
+   release another overlay or save an exception.
+8. **대용량 후보**: every retained candidate, maximum descending, ORIGINAL actual-service
+   host/path, approximate p95/count/lastSeen/5xx and incompleteness labels. No
+   automatic policy creation.
 
 Usage guide/recipes/Enter/double-click are navigation or **draft filling only**.
 They do not save policy, send traffic, approve requests or reset protections.
-All captured text uses bounded plain JTextArea/text renderers, not active HTML.
+All captured text uses plain JTextArea/text renderers, not active HTML. Traffic/approval/
+diagnostic viewers are read-only, scrollable and unfiltered (complete content; only
+policy/config editors keep their input length limits).
 
-### Raw UI versus masked outputs
+### Original views and outputs
 
-Human history uses `rawRequest`, `rawResponse`, `rawUrl`, `rawCaptureInfo` only for
-local display/search. It labels unmasked/inspection-copy/not-wire, truncated,
-omitted, unavailable and UTF8/HEX. A missing raw row is not silently presented as
-original; masked fallback metadata is identified. Raw content can include synthetic
-or real credentials; human copying/screenshots require care.
+Human history uses `rawRequest`, `rawResponse`, `rawUrl`, `rawCaptureInfo` for local
+display/search. It labels inspection-copy/not-wire, genuine incompleteness,
+unavailable and UTF8/HEX. A missing original is labeled, never guessed. All content can
+include synthetic or real credentials; human copying/screenshots require care.
 
-Raw cache is separate from sealed masked TrafficEntry and independently bounded
-(max2000 /estimated32MiB /64KiB per part). Project change/uncertainty/clear/close
-and eviction dispose it. Late old callbacks cannot revive it. Existing raw history
-can survive OFF, but **new OFF/unselected requests and responses have no content
-capture**. No raw export/worker API/logging or automatic policy harvesting exists.
+`TrafficEntry` rows and the byte captures are the same originals, with no count, byte,
+part, metadata or age quota. Project change/uncertainty/clear/close dispose them (no
+eviction). Late old callbacks cannot revive them. Existing raw history can survive OFF, but
+**new OFF/unselected requests and responses have no content capture**. No worker
+API, logging, background raw export or automatic policy harvesting exists.
 
-JSON/HAR selected/filtered exports serialize sealed masked TrafficEntry, not visible
-raw strings. Masked incidents/candidates/overlays never read raw UI. Response-time
-remasking invalidates changed `policyUrl`; export metadata includes actual scalar
-bytes/warnings and retained/approximate/incomplete semantics. See [EVIDENCE.md](EVIDENCE.md).
+Human JSON/HAR/incident buttons (0.2.0) export ORIGINALS only after a cancel-default
+plaintext-secrets confirmation for every file: snapshot under the controller lock,
+serialization and filesystem work outside every runtime lock, final pre-rename
+checkpoint (tiny check-to-rename race documented), no document size cap, distinct
+`cairn-human-inspection` / HAR `HUMAN_ORIGINAL` / `cairn-human-incident` formats.
+`exportJson`/`exportHar`/`exportIncident` also carry originals; status stays payload-free counters.
+See [EVIDENCE.md](EVIDENCE.md).
 
 ### Candidate controls are drafts, not authority
 
-Only an unchanged, query-free, already-masked actual-service `policyUrl` is eligible
-for a candidate-derived draft. Missing/changed/redacted/unrepresentable route means
-buttons disabled/rejected; **never reconstruct from raw URL/path**. Candidate ID is
-an opaque keyed route ID, overlay ID a UUID; mutations use IDs, not display paths.
-The UI re-fetches the candidate/URL before save and checks the original baseline.
+Drafts are seeded from the candidate's latest retained ORIGINAL actual-service route
+(via the opaque source reference, never a Host header, display string or caller URL).
+Missing/cleared originals disable both buttons with a categorical reason; an
+encoded/aliased route allows the ordinary BLOCK draft but not the strict byte limit.
+Candidate ID is an opaque keyed route ID, overlay ID a UUID; mutations use IDs and
+opaque controller tokens, not display paths. After EVERY confirmation the controller
+revalidates the token (project, runtime epoch, raw generation, latest source, route
+seal) under its lock immediately before the existing CAS; stale tokens write nothing.
 
 - **일반 BLOCK 규칙 초안…** opens a human-editable unsaved URL rule. It remains an
   ordinary BLOCK, so a matching EXEMPT may outrank it. It is not an overlay.
 - **이 경로 N MiB 초과 차단…** edits an exact watcher byte threshold, not a rule.
   It warns the first excess response already passes and existing overlays need
-  separate expiry/release.0 disables size detection there, not other protections.
-- **이 후보 무시…** hides bounded runtime candidate display only, not policy,
+  separate expiry/release. 0 is a size exception: it bypasses heavy gating for that
+  request at once (positive alias overrides still win), not other protections.
+- **이 후보 무시…** hides that runtime candidate display only (new candidates still appear), not policy,
   incidents, active overlays, traffic or future request enforcement.
 
-Candidate/incident count/max/lastSeen/5xx are exact only for retained observations;
-p95 is a log2 upper-bound approximation. Retention is at most24hours, with bounded
-rings/candidate eviction and explicit completeness/truncation. No lifetime or wire
+Candidate/incident count/max/lastSeen/5xx are exact for retained observations (since
+start/clear); p95 is a log2 upper-bound approximation. Retention has no count/age limit;
+incident windows have no maximum; completeness is reported explicitly. No lifetime or wire
 coverage claim is made. Unknown size is not evidence of zero actual response bytes.
 
 ## Strict schema migration and human save
@@ -199,7 +214,7 @@ migration is pending warns that it replaces storage with full schema2; saving so
 other section does **not** silently remove that rule.
 
 Before replacing a v1 document, export/review its operator-authored original locally.
-The original is **not a redacted traffic export** and may contain authored sensitive
+The original is **not a traffic export** and may contain authored sensitive
 patterns. An older preview cannot read schema2. Rollback requires restoring that
 original policy deliberately; loading an old JAR alone does not downgrade it.
 
@@ -272,7 +287,7 @@ Explicit export uses a chooser, bounded background serialization/write, owner-on
 POSIX permissions when supported, symlink/change rejection, same-directory atomic
 publication and overwrite confirmation. No non-atomic fallback or automatic path;
 errors are categorical. Policy-original export is explicitly distinguished from
-masked JSON/HAR/incident. No original logs/screenshots/profile data belong in Git.
+the (original-bearing) machine evidence exports and from the consent-gated human-original exports. No original logs/screenshots/profile data belong in Git.
 
 ## Validation status, not approval
 

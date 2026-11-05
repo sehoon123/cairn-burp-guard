@@ -1,6 +1,7 @@
 package dev.cairnguard.model;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.cairnguard.model.GuardConfig.Condition;
 import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.GuardConfig.Limits;
@@ -23,9 +24,26 @@ public final class PolicyCodec {
     private static final Set<String> ROOT_V1 = Set.of("schemaVersion", "allowScope", "blockScope", "rules", "defaultMode", "limits");
     private static final Set<String> ROOT_V2 = Set.of("schemaVersion", "allowScope", "blockScope", "rules", "defaultMode", "limits", "guardListenerPorts");
     private static final Set<String> LIMITS_V1 = Set.of("globalRps", "perHostRps", "hostRps", "maxConcurrent", "maxQueued", "queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis");
-    private static final Set<String> LIMITS_V2 = Set.of("globalRps", "perHostRps", "hostRps", "maxConcurrent", "maxQueued", "queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis", "perPathMaxResponseBytes", "autoBlockMillis", "circuit5xx", "fanout", "perIntentMaxRequests", "healthProbePassthrough", "healthProbePaths", "heavyPathLimits");
+    private static final String EXCEPTIONS = "circuit5xxExceptions";
+    private static final String HEAVY = "heavyResponseEnabled";
+    private static final String FANOUT_EXCEPTIONS = "fanoutExceptions";
+    private static final Set<String> OPTIONAL_V2 = Set.of(EXCEPTIONS, HEAVY, FANOUT_EXCEPTIONS);
+    // Schema 2 as first released had no circuit5xxExceptions; absence is accepted ONLY for that one field.
+    private static final Set<String> LIMITS_V2_BASE = Set.of("globalRps", "perHostRps", "hostRps", "maxConcurrent", "maxQueued", "queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis", "perPathMaxResponseBytes", "autoBlockMillis", "circuit5xx", "fanout", "perIntentMaxRequests", "healthProbePassthrough", "healthProbePaths", "heavyPathLimits");
+    private static final Set<String> LIMITS_V2 = withExceptions();
 
     private PolicyCodec() {}
+    private static Set<String> withExceptions() {
+        java.util.HashSet<String> all = new java.util.HashSet<>(LIMITS_V2_BASE);
+        all.addAll(OPTIONAL_V2);
+        return Set.copyOf(all);
+    }
+    /** The exact limits field set of THIS document: the first schema-2 shape plus the optional fields present. */
+    private static Set<String> limitsShape(JsonNode limits) {
+        java.util.HashSet<String> fields = new java.util.HashSet<>(LIMITS_V2_BASE);
+        for (String optional : OPTIONAL_V2) if (limits.has(optional)) fields.add(optional);
+        return Set.copyOf(fields);
+    }
 
     public record Decoded(GuardConfig config, boolean migrationPending, String originalDocument) {}
 
@@ -41,6 +59,18 @@ public final class PolicyCodec {
             check(schema == 1 || schema == 2);
             shape(root, schema == 1 ? ROOT_V1 : ROOT_V2);
             policyShape(root, schema);
+            if (schema == 2) {
+                // Narrow compatibility for the three optional fields ONLY: absent lists are empty and an absent
+                // heavy master is ON. Null/wrong types were already rejected by policyShape.
+                JsonNode limits = root.get("limits");
+                if (!limits.has(EXCEPTIONS) || !limits.has(HEAVY) || !limits.has(FANOUT_EXCEPTIONS)) {
+                    root = root.deepCopy();
+                    ObjectNode copy = (ObjectNode) root.get("limits");
+                    if (!copy.has(EXCEPTIONS)) copy.putArray(EXCEPTIONS);
+                    if (!copy.has(HEAVY)) copy.put(HEAVY, true);
+                    if (!copy.has(FANOUT_EXCEPTIONS)) copy.putArray(FANOUT_EXCEPTIONS);
+                }
+            }
             GuardConfig config;
             if (schema == 1) {
                 // Frozen DTO has ONLY the original fields. Never deserialize raw v1 as today's record.
@@ -59,7 +89,15 @@ public final class PolicyCodec {
     public static String encode(GuardConfig config) {
         GuardConfig v2 = toV2(config);
         try {
-            String document = Json.MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(v2);
+            JsonNode tree = Json.MAPPER.valueToTree(v2);
+            // An EMPTY exception list is omitted so no-exception policies keep the first schema-2 shape
+            // (rollback to an older reader works); a non-empty list requires this or a newer reader.
+            ObjectNode limits = (ObjectNode) tree.get("limits");
+            if (v2.limits().circuit5xxExceptions().isEmpty()) limits.remove(EXCEPTIONS);
+            // Same rule for the detector controls: the default (master ON / no fan-out exceptions) keeps the old shape.
+            if (v2.limits().heavyResponseEnabled()) limits.remove(HEAVY);
+            if (v2.limits().fanoutExceptions().isEmpty()) limits.remove(FANOUT_EXCEPTIONS);
+            String document = Json.MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(tree);
             check(document.length() <= MAX_DOCUMENT); // never save a document this reader cannot reopen
             return document;
         } catch (Exception e) { throw invalid(); }
@@ -89,6 +127,9 @@ public final class PolicyCodec {
     public static String encodeLegacy(GuardConfig config) {
         check(config != null && config.schemaVersion() == 1);
         new PolicyEngine().validate(config);
+        // The frozen v1 shape cannot carry these; never drop them silently.
+        check(config.limits().circuit5xxExceptions().isEmpty() && config.limits().heavyResponseEnabled()
+                && config.limits().fanoutExceptions().isEmpty());
         Limits l = config.limits();
         LegacyPolicy legacy = new LegacyPolicy(1, config.allowScope(), config.blockScope(), config.rules(),
                 config.defaultMode(), new LegacyLimits(l.globalRps(), l.perHostRps(), l.hostRps(),
@@ -129,7 +170,7 @@ public final class PolicyCodec {
         strings(root, "defaultMode");
         check(!root.get("defaultMode").textValue().equals("EXEMPT"));
         JsonNode limits = root.get("limits");
-        shape(limits, schema == 1 ? LIMITS_V1 : LIMITS_V2);
+        shape(limits, schema == 1 ? LIMITS_V1 : limitsShape(limits));
         for (String name : List.of("globalRps", "perHostRps", "maxConcurrent", "maxQueued")) integer(limits.get(name), false);
         for (String name : List.of("queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis")) integer(limits.get(name), true);
         JsonNode hostRps = limits.get("hostRps");
@@ -142,6 +183,7 @@ public final class PolicyCodec {
         integer(limits.get("autoBlockMillis"), true);
         integer(limits.get("perIntentMaxRequests"), false);
         bool(limits.get("healthProbePassthrough"));
+        if (limits.has(HEAVY)) bool(limits.get(HEAVY));
         JsonNode circuit = limits.get("circuit5xx");
         if (!circuit.isNull()) {
             shape(circuit, Set.of("windowMillis", "threshold", "openMillis", "halfOpenProbe"));
@@ -157,7 +199,10 @@ public final class PolicyCodec {
             integer(fanout.get("distinctPaths"), false);
             strings(fanout, "action");
         }
-        for (String list : List.of("healthProbePaths", "heavyPathLimits")) {
+        List<String> routeLists = new java.util.ArrayList<>(List.of("healthProbePaths", "heavyPathLimits"));
+        if (limits.has(EXCEPTIONS)) routeLists.add(EXCEPTIONS);
+        if (limits.has(FANOUT_EXCEPTIONS)) routeLists.add(FANOUT_EXCEPTIONS);
+        for (String list : routeLists) {
             array(limits.get(list));
             for (JsonNode route : limits.get(list)) {
                 boolean bytes = list.equals("heavyPathLimits");

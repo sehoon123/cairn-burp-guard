@@ -138,7 +138,9 @@ class GuardPanelTest {
             assertFalse(get("traffic.request", JTextArea.class).isEditable());
             assertTrue(get("traffic.request", JTextArea.class).getText().contains(SECRET));
             mouseClick(get("approval.table", JTable.class), 0, 2, MouseEvent.BUTTON1);
-            assertTrue(get("approval.detail", JTextArea.class).getText().contains("마스킹"));
+            String approvalText = get("approval.detail", JTextArea.class).getText();
+            assertTrue(approvalText.contains("원문") && approvalText.contains(SECRET), "approval shows the retained original request");
+            assertFalse(approvalText.contains("마스킹된 요청"));
             assertEquals(2, dialogs.edits);
             panel.close(); pressEnter(trafficTable()); assertEquals(2, dialogs.edits);
             return null;
@@ -551,7 +553,7 @@ class GuardPanelTest {
             click("traffic.detail");
             for (String name : List.of("traffic.metadata", "traffic.request", "traffic.response")) assertFalse(get(name, JTextArea.class).isEditable());
             assertTrue(get("traffic.request", JTextArea.class).getText().contains(SECRET));
-            assertTrue(get("traffic.request", JTextArea.class).getText().contains("화면 전용"));
+            assertTrue(get("traffic.request", JTextArea.class).getText().contains("평문 원문"));
             click("traffic.bookmark");
             assertEquals(access.rows.get(2).id(), access.lastBookmarked);
             assertEquals(expected, table.getValueAt(table.getSelectedRow(), 3));
@@ -573,16 +575,31 @@ class GuardPanelTest {
         });
     }
 
-    @Test void trafficAndRuleRenderersNeverInterpretHtmlAndRowsAreBounded() throws Exception {
+    @Test void trafficAndRuleRenderersNeverInterpretHtmlAndEveryRowIsShown() throws Exception {
         List<TrafficEntry> sample = fixtures(); access.rows = java.util.Collections.nCopies(2_010, sample.getFirst());
         GuardConfig old = GuardConfig.defaults();
         access.policy = new GuardConfig(1, List.of(), List.of(), List.of(new Rule("html", "<html><b>literal</b>", true, Mode.BLOCK, old.rules().getFirst().condition())), Mode.ALLOW, old.limits()); open();
         edt(() -> {
-            assertEquals(2_000, trafficTable().getRowCount());
+            assertEquals(2_010, trafficTable().getRowCount(), "no 2000-row display clip");
             JTable rules = get("rules.table", JTable.class);
             Component renderer = rules.prepareRenderer(rules.getCellRenderer(0, 1), 0, 1);
             assertNull(((JComponent) renderer).getClientProperty(BasicHTML.propertyKey));
             assertEquals("<html><b>literal</b>", ((JLabel) renderer).getText());
+            return null;
+        });
+    }
+
+    @Test void retainedOriginalLargerThanTheEditorLimitIsShownCompleteAndReadOnly() throws Exception {
+        access.rows = fixtures();
+        String big = "B".repeat(GuardPanel.MAX_EDITOR_CHARS + 4096) + "-END-OF-ORIGINAL";
+        access.bigRequest = big; open();
+        edt(() -> {
+            trafficTable().setRowSelectionInterval(0, 0); click("traffic.detail");
+            JTextArea request = get("traffic.request", JTextArea.class);
+            assertFalse(request.isEditable());
+            assertNull(((javax.swing.text.AbstractDocument) request.getDocument()).getDocumentFilter(), "no editor length filter on the traffic viewer");
+            assertTrue(request.getText().endsWith(big), "the complete original, nothing cut or labelled as cut");
+            assertFalse(request.getText().contains("표시 길이 제한"));
             return null;
         });
     }
@@ -613,12 +630,12 @@ class GuardPanelTest {
         access.rows = fixtures(); access.pending.add(pending("ask-one", access.rows.getFirst().id(), "project-one")); open();
         edt(() -> {
             JTable table = get("approval.table", JTable.class);
-            assertEquals("GET", table.getValueAt(0, 0)); assertTrue(((String) table.getValueAt(0, 1)).contains("REDACTED"));
+            assertEquals("GET", table.getValueAt(0, 0)); assertFalse(((String) table.getValueAt(0, 1)).startsWith("[원문 없음"), "the retained original URL, not a masked substitute");
             assertTrue(((String) table.getValueAt(0, 3)).endsWith("초"));
             assertTrue(get("tabs", JTabbedPane.class).getTitleAt(4).contains("1"));
             table.setRowSelectionInterval(0, 0); assertTrue(button("approval.approve").isEnabled());
             click("approval.review"); assertFalse(get("approval.detail", JTextArea.class).isEditable());
-            assertFalse(get("approval.detail", JTextArea.class).getText().contains(SECRET));
+            assertTrue(get("approval.detail", JTextArea.class).getText().contains(SECRET), "original, not a masked substitute");
             click("approval.approve"); assertEquals(List.of("ask-one:true"), access.decisions);
             assertFalse(button("approval.approve").isEnabled()); return null;
         });
@@ -675,7 +692,7 @@ class GuardPanelTest {
         assertEquals("HAR", Files.readString(dialogs.target)); assertEquals(List.of("json", "har"), dialogs.chosenExtensions);
     }
 
-    @Test void realMaskedStoreExportsRemainRedactedThroughWorkerAndAtomicWriter() throws Exception {
+    @Test void realStoreHumanExportsAreConsentedPlaintextOriginalsThroughWorkerAndAtomicWriter() throws Exception {
         EvidenceStore store = new EvidenceStore();
         String id = store.begin("project-one", "Synthetic", new RequestData("POST", "https://example.test/?token=" + SECRET, "example.test", 443, true,
                 List.of(new RequestData.Header("Authorization", "Bearer " + SECRET), new RequestData.Header("Content-Type", "application/json")),
@@ -685,8 +702,13 @@ class GuardPanelTest {
             dialogs.target = temp.resolve(har ? "real.har" : "real.json");
             edt(() -> { get("traffic.exportFormat", JComboBox.class).setSelectedIndex(har ? 1 : 0); click("traffic.export"); return null; });
             awaitExport(); String text = Files.readString(dialogs.target);
-            assertFalse(text.contains(SECRET)); assertTrue(text.contains("[REDACTED]")); assertNotNull(Json.MAPPER.readTree(text));
+            assertTrue(text.contains(SECRET), "explicit human export is plaintext"); assertFalse(text.contains("[REDACTED]"));
+            assertTrue(text.contains("HUMAN_ORIGINAL")); assertNotNull(Json.MAPPER.readTree(text));
+            assertTrue(dialogs.confirmations.getLast().contains("Authorization") && dialogs.confirmations.getLast().contains("새 파일"), "consent is required even for a NEW file");
+            assertEquals("rw-------", java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(dialogs.target)));
         }
+        // the evidence rows of the same store carry the originals too
+        assertTrue(store.exportJson(store.snapshot()).contains(SECRET));
     }
 
     @Test void exportOfRowsClearedFromRealStoreBeforeSerializationFailsCategoricallyWithoutWriting() throws Exception {
@@ -698,6 +720,7 @@ class GuardPanelTest {
         dialogs.target = temp.resolve("blocked.json");
         edt(() -> { click("traffic.export"); return null; }); assertTrue(access.serializeStarted.await(5, TimeUnit.SECONDS));
         store.clear(); access.serializeRelease.countDown(); awaitExport();
+        // the final pre-publication checkpoint observed the clear: nothing is published and the temp file is removed
         assertFalse(Files.exists(dialogs.target)); assertEquals(UiText.error("EXPORT_FAILED"), dialogs.errors.getLast());
         for (boolean har : List.of(false, true)) for (boolean existing : List.of(false, true)) {
             dialogs.target = temp.resolve("cleared-" + har + "-" + existing + (har ? ".har" : ".json"));
@@ -710,6 +733,20 @@ class GuardPanelTest {
         }
         assertFalse(dialogs.errors.toString().contains(SECRET));
         try (var files = Files.list(temp)) { assertTrue(files.noneMatch(f -> f.getFileName().toString().endsWith(".tmp"))); }
+    }
+
+    @Test void everyHumanExportNeedsPlaintextConsentEvenForANewFileAndDeclineWritesNothing() throws Exception {
+        access.rows = fixtures(); open(); dialogs.target = temp.resolve("new.json"); dialogs.confirmed = false;
+        edt(() -> { click("traffic.export"); return null; });
+        assertEquals(0, access.exportCalls); assertFalse(Files.exists(dialogs.target));
+        assertEquals(1, dialogs.confirmations.size()); assertTrue(dialogs.confirmations.getFirst().contains("평문"));
+        dialogs.confirmed = true; access.invalidateExport = true;
+        edt(() -> { click("traffic.export"); return null; }); awaitExport();
+        assertFalse(Files.exists(dialogs.target), "a transition observed at the final checkpoint publishes nothing");
+        try (var files = Files.list(temp)) { assertTrue(files.noneMatch(f -> f.getFileName().toString().endsWith(".tmp"))); }
+        access.invalidateExport = false;
+        edt(() -> { click("traffic.export"); return null; }); awaitExport();
+        assertTrue(Files.exists(dialogs.target));
     }
 
     @Test void exportRequiresRowsChooserAndExplicitOverwriteConsent() throws Exception {
@@ -920,9 +957,38 @@ class GuardPanelTest {
         }
         @Override public List<TrafficEntry> traffic() { onEdt(); if (failTraffic) throw new IllegalStateException(SECRET); return List.copyOf(rows); }
         @Override public String rawUrl(String id) { return rows.stream().filter(e -> e.id().equals(id)).map(e -> e.url().replace("[REDACTED]", SECRET)).findFirst().orElse(null); }
-        @Override public String rawRequest(String id) { return rawUrl(id) == null ? null : "Authorization: Bearer " + SECRET + "\nCookie: session=" + SECRET + "\n"; }
+        String bigRequest;
+        @Override public String rawRequest(String id) { if (bigRequest != null && rawUrl(id) != null) return bigRequest; return rawUrl(id) == null ? null : "Authorization: Bearer " + SECRET + "\nCookie: session=" + SECRET + "\n"; }
         @Override public String rawResponse(String id) { return rawUrl(id) == null ? null : "HTTP/1.1 200\nsynthetic response"; }
-        @Override public Map<String,Object> rawCaptureInfo(String id) { return Map.of("available", rawUrl(id) != null); }
+        @Override public Map<String,Object> rawCaptureInfo(String id) {
+            TrafficEntry row = rows.stream().filter(e -> e.id().equals(id)).findFirst().orElse(null);
+            if (row == null) return Map.of("available", false);
+            Map<String,Object> info = new java.util.LinkedHashMap<>();
+            info.put("available", true); info.put("method", row.method()); info.put("projectId", row.projectId()); info.put("projectName", row.projectName());
+            info.put("hits", row.hits().stream().map(h -> Map.of("id", h.id(), "name", h.name(), "mode", h.mode().name())).toList());
+            info.put("metadataOmitted", false);
+            return info;
+        }
+        boolean invalidateExport;
+        private final class FakeExport implements HumanExport {
+            final List<TrafficEntry> selection; final EvidenceStore.HumanEvidence evidence; final boolean har; final long generation;
+            FakeExport(List<TrafficEntry> selection, EvidenceStore.HumanEvidence evidence, boolean har, long generation) { this.selection = selection; this.evidence = evidence; this.har = har; this.generation = generation; }
+            @Override public byte[] serialize() {
+                exportOnEdt = SwingUtilities.isEventDispatchThread(); exportCalls++; serializeStarted.countDown();
+                if (blockExport) try { assertTrue(serializeRelease.await(5, TimeUnit.SECONDS)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(SECRET); }
+                if (failExport) throw new IllegalArgumentException(SECRET); exported = List.copyOf(selection);
+                if (evidence == null) return (har ? "HAR" : "JSON").getBytes(StandardCharsets.UTF_8);
+                return har ? evidence.har(Map.of("projectId", project)) : evidence.json(Map.of("projectId", project));
+            }
+        }
+        @Override public HumanExport humanExport(List<String> ids, boolean har) {
+            onEdt();
+            List<TrafficEntry> selection = ids.stream().map(id -> rows.stream().filter(e -> e.id().equals(id)).findFirst().orElseThrow(() -> new IllegalArgumentException("INVALID_EVIDENCE_SELECTION"))).toList();
+            return new FakeExport(selection, exportStore == null ? null : exportStore.humanEvidence(ids), har, exportStore == null ? 0 : exportStore.rawGeneration());
+        }
+        @Override public boolean humanExportCurrent(HumanExport export) {
+            return !invalidateExport && export instanceof FakeExport f && (exportStore == null || f.generation == exportStore.rawGeneration());
+        }
         @Override public List<Pending> approvals() { onEdt(); return List.copyOf(pending); }
         @Override public boolean decideApproval(String id, boolean allow) { onEdt(); boolean removed = pending.removeIf(p -> p.id().equals(id)); if (removed) decisions.add(id + ":" + allow); return removed; }
         @Override public void bookmark(String id, boolean value) {
@@ -931,10 +997,7 @@ class GuardPanelTest {
         @Override public String exportJson(List<TrafficEntry> entries) { return export(entries, "JSON"); }
         @Override public String exportHar(List<TrafficEntry> entries) { return export(entries, "HAR"); }
         private String export(List<TrafficEntry> entries, String format) {
-            exportOnEdt = SwingUtilities.isEventDispatchThread(); exportCalls++; serializeStarted.countDown();
-            if (blockExport) try { assertTrue(serializeRelease.await(5, TimeUnit.SECONDS)); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(SECRET); }
-            if (failExport) throw new IllegalArgumentException(SECRET); exported = List.copyOf(entries);
-            return exportStore == null ? format : format.equals("JSON") ? exportStore.exportJson(entries) : exportStore.exportHar(entries);
+            throw new AssertionError("the human UI must never use the safe masked export methods");
         }
         @Override public void clearEvidence() { onEdt(); rows = List.of(); clears++; }
         @Override public void pause(boolean value) { onEdt(); if (failPause) throw new IllegalStateException(SECRET); passthrough = false; paused = value; revision++; pending.clear(); }

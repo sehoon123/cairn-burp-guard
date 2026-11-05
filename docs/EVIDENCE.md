@@ -1,275 +1,221 @@
-# Human raw history and masked evidence — unreleased v2 source
+# Original evidence, no masking, no collection quota — current source
 
-This describes **current source**, not the contents or native acceptance of the
-historical `738b41e` / `4232ae…` preview. Frozen-snapshot results and pending gates
+This describes **current source** (user requirement 2026-11-05: *no masking and no
+collection limit; the user manages memory by hand*). It is not the contents or native
+acceptance of the historical `738b41e` / `4232ae…` preview, and the historical native
+measurements in [V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md) /
+[NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md) (which describe the former redacting
+and bounded implementation) do **not** certify this source. Frozen-snapshot results
 are in [VERIFICATION.md](VERIFICATION.md). `EvidenceStore` implements
 [INTERFACES.md](INTERFACES.md); source is authoritative.
 
-**Native finding:** the old217730… candidate leaked a credential reflected as HEX.
-The current437503… source fixes and rechecks that case; see
-[V2_NATIVE_FINDINGS.md](V2_NATIVE_FINDINGS.md). This is not universal DLP or release approval.
-Native listener restriction is separately unsupported and fails closed.
+## Read this first: plaintext and unbounded memory
 
-## Two stores, not two export modes
+- **Every output carries plaintext originals**: the human screens, `TrafficEntry`
+  rows, schema-2 JSON/HAR, human JSON/HAR/incident exports, watcher
+  candidate/overlay/incident projections. Authorization, Cookie, tokens and any other
+  secret in captured traffic appear exactly as captured. Nothing is masked,
+  fingerprinted, harvested or re-masked, and there is no replacement option. Literal
+  `[REDACTED]`/`[OMITTED]` text in traffic is ordinary data. Do not publish or hand
+  such files/screens to others.
+- **No collection, retention or export quota.** All headers, full bodies, full
+  URL/native target, all metadata (project name, rule hits, warnings), all rows,
+  observations, events and candidates are retained until an explicit **clear**,
+  a **project change/unverified project/save-uncertain** boundary or **unload**.
+  Incident windows have no maximum; export documents have no size cap. The retained
+  size numbers in `stats()` are informational estimates, not a cap. Heap use grows
+  without bound: large traffic can cause `OutOfMemoryError`, GC pressure or a slow
+  Swing UI. There is no automatic disk spool or persistence and no quota setting;
+  clear history yourself.
+- Clear/project/unload release the store-owned references. Java strings, arrays that
+  consumers already copied (snapshots, clipboard, screenshots, exported files) are
+  not revoked or zeroized.
+- What is **not** unlimited: policy inspection and parser bounds (see below), the
+  concurrency/queue/rate/intent/approval capacities, detector thresholds and windows,
+  host/path/flight/overlay capacities, lifecycle timeouts and the atomic-export checks.
 
-`EvidenceStore` owns synchronized, bounded, **memory-only** masked evidence and a
-**separate human-local unmasked cache**. It opens no file/server, changes no
-authentication and never replaces native request/response objects. Inputs are
-inspection copies. No native message/parser tree is retained. Raw credentials
-can exist in human display strings; they are **not fields of `TrafficEntry` or
-the keyed fingerprint index**. Do not log inputs, raw getters or exception text.
+## One store model
 
-`FORWARDED` means native continuation released, **not delivery, receipt or target
-processing**. `BLOCKED` means a local block, not a target HTTP error. A captured
-upstream451 remains nonlocal/FORWARDED. No capture is invented for a missing
-response. A local denial body is recorded separately through `localResponse`.
+`EvidenceStore` owns synchronized, memory-only evidence rows (`TrafficEntry`) and the
+structured byte captures (package-private `RawTrafficStore`) they are built from. It
+opens no file/server, changes no authentication and never replaces native
+request/response objects; inputs are copies and no native message object is retained.
 
-### Unmasked human history
+`FORWARDED` means native continuation released, **not delivery or target
+processing**. `BLOCKED` means a local block, not a target HTTP error. No capture is
+invented for a missing response (`Message.EMPTY`, `present=false`); a local denial body
+is recorded separately through `localResponse`.
 
-History is **unmasked by default**, as requested by the user. Package-private
-`RawTrafficStore` is not a serializable evidence model, export source or worker
-API. Human-only bridges on EvidenceStore/GuardUiAccess are:
+### Capture
 
-- `rawRequest(id)`, `rawResponse(id)`, `rawUrl(id)`; missing data returns null.
-- `rawCaptureInfo(id)` reports availability, request/response truncation/omission,
-  header/body completeness, body display type, untrusted intent/run and warnings.
-- `clearRawUi()` on EvidenceStore disposes raw-only state.
+`NativeCapture` always copies the complete supplied request/response (all headers in
+order with duplicates, the full body, the complete untouched native target) whether or
+not an optional policy-inspection slot is free. The bounded inspection slots
+(`MAX_INSPECTIONS`) only gate optional **policy parsing** of header/body/JSON/form
+conditions: when no slot is free, rules that demand those fields report
+`<FIELD>_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY`, cannot grant EXEMPT, and the
+request is not blocked for that reason; the copy's `headersComplete`/`bodyComplete`
+flags stay true. Truthful incompleteness exists only for a genuine native read failure
+(`HEADERS_INCOMPLETE`/`BODY_INCOMPLETE`, actual size -1 or the supplied prefix).
 
-Label: **`UNMASKED_INSPECTION_COPY_NOT_WIRE_PROOF`**. Representable UTF-8 text is
-shown; unsupported charset/non-text bytes use bounded lossless **HEX of captured
-bytes**, not replacement characters or inferred content. Prefixes/omission are
-explicit. These are not full original messages, protocol measurements or replay.
-The UI's human URL/tag search/detail uses these getters. Missing raw metadata is
-explicitly labeled as unavailable/masked fallback, never presented as original.
+### `TrafficEntry`
 
-The raw cache has its **own** max2000 entries / estimated32MiB /64KiB per
-request/response display part; URL is independently bounded. This is additional
-to masked-store bounds, **not a combined32MiB or whole-JVM heap cap**. Oldest raw
-entries can evict independently; masked-entry eviction also removes corresponding
-raw data. Bookmarks pin neither. Late responses cannot resurrect a removed raw row.
+Immutable original row: method, synthetic actual-service URL (never a fuzzed Host),
+project id/name, rule hits, warnings, intent/run tags, and
+`Message(headers, body, mimeType, bodyOmitted, truncated, present, bodyEncoding)`.
+`bodyEncoding` is part of the HMAC seal:
 
-Raw storage is project-bound: switch/uncertainty, clear and controller close discard
-store-owned references. Existing records can remain across OFF/ON; **new OFF or
-known-unselected-listener callbacks capture no request/response contents**. Data-free
-failures may leave only a synthetic omission placeholder. Native Burp history /
-project persistence is separate and unchanged. Java Strings/consumer copies are
-not guaranteed zeroizable. Human clipboard/screenshots may expose secrets. There
-is **no raw export**, automatic persistence or harvesting into policy configuration.
-
-### Masked immutable evidence
-
-`begin(projectId,projectName,request,decision,revision)` returns a random UUID.
-Discovery/redaction precedes masked insertion. `TrafficEntry` is immutable, with
-masked `requestCapture()` / `responseCapture()`:
-
-```java
-Message(List<Header> headers,String body,String mimeType,
-        boolean bodyOmitted,boolean truncated,boolean present)
-```
-
-Rendered `request()` / `response()` are masked inspection-copy text; absent response
-is empty. Timestamp is ISO8601 UTC observation time, **not measured wire timing**.
-HTTP/1.1 in render/HAR is a placeholder, not observed protocol.
-
-V2 adds masked `intentId`, `runId`, `outcome`, `guardState`, `overlayId`,
-`responseBytes`, `inspectionWarnings` with original constructors preserved.
-`outcome` (`pending`, `forwarded`, `blocked`, `exempt`, `probe_allowed`, `half_open`)
-is separate from `disposition` (`PENDING`, `QUEUED`, `AWAITING_APPROVAL`, `FORWARDED`,
-`BLOCKED`, `STALLED`, `CANCELLED`, `ERROR`). Context accepts fixed typed GuardState
-and a safe UUID overlay, never note-text inference. Tags are **untrusted client
-claims**, not identity/authorization. A masked label is not automatically a safe
-policy value.
-
-Native `responseBytes` is observed from `body().length()` separately from optional
-copy/slots; `-1` means unknown. It is not Content-Length, total wire bytes, headers,
-TLS/framing, timing or delivery proof. A6MiB response may have actual scalar bytes
-but omitted raw/masked body copies. Unknown bytes do not establish an empty response.
-The native controller uses the seven-argument response overload carrying actual
-bytes and completeness; older four-argument response can derive only a bounded
-copy's size.
-
-## Redaction and deliberate fidelity loss
-
-The fixed marker is **`[REDACTED]`**. Discovery precedes rendering, so a secret in
-a later JSON field/header can be removed from earlier URL/project/rule/echo data.
-
-- Header/key recognition is case-insensitive, separator-insensitive and handles
-  bracketed/nested names. Authorization, Proxy-Authorization, authentication,
-  Cookie/Set-Cookie, API/access/private keys, token/JWT, password, secret,
-  credentials, session, CSRF/XSRF, nonce, signature, OTP/PIN, OAuth code and grant
-  fields are treated conservatively. Entire sensitive header values are masked.
-  A non-sensitive field name is not proof its value is public.
-- URL userinfo/fragments are not retained. Query keys/values and nested form/JSON
-  strings are inspected. A component after a sensitive path component is masked;
-  known reflected secrets in path/hostname/metadata/JSON keys are also removed.
-  Unsafe credential-bearing authority falls back to `https://redacted.invalid/`.
-  Display URLs may be normalized/re-encoded by **redaction only**; this is not the
-  forwarded target, scope input or permission to sanitize pentest traffic.
-- Query/form decoding treats `+` as space, path decoding keeps `+`. Strict UTF-8
-  percent/Unicode views are bounded to three rounds. Malformed/over-encoded input
-  is not partially exposed as exportable text. `[REDACTED]` can be percent-encoded
-  in display URLs/forms.
-- Strict JSON rejects duplicate keys/trailing tokens and bounds nested traversal
-  (32 levels /8192 redaction nodes plus shared parser bounds). Arrays/objects,
-  Unicode/percent names, stringified JSON, embedded forms and recognizable inline
-  assignments are inspected. Sensitive subtrees are replaced and their scalar
-  secrets discovered for reflection masking.
-- Structured JSON/form bodies support UTF-8/US-ASCII and identity Content-Encoding.
-  Nonempty HTML/free text/XML/binary/multipart, unsupported charset/encoding,
-  malformed or oversized bodies become **`[OMITTED: UNSAFE_OR_UNSUPPORTED_BODY]`**.
-  No raw-prefix fallback exists in the masked store. Unsafe discovery can suppress
-  unconstrained metadata/scalars conservatively. Empty bodies remain empty.
-- Request credentials reflected in a response, benign field/long string,
-  percent/Unicode escape, UTF-8 HEX or standard/URL Base64 can be detected by bounded
-  keyed **HMAC-SHA256 fingerprints**. HEX lower/upper aliases use the same bounded
-  builder; transient case-folding of HEX runs catches mixed-case reflections and
-  masks a matching run in full. Nonmatching text retains original case. Basic
-  credentials are also decoded. A rolling-hash prefilter is verified by HMAC.
-  This is not arbitrary decryption or a universal transformation/DLP classifier.
-- Fingerprints are bounded to128 candidates,24 distinct lengths,8192 characters
-  per candidate; overflow switches to conservative suppression, not silent loss.
-  Derived keys/fingerprints stay private in memory and are discarded on eviction/
-  clear, never exported or persisted.
-- Response-only secrets extend the index and remask retained request/project/rule/
-  tag copies. Previously truncated unparseable bodies are omitted instead of
-  reused as unchecked prefixes. Previously returned immutable snapshots cannot
-  be changed; consumers must refresh and not retain unbounded history.
-- Incomplete optional capture suppresses affected export content/metadata.
-  `HEADERS_INCOMPLETE`, `BODY_INCOMPLETE`, `PATH_INTERPRETATION_INCOMPLETE` and
-  bounded field-specific unavailable categories remain visible. **Evidence omission
-  is not policy denial**: unsupported body/charset, malformed JSON or optional
-  capture limits do not automatically451 otherwise in-scope traffic. Available
-  explicit conditions still apply; unavailable conditions cannot grant EXEMPT.
-- Decision/outcome/error text is not blindly retained. Only finite categories,
-  including `DenialReasons.ALL`, survive; unknown text becomes `POLICY_DECISION` /
-  `OUTCOME_RECORDED`, unknown disposition `ERROR`. `PAUSED`, `IN_FLIGHT_TIMEOUT`,
-  watcher/circuit/fanout/intent/listener/capacity reasons are preserved. Legacy
-  vocabulary names are not automatic-denial requirements. No raw URL/capture/
-  parser exception becomes an error string. Status outside100–599 becomes unknown.
-
-Unrecognized secrets deliberately put in benign fields or unsupported transformations
-cannot be identified with certainty. Inspect exports before sharing. No complete
-wire coverage, unseen native traffic, TLS pass-through, CONNECT/WebSocket frames,
-direct sockets or other extensions' later changes are certified.
-
-## Bounds, lifecycle and response-time display privacy
-
-Masked-store defaults: **2000 entries**, **32MiB estimated retained bytes**,
-**64KiB per captured request/response text part** including start line. Oldest
-insertion evicts even bookmarked entries; response/outcome/bookmark growth enforces
-the same bound. An overlarge entry may itself evict.
-
-Estimate charges `max(UTF-8 bytes,2×UTF-16 length)` plus object/header/hit/fingerprint
-overhead. It is not a whole-heap cap: transient parsers, export buffers and consumer
-snapshots are additional. Inputs are independently bounded to1MiB/256 headers.
-**Mask first, then bound**: a secret past byte65536 can remove an earlier reflection.
-Output cuts at UTF-8 boundaries with `[TRUNCATED]`; header overflow sets truncation.
-Metadata has separate masked bounds (512bytes/project or rule string,128 hits,
-8192byte URL with whole-URL fallback; warnings max32). A truncated JSON/form display
-need not remain a replayable valid body. Omission and truncation are distinct.
-
-`snapshot()` is newest-first and immutable, including nested lists. `entry(id)` is
-the latest MASKED row. `bookmark` creates a new immutable record. Unknown IDs count
-as orphan updates. Local BLOCKED and native-released terminal facts cannot be
-relabelled as one another by a late callback. `clear()` discards masked evidence,
-fingerprints and raw UI, resetting retained gauges **not cumulative counters**.
-Controller clear also clears watcher diagnostic rings/candidates, **not active
-overlays, probe cadence, intent debt or native permits**.
-
-`displaySanitizer(id)` is an ephemeral current-fingerprint operation for individual
-structured watcher **values**, not serialized JSON/schema keys; disposed/missing
-rows yield opaque values, never raw fallback. Do not retain it across waits.
-Under one controller lock: learn response secrets first → refresh watcher incidents/
-candidates/overlays/pending flights → observe actual scalars. Watcher display/export
-shares that lock. A response-only grant reflected in an earlier path cannot stay
-permanently safe merely because the send-time URL was masked. Changed URLs lose
-`policyUrl`; bounded hashed privacy fences stop older Prepared/endpoints/aliases
-reviving them. Fence saturation makes display opaque, without dropping enforcement.
-**Raw UI getters are never consulted** for this process or incident/export.
-
-### `stats()`
-
-Immutable map; scalar values are long counters/gauges. `reasonCounters` is a bounded
-fixed-category numeric map, not payload-derived keys or a delivery count.
-
-| Key | Meaning |
+| `bodyEncoding` | `body` |
 |---|---|
-| `begun` | All begin observations, including evicted/cleared |
-| `forwarded`, `blocked` | First terminal outcome per retained ID; duplicate callback not a new send |
-| `responses` | First captured response per retained ID |
-| `localResponses`, `upstreamResponses` | Local BLOCKED vs nonlocal callback, not independently verified origin |
-| `evictions`, `truncations` | Capacity removals / entries ever truncated while retained |
-| `retainedEntries`, `retainedBytes`, `bookmarked` | Masked current gauges |
-| `clears`, `clearedEntries` | Clear operations/discarded records |
-| `orphanUpdates`, `orphanOutcomes`, `orphanResponses` | Unknown/evicted ID updates/callbacks |
-| `outcomeCallbacks`, `responseCallbacks` | All corresponding callbacks |
-| `reasonCounters` | Categorical reason-transition observations |
-| `rawRetainedEntries`, `rawRetainedBytes` | Separate raw-cache gauges, no raw values |
+| `UTF8_TEXT` | the exact text (valid UTF-8 and accepted declared charset) |
+| `HEX` | lossless lowercase hex of **every** supplied byte (unsupported charset, binary, controls, unknown/overlong/ambiguous Content-Type, or headers that could not be read) |
+| `EMPTY` | verified empty body |
+| `UNAVAILABLE` | no bytes supplied (native read failure / absent response) |
 
-No unbounded tombstone map is kept; evicted/cleared late callbacks cannot always be
-uniquely deduplicated/reclassified. Their orphan activity remains visible.
+`bodyOmitted` means no bytes were supplied; `truncated` means the supplied copy itself
+was incomplete (a prefix is shown with that label). A non-JSON, malformed, oversized or
+unsupported-for-policy body is **retained**; it is only unavailable to policy rules.
 
-## JSON / HAR / incidents — masked only
+`outcome`, `guardState`, `overlayId`, `responseBytes` (native `body().length()`, -1 =
+unknown, never Content-Length) and `inspectionWarnings` (every supplied warning,
+verbatim, de-duplicated, no count cap) keep their earlier meaning. Decision/outcome
+reasons stay a **fixed categorical vocabulary** (`DenialReasons.ALL` and runtime
+reasons; unknown text becomes `POLICY_DECISION`/`OUTCOME_RECORDED`) so exception text
+and traffic never become reason strings; unknown dispositions become `ERROR`. That is a
+vocabulary rule, not masking.
 
-`exportJson(selection)` / `exportHar(selection)` return strings, **never write
-automatically**. At most2000 genuine store-created entries /32MiB selection estimate.
-An in-memory HMAC authenticity seal covers all exported fields including v2
-additions. Foreign/forged entries reject categorically. The seal is not emitted.
-For retained IDs, stale selections use latest masked rows, so old UI snapshots
-cannot undo response-time redaction. A selection whose row was cleared or evicted
-**fails** (`INVALID_EVIDENCE_SELECTION`, whole selection rejected, JSON and HAR alike),
-because the historical seal no longer proves current masking. Export while rows remain
-retained; re-export from a fresh snapshot. Bookmarks do not pin rows. This does not
-retract strings or files already produced before disposal.
+The capture-omission placeholder for adapter/listener failures is a fixed synthetic
+row (`UNKNOWN https://capture-omitted.invalid/`); it is not a guess about the request.
 
-JSON and provenance use **schemaVersion2** with masked messages, omission/truncation,
-revision/hits/bookmark/disposition, intent/run/outcome/state/overlay/responseBytes/
-warnings. This is not policy JSON, a Burp project or request replay.
+### Human views
 
-HAR remains1.2 with required log/entry/request/response/cache/timing fields; v2
-metadata is in `_cairnGuard`. Cookies arrays are deliberately empty and sensitive
-header copies masked. Standard header/body sizes are `-1` (original wire unknown);
-`content.size` measures masked text only with `_sizeIsRedactedTextOnly:true`.
-`_cairnGuard.responseBytes` separately carries the native body scalar. Time/timing
-zeroes are placeholders with `timingsKnown:false`, not measured zero latency.
-Missing response has status0, empty content, `responseObserved:false`;
-`responseSource` distinguishes `NOT_OBSERVED`, `LOCAL_BLOCK`, `RESPONSE_CALLBACK`.
-No redirect is inferred from a header/display URL.
+`rawRequest(id)`, `rawResponse(id)`, `rawUrl(id)`, `rawCaptureInfo(id)` render the same
+retained parts as text (label **`UNMASKED_INSPECTION_COPY_NOT_WIRE_PROOF`**); missing data
+returns null / `available:false`. Raw storage is project-bound: switch/uncertainty,
+clear and controller close release it. New OFF or known-unselected-listener callbacks
+capture no content. Late responses cannot resurrect a cleared row.
 
-Both are labeled **`REDACTED_EVIDENCE_NOT_WIRE_CAPTURE`**,
-`completeWireCapture:false`, `forwardedMeans:NATIVE_RELEASE_NOT_PROVEN_DELIVERY`.
-Truncation/omission/local disposition must accompany downstream excerpts.
+### Explicitly consented human exports
 
-Incident JSON is a **separate masked scalar watcher projection**, not a sealed
-TrafficEntry/raw-message export. `[from,to)` is at most24hours; fields are `window`,
-`events`, top20 `top5xx`/`topBytes`, `complete`, `truncated`, `approximate`,
-`approximation`, `retention`. Count/max/lastSeen/5xx are exact for retained
-observations; p95Bytes is a **log2-histogram upper-bound approximation**. Startup,
-clear, ring loss, clock regression and retention constrain completeness; unknown
-bytes do not prove zero-size responses. Candidate IDs are opaque keyed route IDs,
-**not overlay UUIDs**. `policyUrl` is an optional safe query-free route, empty after
-masking/change/unrepresentability. Never rebuild it from raw UI or automatically
-persist candidates. UI export remains an explicit owner-only file choice.
+Each human JSON/HAR/incident export (new file AND overwrite) first shows a
+cancel-default warning that the file contains plaintext Authorization/Cookie/tokens,
+has no size cap and is a callback copy, not wire proof. Then:
+
+- an immutable snapshot is taken under the controller lock (it shares the immutable
+  parts); serialization and ALL filesystem work run outside every runtime lock and off
+  the EDT; the owner-only, symlink/inode-checked atomic writer publishes after a final
+  `humanExportCurrent` checkpoint (project, revision, runtime epoch, raw generation).
+  A clear/project change/unavailability/close observed at that checkpoint publishes
+  nothing and removes only the task's temp/reservation. A change between that check and
+  the rename cannot be prevented; the Burp project is sampled, not locked.
+- formats are distinct from the schema-2 evidence (which now also carries originals): `cairn-human-inspection` v1
+  (`_cairnGuard.exportMode=HUMAN_ORIGINAL`, entries with categorical runtime fields
+  and `original` = method/URL/project/hits/tags/service/raw target and structured
+  request/response parts whose body is base64 of every supplied byte with
+  byte counts, completeness and UTF-8 validity); HAR 1.2 with the
+  same provenance (`postData.text` only for valid UTF-8, otherwise `_bodyBase64`;
+  response content base64; the standard `url` only when the UNCHANGED actual-service target
+  is a faithful ordinary URL - `/a#b`, invalid `%` escapes, spaces/controls and non-ASCII
+  give `_urlUnavailable` while `_rawTarget`/`_service` stay exact, and valid encoded/matrix
+  targets stay exportable; `postData.text` only for valid UTF-8 under an accepted declared
+  charset (absent/utf-8, or us-ascii with ASCII-only bytes - the same decision as the raw
+  display and the JSON body facts) over EVERY captured Content-Type declaration: duplicates
+  keep their captured order and all must accept the bytes, and a declaration that is
+  over the 1024-character classification bound (checked before any cut), null or not
+  retained - or whose headers were OMITTED by an incomplete capture (frozen at capture,
+  a complete empty list is a verified absence) - makes the type unknown, so the body stays
+  bytes (never "no charset"). One value is classified only inside a conservative
+  recognized subset: a token `/` token media type, then EVERY parameter (charset or not) as
+  `token=token` or a whole-value quoted string without inner quotes/backslashes, with SP/HTAB
+  outer OWS only. Anything else - malformed media type, empty present value, empty parameter
+  segment (`text/plain;`), invalid token characters, misplaced or balanced-but-misplaced
+  quotes, OWS around `=`, control characters, a duplicate or unsupported charset - is
+  unknown => bytes; a parameter name beginning `charset*` (RFC 2231 continuation family,
+  never decoded) is also unknown; only a parameter named exactly `charset` counts (`xcharset=` or
+  `name="charset=..."` text never grants anything). Lenient forms outside the subset are
+  deliberately not decoded as text. The exported
+  `headersComplete` flags are true only when the incoming capture was complete AND the raw
+  part retained the supplied header list (every header is retained now);
+  otherwise `_bodyBase64`; timings/httpVersion marked unknown); and
+  `cairn-human-incident` v1 (each event/top row resolved by its OWN source; missing
+  originals are `null` + `originalUnavailable`). No enforcement HMAC key, source
+  reference or admission token is ever written.
+- there is **no document size cap** (`EvidenceStore.jsonBytes` is ordinary Jackson
+  serialization); only a genuine IO/serialization failure aborts, publishing no partial
+  file. A very large selection needs equally large heap.
+
+## Counters, rows and schema-2 exports
+
+`stats()` is an immutable map of long counters/gauges; none contains payload.
+`begun`, `forwarded`, `blocked`, `responses`, `localResponses`, `upstreamResponses`,
+`truncations` (rows whose supplied copy was incomplete), `retainedEntries`,
+`retainedBytes`/`rawRetainedBytes` (informational estimates only), `bookmarked`,
+`clears`, `clearedEntries`, `orphan*`, `outcomeCallbacks`, `responseCallbacks`,
+`reasonCounters` (fixed categories), `rawRetainedEntries`. `evictions` is kept at 0 for
+compatibility: nothing is evicted.
+
+`snapshot()` is newest-first and immutable. `entry(id)` is the current row. `bookmark`
+creates a new immutable record. `clear()` releases rows, byte captures and source
+references (not cumulative counters); the controller's `clearEvidence()` also clears the
+watcher's diagnostic history and display/source references **but not** active overlays,
+host/path reservations, probe cadence, Seen/omission debt, intent debt or native permits.
+
+`exportJson(selection)` / `exportHar(selection)` return strings and never write
+automatically. An in-memory HMAC seal over every exported field (including
+`bodyEncoding`) rejects foreign/forged entries; a selection whose row was cleared is
+rejected whole (`INVALID_EVIDENCE_SELECTION`); stale-but-retained selections export the
+current row. `schemaVersion` 2 JSON carries the original messages. HAR 1.2 keeps its
+shape: text bodies as text, `HEX` bodies as base64 with `encoding`/`_bodyBase64` and the
+exact byte `content.size`; standard header/body sizes stay `-1` (wire unknown);
+timings are placeholders with `timingsKnown:false`. Its `request.url`/`queryString` are
+filled only when the retained untouched actual-service target is a faithful ordinary URL
+(the human HAR rule above); `_rawTarget`/`_service` come exactly from the retained capture
+route when present; otherwise `url` is `""`, `queryString` is `[]`, `_urlUnavailable`
+names the reason (`NO_SERVICE_ROUTE` without a route, nothing guessed or normalized) and
+`_displayUrl` keeps the retained display text only, not a target claim (the human HAR has
+no `_displayUrl`). Provenance label
+**`ORIGINAL_EVIDENCE_NOT_WIRE_CAPTURE`**, `completeWireCapture:false`,
+`forwardedMeans:NATIVE_RELEASE_NOT_PROVEN_DELIVERY`.
+
+`GuardController.traffic()`, `exportJson/Har/Incident` and watcher reads first reconcile a
+discovered close/project change (releasing old rows and watcher history), so a previous
+project's originals are never returned by the first read that discovers a change; old
+selections then fail with `INVALID_EVIDENCE_SELECTION`.
+`status().projectName` is the verified current project's name (or
+`PROJECT_NAME_UNAVAILABLE`).
+
+## Incident JSON
+
+A scalar watcher projection of retained diagnostic history with the **original**
+actual-service host and untouched path. `[from,to)` is any ordered window
+(`to > from`); the 24-hour limit, the 4096-event/8192-observation rings, the day
+pruning and the 2048-candidate LRU no longer exist. Fields: `window`, `events`, top20
+`top5xx`/`topBytes` (the documented aggregate format), `complete`, `truncated`,
+`approximate`, `approximation`, `retention`. Retention is
+`{"mode":"UNTIL_CLEAR_PROJECT_OR_UNLOAD","startedAt":…,"clockRegressed":…,
+"fanoutHistoryOmitted":…}` (the event/observation `…Dropped` flags stay `false`).
+`complete` is false for a window starting before collection started or an explicit
+clear, a future window, a regressed clock or omitted fan-out history. Count/max/lastSeen/
+5xx are exact over the retained observations; `p95Bytes` is a **log2-histogram
+upper-bound approximation**. Candidate IDs are opaque keyed route IDs. `policyUrl` is an
+optional query-free actual-service draft hint, empty when the path is not a faithful
+ordinary URL path. Candidate "ignore" is a runtime display suppression only.
+
+## Limits that remain (enforcement / parser / algorithm, not collection)
+
+Policy inspection: `RequestData.MAX_INSPECT_BYTES` (1 MiB, **policy only**), header/
+pair/JSON-node/depth/pattern/program/decode-round budgets, 16 KiB routing-view URL
+bound, method token length; unavailable inspection is reported, never silently passed.
+Capacities: callbacks 128, inspection slots 8, in-flight 100, controller tickets 4096,
+approvals, queues, rate/host metrics, intent keys, listener entries; watcher hosts 1024,
+paths 2048, overlays 1024, flights 4096, route views 9, Seen/failure/debt windows and
+detector thresholds. Content-Type **classification** is bounded at 1024 characters
+(longer values are kept whole but treated as an unknown declaration → bytes). Policy/
+config editors keep their own input limits. These are not raw-traffic quotas.
 
 ## Verification boundary
 
-Synthetic tests live under `src/test/java/dev/cairnguard/evidence/` with watcher
-privacy integration under runtime. Developer command (not run by this doc task):
-
-```sh
-./gradlew --offline --no-daemon test --tests 'dev.cairnguard.evidence.*' \
-  --tests '*ResponseWatcherRemaskingTest'
-```
-
-Coverage includes nested/encoded/reflected/Basic/Base64 secrets, unsupported-body
-omission, mask-before-bound, UTF-8 cuts, eviction/update/clear, immutable snapshots,
-categorical reasons/counters, JSON/HAR, forged seals/v2-field tampering, raw UI
-lifecycle/limits/HEX, incomplete captures and response-only watcher remasking.
-
-Historical initial evidence-module run(2026-11-03):60 synthetic cases; historical
-pre-v2 integration added53-category native-denial regressions. Those counts are
-**not current v2 native proof**. Current tests iterate the shared denial vocabulary;
-full frozen-snapshot results are in [VERIFICATION.md](VERIFICATION.md). Historical
-installed-Burp masking observations in [NATIVE_BURP_RESULTS.md](NATIVE_BURP_RESULTS.md)
-do not certify this unreleased source or final exact artifact. No actual v2 native
-phase or final independent implementation audit is recorded as complete.
+Synthetic tests live under `src/test/java/dev/cairnguard/evidence/` (notably
+`UnmaskedCollectionTest`, beyond-old-limit retention) with runtime and UI coverage in
+their packages. Developer command: `./gradlew --offline --no-daemon test`. Native Burp
+behavior of this source has not been run by these tests.

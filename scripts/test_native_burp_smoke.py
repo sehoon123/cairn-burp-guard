@@ -327,11 +327,22 @@ class IncidentSchemaTest(unittest.TestCase):
                 "policyUrl": "http://127.0.0.1/large", "maxBytes": LARGE_BYTES, "p95Bytes": 8388608, "count": 1, "lastSeen": 1500, "count5xx": 0}],
             "complete": True, "truncated": False, "fanoutHistoryComplete": True, "approximate": True,
             "approximation": {"p95Bytes": "log2_histogram_upper_bound", "countMaxBytesLastSeen5xx": "exact_retained_window"},
-            "retention": {"maxMillis": 86400000, "startedAt": 1000, "eventsComplete": True, "observationsComplete": True,
+            "retention": {"mode": "UNTIL_CLEAR_PROJECT_OR_UNLOAD", "startedAt": 1000, "eventsComplete": True, "observationsComplete": True,
                 "eventsDropped": False, "observationsDropped": False, "clockRegressed": False, "fanoutHistoryOmitted": 0}}
 
-    def test_valid_redacted_bounded_retained_schema(self):
+    def test_valid_unlimited_retention_schema(self):
         self.assertEqual({"events": 1, "top5xx": 0, "topBytes": 1}, validate_incident(self.document))
+
+    def test_no_event_count_window_length_or_string_length_limit_and_plaintext_values_are_accepted(self):
+        item = copy.deepcopy(self.document)
+        item["window"] = {"from": 0, "to": 90 * 86_400_000}
+        item["events"] = [{"kind": "CIRCUIT_OPEN", "ts": 1500 + i, "path": "/p" + "x" * 20_000 + SYNTHETIC_AUTH} for i in range(5000)]
+        item["topBytes"][0]["host"] = "h" * 300
+        item["topBytes"][0]["policyUrl"] = "http://127.0.0.1/" + SYNTHETIC_COOKIE
+        self.assertEqual({"events": 5000, "top5xx": 0, "topBytes": 1}, validate_incident(item))
+        legacy_max = copy.deepcopy(self.document); legacy_max["retention"]["maxMillis"] = 86400000
+        with self.assertRaises(AssertionError):
+            validate_incident(legacy_max)
 
     def test_fanout_history_omission_is_sticky_incomplete_and_consistent(self):
         item = copy.deepcopy(self.document)
@@ -363,9 +374,9 @@ class IncidentSchemaTest(unittest.TestCase):
 
     def test_invalid_window_event_timestamp_flags_kind_or_raw_secret_are_rejected(self):
         invalid = []
-        for key, value in (("to", 1000), ("to", 86401001), ("from", True)):
+        for key, value in (("to", 1000), ("from", True)):
             item = copy.deepcopy(self.document); item["window"][key] = value; invalid.append(item)
-        for key, value in (("kind", "arbitrary"), ("ts", 2000), ("bytes", -1), ("bytes", True), ("path", SYNTHETIC_AUTH)):
+        for key, value in (("kind", "arbitrary"), ("ts", 2000), ("bytes", -1), ("bytes", True), ("path", 7)):
             item = copy.deepcopy(self.document); item["events"][0][key] = value; invalid.append(item)
         item = copy.deepcopy(self.document); item["truncated"] = True; invalid.append(item)
         item = copy.deepcopy(self.document); item["topBytes"][0]["id"] = "unsafe"; invalid.append(item)
@@ -373,6 +384,89 @@ class IncidentSchemaTest(unittest.TestCase):
         for item in invalid:
             with self.subTest(item=item), self.assertRaises((AssertionError, ValueError)):
                 validate_incident(item)
+
+
+class HumanIncidentSchemaTest(unittest.TestCase):
+    def setUp(self):
+        self.document = {"format": "cairn-human-incident", "formatVersion": 1,
+            "_cairnGuard": {"exportMode": "HUMAN_ORIGINAL", "warning": "PLAINTEXT_ORIGINALS: may contain Authorization, Cookie, tokens",
+                "completeWireCapture": False, "forwardedMeans": "NATIVE_RELEASE_NOT_PROVEN_DELIVERY", "timingsKnown": False,
+                "retention": "MEMORY_ONLY_NO_COLLECTION_QUOTA_UNTIL_CLEAR_PROJECT_OR_UNLOAD", "snapshot": {"projectId": "p", "revision": 7}},
+            "window": {"from": 1000, "to": 2000},
+            "events": [{"kind": "HEAVY_ENDPOINT_AUTO_BLOCKED", "bytes": LARGE_BYTES, "ts": 1500,
+                        "service": {"scheme": "http", "host": "127.0.0.1", "port": 18080}, "host": "127.0.0.1",
+                        "path": "/download/" + SYNTHETIC_AUTH},
+                       {"kind": "CIRCUIT_OPEN", "5xx": 1, "ts": 1600, "host": None, "path": None,
+                        "originalUnavailable": "NOT_RETAINED_OR_CLEARED"}],
+            "top5xx": [], "topBytes": [{"id": "ab" * 32, "maxBytes": LARGE_BYTES, "p95Bytes": 8388608, "count": 1, "lastSeen": 1500,
+                "count5xx": 0, "service": {"scheme": "http", "host": "127.0.0.1", "port": 18080}, "host": "127.0.0.1",
+                "path": "/download/" + SYNTHETIC_AUTH}],
+            "complete": True, "truncated": False, "fanoutHistoryComplete": True, "approximate": True,
+            "approximation": {"p95Bytes": "log2_histogram_upper_bound", "countMaxBytesLastSeen5xx": "exact_retained_window"},
+            "retention": {"mode": "UNTIL_CLEAR_PROJECT_OR_UNLOAD", "startedAt": 1000, "eventsComplete": True, "observationsComplete": True,
+                "eventsDropped": False, "observationsDropped": False, "clockRegressed": False, "fanoutHistoryOmitted": 0}}
+
+    def test_consented_plaintext_human_incident_with_originals_and_categorical_absence(self):
+        self.assertEqual({"events": 2, "top5xx": 0, "topBytes": 1, "format": "cairn-human-incident", "originalsUnavailable": 1},
+                         validate_incident(self.document))
+
+    def test_human_provenance_absence_masking_and_opaque_references_are_rejected(self):
+        mutations = [
+            lambda d: d.update({"format": "unknown"}),
+            lambda d: d.update({"formatVersion": 2}),
+            lambda d: d["_cairnGuard"].update({"exportMode": "REDACTED"}),
+            lambda d: d["_cairnGuard"].update({"warning": "nothing"}),
+            lambda d: d["_cairnGuard"].update({"completeWireCapture": True}),
+            lambda d: d["events"][0].update({"_source": "opaque-ref"}),
+            lambda d: d["events"][1].update({"host": "guessed.test"}),
+            lambda d: d["events"][0].pop("service"),
+            lambda d: d["events"][0]["service"].update({"host": "other.test"}),
+            lambda d: d["topBytes"][0].update({"policyUrl": "http://127.0.0.1/x"}),
+            lambda d: d["topBytes"][0].pop("host"),
+        ]
+        for index, mutate in enumerate(mutations):
+            item = copy.deepcopy(self.document); mutate(item)
+            with self.subTest(index=index), self.assertRaises((AssertionError, KeyError)):
+                validate_incident(item)
+
+    def test_literal_original_values_containing_private_markers_are_preserved_not_refused(self):
+        # Original route/value text is operator data: literal "_source", "[REDACTED]" and JSON-looking strings are valid.
+        for literal in ("/_source", "/[REDACTED]", "/a/_source/[REDACTED]?q=_source", '/{"_source":"x"}', "/x?_source=[REDACTED]"):
+            for row in ("event", "top"):
+                item = copy.deepcopy(self.document)
+                target = item["events"][0] if row == "event" else item["topBytes"][0]
+                target["path"] = literal
+                with self.subTest(literal=literal, row=row):
+                    self.assertEqual("cairn-human-incident", validate_incident(item)["format"])
+
+    def test_actual_private_source_object_keys_are_rejected_structurally_at_any_depth(self):
+        # True-negative controls: each location is otherwise shape-valid (unknown extra keys are tolerated elsewhere).
+        mutations = [
+            lambda d: d.update({"_source": "x"}),
+            lambda d: d["_cairnGuard"]["snapshot"].update({"_source": "x"}),
+            lambda d: d["approximation"].update({"_source": "x"}),
+            lambda d: d["events"][0].update({"extra": {"deep": {"_source": "x"}}}),
+            lambda d: d["events"][0].update({"extra": [{"_source": "x"}]}),
+            lambda d: d["events"][0]["service"].update({"_source": "x"}),
+            lambda d: d["topBytes"][0].update({"extra": [[{"_source": "x"}]]}),
+        ]
+        for index, mutate in enumerate(mutations):
+            item = copy.deepcopy(self.document)
+            self.assertEqual("cairn-human-incident", validate_incident(copy.deepcopy(item))["format"])  # baseline without the key passes
+            mutate(item)
+            with self.subTest(index=index), self.assertRaises(AssertionError):
+                validate_incident(item)
+
+    def test_formats_are_never_mixed_safe_document_cannot_claim_human_provenance(self):
+        safe = IncidentSchemaTest(); safe.setUp()
+        item = copy.deepcopy(safe.document); item["_cairnGuard"] = self.document["_cairnGuard"]
+        with self.assertRaises(AssertionError):
+            validate_incident(item)
+        item = copy.deepcopy(safe.document); item["events"][0]["path"] = "/x/" + SYNTHETIC_AUTH
+        self.assertEqual(1, validate_incident(item)["events"], "plaintext originals are valid in the legacy shape too")
+        item = copy.deepcopy(safe.document); item["events"][0]["_source"] = "opaque"
+        with self.assertRaises(AssertionError):
+            validate_incident(item)
 
 
 if __name__ == "__main__":

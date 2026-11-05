@@ -51,8 +51,17 @@ record Limits(int globalRps, int perHostRps, Map<String,Integer> hostRps,
     long perPathMaxResponseBytes, long autoBlockMillis,
     Circuit5xx circuit5xx, Fanout fanout, int perIntentMaxRequests,
     boolean healthProbePassthrough, List<ProbePath> healthProbePaths,
-    List<PathByteLimit> heavyPathLimits)
+    List<PathByteLimit> heavyPathLimits, List<ProbePath> circuit5xxExceptions,
+    boolean heavyResponseEnabled, List<ProbePath> fanoutExceptions)
 ```
+
+0.2.0 appends three fields (19 total). The 8-, 16- and 17-argument constructors
+remain compatibility shapes: they mean no circuit/fan-out exceptions and
+`heavyResponseEnabled=true`. Production copiers (settings editor, candidate N MiB,
+overlay exception, controller validation) use the full constructor so authored
+detector settings are never dropped. Exception lists hold at most 16 strict exact
+routes each (canonical duplicates rejected); `heavyResponseEnabled=false` keeps the
+authored default/route byte limits but disables ALL heavy actuation.
 
 The original eight-argument `Limits` constructor disables new detectors/budgets/
 health exceptions: bytes `0`, TTL `600000`, circuit/fanout `null`, intent `0`,
@@ -66,7 +75,8 @@ It is intentionally different from a **new v2 profile**:
 | RPS / in-flight / queue | Global5, host5, concurrent5, queued100 |
 | Queue / approval / request timeout | 30000 / 30000 / 60000 ms |
 | Response size / overlay TTL | 5 MiB / 600000 ms |
-| Circuit | Five5xx in60000 ms, open600000 ms, one half-open probe |
+| Large-response master | ON (`heavyResponseEnabled=true`) |
+| Circuit | **OFF** (`circuit5xx=null`, optional). When a human turns it on the editor proposes five5xx in60000 ms, open600000 ms, one half-open probe |
 | Fanout | 100 distinct paths in60000 ms, WARN |
 | Intent / health / listener selection | Off / off / empty = all Proxy listeners protected |
 
@@ -93,7 +103,16 @@ acceptance is not permission to write ambiguous probe configuration.
   all original rules (including legacy broad delete-string), scope and limits;
   new protections stay off. **Load/status/observation never writes the migration.**
 - `encode(GuardConfig)` / `toV2(GuardConfig)` validate; explicit production saves
-  emit full schema2. `encodeLegacy` exists for old Java fixtures only.
+  emit full schema2. `encodeLegacy` exists for old Java fixtures only and refuses a
+  policy carrying heavy=false or nonempty exceptions (never drops them silently).
+- Optional schema-2 fields, and ONLY these: `limits.circuit5xxExceptions` and
+  `limits.fanoutExceptions` (absent = empty; present must be a nonnull array of
+  exact `{scheme,host,port,path}` objects) and `limits.heavyResponseEnabled`
+  (absent = true; present must be a JSON boolean). Encode OMITS an empty list and a
+  true master, so a policy with only default detector settings keeps the first
+  schema-2 shape that older readers accept; a policy with heavy=false or a nonempty
+  exception list needs this (or a newer) reader. V1 rejects all three, even
+  true/empty. Every previously required field stays required; there is no schema 3.
 - `removeLegacyDeleteString(config)` is an **optional human-selected** operation
   removing only the exact enabled original `delete-string` rule/condition/name.
   Modified, disabled and look-alike rules remain; normal saves do not call it.
@@ -118,13 +137,14 @@ record Decision(Mode mode, String reason, List<RuleHit> hits,
 ```
 
 `Header(name,value)`, `header(name)`, `bodyLength()` and defensive `body()` copies
-remain. `MAX_INSPECT_BYTES=1048576`. The original seven- and nine-argument request
+remain. `MAX_INSPECT_BYTES=1048576` is the **policy inspection** bound only (larger
+bodies are unavailable to rules), never a capture limit. The original seven- and nine-argument request
 constructors remain; seven arguments set both completeness flags true. They leave
 `nativeTarget=null` for legacy URL-derived target handling. Native capture instead
-supplies the bounded, untouched `request.path()` as `nativeTarget`, including an
+supplies the complete, untouched `request.path()` as `nativeTarget`, including an
 empty/non-origin-form target. It is transient inspection data, never a Prepared or
 watcher display field. The original three-argument decision constructor sets
-warnings empty. These are **inspection copies**, never native replacements.
+warnings empty. These are complete **inspection copies** (no capture quota), never native replacements.
 `RuleHit(id,name,mode)` contains no regex captures.
 
 `RequestAttribution(intentId,runId,valid)` parses unchanged `X-Cairn-Intent` /
@@ -144,7 +164,7 @@ returns `ADAPTER_ERROR` for unknown inputs. New categories include
 `HEAVY_ENDPOINT_AUTO_BLOCKED`, `CIRCUIT_OPEN`, `FANOUT_SUSPECTED`,
 `RESPONSE_WATCHER_CAPACITY`, `INVALID_INTENT_TAG`, `INTENT_BUDGET_EXCEEDED`,
 `INTENT_BUDGET_CAPACITY`, `LISTENER_UNVERIFIED`. `PAUSED` / `IN_FLIGHT_TIMEOUT`
-remain preserved in masked JSON/HAR. Legacy names such as `AMBIGUOUS_PATH`,
+remain preserved in evidence JSON/HAR. Legacy names such as `AMBIGUOUS_PATH`,
 `AUTHORITY_MISMATCH` or `UNSUPPORTED_BODY` in the vocabulary are **not** a mandate
 for automatic denial of pentest paths, Host fuzzing or optional content failures.
 
@@ -187,12 +207,26 @@ Expected invalid policy/mandatory-target errors become categorical BLOCK decisio
   `PATH_INTERPRETATION_INCOMPLETE`,
   `JSON_INSPECTION_UNAVAILABLE_MALFORMED_JSON`. They are diagnostic categories,
   not payload/error text. See [POLICY.md](POLICY.md) for inspection/work bounds.
+- Warning provenance: `HEADERS_INCOMPLETE`/`BODY_INCOMPLETE` record optional
+  capture completeness for every request, whether or not a rule needed the field.
+  Only `<FIELD>_INSPECTION_UNAVAILABLE_<CATEGORY>` shows that an enabled rule
+  demanded that field and it could not be evaluated. The human request table and
+  detail (`UiText.warnings`) render these as separate fixed labels (detail also
+  lists the recognized fixed IDs) and show unknown/literal IDs plainly under a fixed
+  "unknown code" label; there is no label-count cap. Evidence/export keep every supplied
+  warning verbatim. `<FIELD>_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY` means no bounded
+  inspection slot was free: only that demanded condition is unevaluated; the copy is complete.
 
 ## Controller: prepare, wait, final handoff, response
 
 `GuardController(ProjectAccess)` implements `GuardUiAccess`, `AutoCloseable`.
 
-- `Prepared prepare(RequestData)` / `prepareRejected(reason)`.
+- `Prepared prepare(RequestData)` / `prepareRejected(reason)`. Adapter overload
+  `prepare(RequestData, boolean contentInspectionAvailable)`: `false` (no bounded
+  inspection slot) still records the complete copy and evaluates scope/METHOD/PATH/
+  URL/QUERY, but optional HEADER/BODY/JSON/FORM conditions are unavailable (never
+  EXEMPT-granting, never an automatic denial). `PolicyEngine.evaluate(config, request,
+  boolean)` is the matching policy overload; the two-argument forms mean `true`.
 - `Admission(boolean allowed,String reason,RateGate.Permit permit)` from
   `authorize(Prepared)`; `reject(Prepared,reason)` records a local denial.
 - `CommitResult(boolean allowed,String reason) commitDetailed(Prepared)`;
@@ -242,15 +276,14 @@ Native callers use the seven-argument overload. Observe native status and
 `body().length()` independently of optional copying/slots; never infer size from
 Content-Length or a zero-filled omission sentinel. `-1` means unknown, not zero
 measured wire bytes. Scalars describe the Montoya body view, not headers/TLS/framing.
-The four-argument compatibility overload derives only a bounded copy's size and
-cannot establish an omitted large response's actual size.
+The four-argument compatibility overload uses the supplied complete copy's length (any
+size). After `close()` responses are ignored (nothing new is recorded).
 
-The controller learns response secrets in masked evidence **first**, synchronously
-refreshes structured watcher display with current fingerprints, then observes
-status/size under the same lock as watcher display/export. Old-project response
+The controller records the original response, then observes status/size under the
+same lock as watcher display/export (no masking or re-masking step exists). Old-project response
 tickets cannot affect the new epoch. Tickets are bounded4096 logical observations
 with deadlines, **not native permits**. Expiry marks logical failure once but
-retains the bounded masked endpoint and host/path reservations until actual
+retains the bounded endpoint and host/path reservations until actual
 observation, conclusively-unsent cancellation or epoch reset. A late ordinary
 response still contributes heavy/5xx scalars at completion time; an expired
 half-open response cannot heal or fail a replacement probe. Abandonment/expiry
@@ -264,12 +297,13 @@ close only that conclusively-unsent permit.
 
 Construct with `Limits` (public bounded clock/capacity seams also exist). Public API:
 
-- `Endpoint endpoint(RequestData,String redactedUrl,List<String> routingPaths)`.
+- `Endpoint endpoint(RequestData,List<String> routingPaths)`.
   Actual service + at most9 query-free routing views (each at most16384 Java code
   units) become keyed HMAC identities. Bounds/nulls are checked before hashing;
   empty/non-slash first views, controls/C1 and lone surrogates are not rejected.
   HMAC input uses length-framed exact UTF-16 code units, avoiding charset replacement
-  collisions. Only already-masked display metadata is retained; no raw fallback.
+  collisions. Display keeps the ORIGINAL actual-service host and untouched first routing
+  view (never the fuzzed Host or URL authority); the query is not part of the route.
 - `update(Limits)` retains same-project protections/debt; `reset()` starts a new
   epoch. `check(endpoint,health)` is advisory. `commit(endpoint,health,evidenceId)`
   returns an opaque `Ticket`; evidenceId is not retained by the watcher.
@@ -277,11 +311,13 @@ Construct with `Limits` (public bounded clock/capacity seams also exist). Public
   `abandon(ticket)` (logical missing response only).
 - `overlays()`, `release(id)`, `releaseAll()`, `candidates()`, `ignoreCandidate(id)`,
   `snapshot()`, `incidentJson(fromMillis,toMillis)` and diagnostic `clearEvidence()`.
-- `refreshDisplay(UnaryOperator<String>)` synchronously remasks individual display
-  **values** and pending flights. Never apply it to JSON/schema keys or retain the
-  sanitizer across waits. Hashed privacy fences prevent old endpoints/aliases
-  reviving response-discovered secrets; saturation makes display opaque without
-  evicting enforcement state.
+- `clearEvidence()` discards diagnostic history (events, observations, candidate
+  ignores) and the display originals of active protections/flights and bumps a display
+  generation, so an endpoint issued before the clear can be committed/completed later
+  without resurrecting cleared display text. Enforcement keys, leases, reservations,
+  deadlines, Seen/omission debt and protections are unchanged.
+- Capacity seam: `ResponseWatcher(limits, nanoTime, milliTime, hostCapacity,
+  pathCapacity, overlayCapacity)`; there are no event/observation capacities.
 
 Projections:
 
@@ -302,14 +338,42 @@ or authentication. Do not assume candidates are UUIDs.
 
 - Size `>` configured nonzero bound installs a TTL route overlay **after** the
   response; the first heavy response is not prevented, cut off or replaced.
-  A sole exact zero override disables size detection there. Active overlays
-  survive detector disabling/settings/OFF until expiry or explicit release.
+  Only a flight that was eligible at final commit (master ON, positive bound) and is
+  of the current heavy generation can actuate. `heavyResponseEnabled=false`
+  removes heavy overlays at once and bumps the generation (pre-OFF, while-OFF and
+  late callbacks cannot actuate after re-enable). An AUTHORED zero route override
+  (`PathByteLimit.maxBytes=0`) is a size exception: it bypasses only heavy gating,
+  immediately, using the existing actual-service bounded-alias matching where any
+  positive alias override beats zero and the smallest positive wins. Retained
+  overlays stay (they may protect another alias view); a merely default 0 is not
+  an exception and retained overlays keep their expiry. Raising/lowering a positive
+  bound never rewrites or releases an existing overlay.
 - Circuit counts5xx per actual service. Open expiry permits one GET/HEAD half-open
   claim at most once per service/30seconds, not automatic healing.2xx–4xx closes;
   5xx/unknown/missing response reopens. Local cancel does not refund cadence.
 - Fanout counts query-free route identity within its window; BLOCK is service-local,
   PAUSE is an automatic global overlay, WARN is a diagnostic episode. These are
   not operator pause and do not persist policy.
+- Mode transitions (0.2.0) detach logical episodes only, never Seen history,
+  pending marks or omission debt: fan-out OFF removes every episode; BLOCK/PAUSE ->
+  WARN removes enforcing episodes; BLOCK <-> PAUSE changes the existing episode's
+  action/global flag in place (same id, source and TTL); WARN -> BLOCK/PAUSE retires
+  WARN latches and a NEW final admission may retrigger from live history. Operator
+  pause is never touched. Explicit release/expiry keep their old semantics.
+- Exact exceptions: `circuit5xxExceptions` and `fanoutExceptions` match the sealed
+  instance-issued exact-route HMAC of the ACTUAL service plus ONE complete unchanged
+  routing view (no Host/:authority, no normalized-alias guessing, no wildcard/prefix);
+  every method and every query variant is covered. A fan-out-excluded final admission
+  creates no count, Seen/Mark, path retention, episode or omission debt and bypasses
+  only fan-out service BLOCK / global PAUSE; it still reserves physical host/path/
+  flight capacity and cannot bypass ENFORCING omission debt. Old marks finish with
+  their original window when an exception is added or removed.
+- Shared capacity fence (`capacityProtection`, no contributor ledger) is cleared on
+  `update()` ONLY when heavy master is false, circuit is null, fan-out is null or WARN
+  and no other protection remains: its producers (heavy observation, circuit
+  sampling, enforcing fan-out commit) cannot run in that state and older flights are
+  generation-fenced. Otherwise it is retained until expiry/explicit release. Real
+  host/path/flight/native ownership and omission deadlines are never touched.
 - Fanout history: one indexed route-identity budget equal to the path-key capacity
   (2048), shared by every service and action. WARN admissions pin paths only while
   physically in flight; BLOCK/PAUSE admissions keep window retention. When the
@@ -332,24 +396,48 @@ or authentication. Do not assume candidates are UUIDs.
   `fanoutHistoryComplete` and `retention.fanoutHistoryOmitted`; any omission in the
   epoch makes `complete=false`/`truncated=true` for every window (conservative,
   not attributed to the selected window).
+- Additive enforcement diagnostics: `fanoutHistoryEnforcing` is true only while
+  debt is live AND the configured fanout action is BLOCK/PAUSE (false under WARN or
+  a disabled detector, where debt is retained but not enforced), and
+  `fanoutHistoryRemainingMillis` is the monotonic remaining debt rounded up (0 when
+  inactive; wall time is never used). `capacityBlocked` keeps its meaning (the
+  fixed capacity overlay only). These are watcher-local configuration: they do not
+  include the controller's OFF/lifecycle bypass. `GuardController.status()` inserts
+  `fanoutHistoryEnforcing -> CAPACITY` after `capacityBlocked` and `automaticPause`
+  and before circuits/overlays, only while protection is ON; per-request gate
+  order and reasons are unchanged. The UI shows an active gate only when
+  enforcing and not OFF, otherwise "retained, not enforced" with the remaining time.
+- Host-capacity reclaim (WARN or disabled fan-out only, and only when the 1024
+  service-host limit is the blocker): `commit()` may discard ONE host whose state
+  is purely idle diagnostic history - no in-flight or late ticket, circuit,
+  enforcing (BLOCK/PAUSE) episode, retained 5xx sample, live 30 s probe cadence or
+  pending Seen mark. Selection is shared with `gate()` feasibility, but `check()`
+  never evicts or creates debt. Every discarded confirmed history adds one to the
+  saturating `fanoutHistoryOmitted` and extends omission debt to its ORIGINAL
+  monotonic deadline (never shortening existing debt), so the counter covers
+  discarded host history as well as admissions omitted at the index limit. Retained
+  paths, heavy/other protections, scalar observations and native reservations are
+  untouched; BLOCK/PAUSE never reclaims and still fails closed.
 - An exact configured, bodyless, queryless **GET** health exception bypasses only
   operator pause/circuit. It still obeys lifecycle/scope/rules/ASK/heavy/fanout/
   budget/rate/capacity; its response never heals a circuit.
-- Bounds:1024 services,2048 path keys/candidate metadata,1024 protections including
-  a reserved capacity fence,4096 flights/events,8192 scalar observations,9 route
-  views. Uncompleted expired flights count toward the same4096 ceiling, not a
+- Enforcement bounds:1024 services,2048 path keys,1024 protections including
+  a reserved capacity fence,4096 flights,9 route views. Diagnostic events,
+  observations and candidates have **no** count or age bound (until clear/epoch/unload). Uncompleted expired flights count toward the same4096 ceiling, not a
   separate unbounded map. Active protections are never evicted to admit traffic.
-- Candidates use retained24-hour observations: maximum/count/lastSeen/5xx are exact
-  for retained observations, p95 is a log2-histogram **upper-bound approximation**.
-  Unknown byte scalars contribute zero to watcher aggregates and cannot establish
-  a real zero-size response or trigger a size overlay. Retention/eviction is visible.
-- `policyUrl` is an optional already-masked, query-free, unchanged actual-service
-  route for a human draft, not a raw URL getter. Masked/changed/unrepresentable
-  routes have `policyUrl=""`; no automatic policy save or raw fallback is allowed.
-- Incidents accept `[from,to)` up to24hours and expose `window`, `events`, top20
-  `top5xx`/`topBytes`, `complete`, `truncated`, `approximate`, `approximation`,
-  `retention`. Completeness is retained-window coverage, not lifetime/wire proof.
-  Clears, ring loss, out-of-retention windows or wall-clock regression constrain it.
+- Candidates use every retained observation: maximum/count/lastSeen/5xx are exact,
+  p95 is a log2-histogram **upper-bound approximation**. Unknown byte scalars
+  contribute zero and cannot establish a real zero-size response or trigger a size
+  overlay. Ignoring a candidate hides it only; new candidates still appear.
+- `policyUrl` is an optional query-free actual-service route hint for a human draft,
+  set only for one exact routing view whose path is a faithful ordinary URL path;
+  otherwise `""`. No automatic policy save is allowed.
+- Incidents accept any ordered `[from,to)` (`to > from`) and expose `window`, `events`,
+  top20 `top5xx`/`topBytes`, `complete`, `truncated`, `approximate`, `approximation`,
+  `retention` (`mode: UNTIL_CLEAR_PROJECT_OR_UNLOAD`, `startedAt`, `clockRegressed`,
+  `fanoutHistoryOmitted`; legacy `…Dropped` flags are always false). Completeness is
+  retained-window coverage, not lifetime/wire proof: a window before start/clear, a
+  future end, clock regression or fan-out omission make it incomplete.
 
 ### `IntentBudget`, `RateGate`, `ApprovalQueue`
 
@@ -392,7 +480,7 @@ is one-shot and still subject to cancellation/expiry until consumed.
   first. Empty ports protects all. Supplied trusted model proof can protect a
   selected or bypass an unselected port; production supplies no such proof, so
   every configured restriction rejects `LISTENER_UNVERIFIED` before native capture.
-  A fixed synthetic UNKNOWN/redacted omission record is not native content capture.
+  A fixed synthetic `UNKNOWN https://capture-omitted.invalid/` record is not native content capture.
 - Compatibility `nativeMode()` / `passthroughToken()` remain; no-ID cannot prove
   a selected/unselected listener when ports are restricted.
 - `PassthroughToken` is a final class with original `(projectId,revision)` and
@@ -410,8 +498,11 @@ request/response flight correlation remains separate.
 
 Native allows continue the **same request/response objects and annotations**.
 Native bounds are128 protected callbacks,8 optional inspection slots,100 flights;
-no new OFF/unselected flight/permit/correlation/content is retained. Losing an
-optional inspection slot omits content with flags, not an automatic scope denial.
+no new OFF/unselected flight/permit/correlation/content is retained. Capture of the
+complete original is always attempted regardless of the8 optional inspection slots;
+without a slot only demanded policy inspection is unavailable
+(`<FIELD>_INSPECTION_UNAVAILABLE_INSPECTION_CAPACITY`), not an automatic451 or scope
+denial, and capture completeness flags are not falsified.
 True permits close only on matching actual Proxy response or conclusively-unsent
 failure. Unload/deadlines do not prove completion.
 
@@ -431,33 +522,46 @@ compatibility/mock identity is not installed-Burp/wire proof.
 
 ## Evidence and human-only UI boundary
 
-`EvidenceStore` owns **two separate bounded memory stores**: sealed MASKED
-`TrafficEntry` evidence and UNMASKED human-local `RawTrafficStore`. No native
-objects, automatic disk persistence or export/log path receives raw UI content.
-See [EVIDENCE.md](EVIDENCE.md) for masking/seals/bounds.
+`EvidenceStore` owns sealed ORIGINAL `TrafficEntry` rows and the structured byte
+captures (`RawTrafficStore`) they are built from, with **no masking and no collection/
+retention/export quota** (memory grows until clear/project change/unload; OOM is a
+documented user-managed risk). No native objects or automatic disk persistence. Every
+projection and export may contain plaintext credentials. See [EVIDENCE.md](EVIDENCE.md).
 
-Masked API: `begin`, `outcome`, `response` (four args and completeness-six args),
+API: `begin`, `outcome`, `response` (four args and completeness-six args),
 `context(id,outcome,guardState,overlayId)`, `responseBytes(id,long)`, `entry(id)`,
-`snapshot`, `bookmark`, `stats`, `clear`, `exportJson`, `exportHar`.
-`displaySanitizer(id)` is ephemeral current-fingerprint masking of individual
-structured watcher values; disposed evidence returns opaque display, not raw.
+`snapshot`, `bookmark`, `stats`, `clear` (releases rows, captures and sources),
+`exportJson`, `exportHar`, static `jsonBytes(Object)` (uncapped serializer).
 
 `TrafficEntry` retains original constructors/accessors plus `intentId`, `runId`,
 `outcome`, `guardState`, `overlayId`, `responseBytes`, `inspectionWarnings`.
-`Message(headers,body,mimeType,bodyOmitted,truncated,present)` and rendered
-`request()`/`response()` are always masked. JSON/provenance schemaVersion is2;
-HAR1.2 carries v2 additions in `_cairnGuard`. A seal rejects foreign/forged entries
-and stale retained selections refresh to latest masking; a selection whose ID is no longer
-retained is rejected with `INVALID_EVIDENCE_SELECTION`. Raw data is not a field
-on this serializable/exportable model.
+`Message(headers,body,mimeType,bodyOmitted,truncated,present,bodyEncoding)` (the
+six-argument constructor remains) carries original headers and the complete body as
+`UTF8_TEXT`, lossless `HEX`, `EMPTY` or `UNAVAILABLE`; rendered `request()`/`response()`
+are original. JSON/provenance schemaVersion is2 (label `ORIGINAL_EVIDENCE_NOT_WIRE_CAPTURE`);
+HAR1.2 carries v2 additions in `_cairnGuard` and HEX bodies as base64. Its `request.url`
+and `queryString` are filled only when the retained untouched actual-service target is a
+faithful ordinary URL; `_rawTarget`/`_service` come exactly from the retained capture
+route when present; otherwise `url` is `""`, `queryString` is `[]`, `_urlUnavailable`
+names the reason (`NO_SERVICE_ROUTE` without a route) and `_displayUrl` keeps the
+retained display text only (not a target claim). Nothing is guessed or normalized. The
+human HAR file uses the same `url`/`_rawTarget`/`_service`/`_urlUnavailable` rule for a
+retained original (a missing original is `url:""` with `_unavailable`) but has no
+`_displayUrl`, and its `queryString` is always `[]` with `_queryStringNotParsed`. A seal (covering
+`bodyEncoding`) rejects foreign/forged entries; stale retained selections export the
+current row; a selection whose ID is no longer retained is rejected with
+`INVALID_EVIDENCE_SELECTION`.
 
 Human-local getters: `rawRequest(id)`, `rawResponse(id)`, `rawUrl(id)`,
-`rawCaptureInfo(id)` and `clearRawUi()`. They may be unavailable/truncated/omitted;
-label `UNMASKED_INSPECTION_COPY_NOT_WIRE_PROOF`. Raw cache is project-bound, cleared
-on uncertainty/switch/close/clear, removed with evidence eviction and independently
-bounded. Existing records can remain across OFF; **new OFF/unselected content is
-never captured**. Raw getters must never feed runtime watcher display, exports,
-logging or policy harvesting.
+`rawCaptureInfo(id)` render the same retained parts as text; they may be unavailable
+(cleared, never captured, genuine native read failure); label
+`UNMASKED_INSPECTION_COPY_NOT_WIRE_PROOF`. Storage is project-bound and released on
+uncertainty/switch/close/clear (no eviction). Existing records can remain across OFF;
+**new OFF/unselected content is never captured**. `GuardController.traffic()`,
+`exportJson/Har/Incident` and watcher reads first reconcile a discovered close/project
+change (which releases old rows and watcher history), so old selections are rejected by the
+seal/membership check and empty selections/incidents contain no old originals; `status().projectName` is the verified name or
+`PROJECT_NAME_UNAVAILABLE`. Nothing harvests originals into policy automatically.
 
 `GuardUiAccess` is **in-process human UI only**:
 
@@ -472,6 +576,40 @@ logging or policy harvesting.
   `heavyCandidates`, `ignoreCandidate(id,projectId,revision)`,
   `resetIntentBudgets(projectId,revision)`, `exportIncident(from,to)`,
   `migrationView()` and the four raw getters.
+- 0.2.0 human projections: `humanCandidates()` (`HumanCandidate`: safe candidate +
+  ORIGINAL actual-service scheme/host/port/no-query path of its latest retained
+  source, `ruleUrl` for an unsaved ordinary URL BLOCK draft, `limitPath` only for a
+  strict exact route, categorical unavailability, opaque `CandidateSource`) and
+  `humanOverlays()` (`HumanOverlay`: original host and, for heavy only, path; plus an
+  `OverlayException` review of the overlay's own triggering request with an opaque
+  `OverlaySource`, or a reason: NO_SERVICE_SOURCE / ORIGINAL_UNAVAILABLE /
+  ENCODED_OR_AMBIGUOUS_ROUTE / EXCEPTION_TABLE_FULL). Originals resolve through an
+  opaque random source reference sealed in the issued watcher Endpoint and bound to
+  the raw capture; never through Host, display strings, candidate joins or caller URLs.
+- `updateConfig(config,project,revision,CandidateSource,byteLimit)` and
+  `updateConfig(config,project,revision,OverlaySource)` revalidate, under the
+  controller lock and adjacent to the existing CAS, the token owner/project/runtime
+  epoch/raw generation, the current candidate (latest source) or overlay (same id,
+  kind, source) and the keyed route seal. An overlay save must equal exactly
+  `GuardUiAccess.withDetectorException(current policy, kind, route)` - HEAVY upserts
+  a size-0 `PathByteLimit`, CIRCUIT/FANOUT add one exact route - so no unrelated
+  field, other detector or enable flag can change. `overlayExceptionCurrent` is the
+  UI's post-confirmation check. Stale/forged/substituted tokens write nothing.
+- `humanExport(evidenceIds, har)` / `humanIncident(from,to)` return an opaque
+  `HumanExport` snapshot created under the controller lock (shares immutable raw
+  parts); `serialize()` runs off the EDT and outside every runtime lock with **no size
+  cap** (a serialization/IO failure publishes nothing). `humanExportCurrent(export)` is the final
+  pre-rename checkpoint (project, revision, runtime epoch, raw generation, AND that every
+  original the snapshot actually used - by capture identity for JSON/HAR, by source
+  reference for incident rows - is still retained; a clear of such an original aborts
+  publication, while unrelated captures and later response updates do not,
+  and originals already absent at snapshot time stay categorical `originalUnavailable`).
+  The check is memory-only under the controller lock; serialization/filesystem stay outside. Formats:
+  `cairn-human-inspection` v1 JSON, HAR 1.2 with `_cairnGuard.exportMode=HUMAN_ORIGINAL`,
+  `cairn-human-incident` v1 (rows resolved by their OWN source; missing originals are
+  null + `originalUnavailable`; no `_source`, enforcement keys or tokens in files).
+  The check-to-rename race and sampled Burp project boundary are documented, not
+  prevented; a later clear cannot retract an exported file.
 
 `migrationView` returns `pending`, `original`, `migrated`; no implicit write.
 Status retains old keys plus `guardState`, `pauseCause`, `operatorPaused`,

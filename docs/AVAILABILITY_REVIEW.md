@@ -48,3 +48,26 @@
 - 선택 해제 후 상세 편집이 버려지는 현상, 상태 flag 가시성, 최초 발급 응답 grant 마스킹은 수정했습니다.
 - 실제 툴킷의 창 축소 후 row 높이 문제는 별도 관찰만으로도2초 이상 남는 잘림을 재현했습니다. 부모 preferred-size를 실제 폭 변경 때만 **현재 validation pass가 끝난 뒤** 재검증하도록 수정했습니다. **추가 사용자 편집 없이** 회복하는 desktop 회귀와 스크롤 영역 없는 headless 회귀를 두고, 독립 후속 검토에서도 이전/수정 코드의 잘림 차이를 재현했습니다.
 - 단일 자식 AND/OR를 자동 축약하지 않는 것은 AST/불필요 metadata 보존을 위한 보수적 동작입니다. ‘묶음 추가’의 선택 leaf 감싸기 의미와 정책 전체 node 한도 안내 개선은 추가 검토 대상으로 남습니다. full-policy 검증을 우회하지 않습니다.
+
+## 0.2.0 후보 — 심사 지적과 시험 증거 (현재 구현 기준, native 검증 아님)
+
+| 지적 | 처리 | 증거(소스 시험) |
+|---|---|---|
+| 선택 캡처 불완전이 “규칙이 필드를 요구했는데 검사 못 함”으로 보임 | 사람용 표시만 분리(`UiText.warnings`). 기계 ID·정책·evidence 불변 | `UiTextTest`, `GuardPanelV2Test#trafficWarnings…`, `AvailabilityPolicyTest#pathOnlyPolicyReports…` |
+| 상태가 확산 BLOCK/PAUSE의 누락 부채 거절을 PROTECTED로 표시 | 가산 키 `fanoutHistoryEnforcing`/`RemainingMillis`, CAPACITY 상태 삽입(자동 PAUSE 뒤, 회로 앞), OFF에서는 활성 게이트로 표시 안 함 | `ResponseWatcherTest#enforcingOmissionDiagnostic…`, `GuardControllerV2Test#enforcingOmissionDebt…`/`globalOmissionCapacityStatus…`, `GuardPanelV2Test#enforcingOmissionDebt…` |
+| 완료된 WARN 호스트 기록이 1024 호스트 용량을 점유 | 재현 후 `commit()`에서만 유휴 진단 호스트 1개 회수, 폐기 기록은 원래 단조 만료의 누락 부채로 전환. 활성/late/회로/failure/probe cadence/enforcing 호스트는 거절 유지 | `ResponseWatcherTest#idleWarnHostHistory…`, `hostReclaimAccounts…`, `hostReclaimRefuses…` |
+| RateGate 호스트 용량/공정성 | **변경 없음(기대 동작 확인)**: rate debt는 만료 전 evict 불가, eligible head RR·호스트별 FIFO | `RateGateTest#hostCapacityPreservesRateDebt…`, `activeAndQueuedHostsCannotBeEvicted…`, `eligibleHeadsRoundRobin…`(3호스트) |
+| watcher 거절이 intent 예산·half-open cadence를 소모 | **변경 없음**: 최종 거절은 예산 소비 전 | `GuardControllerV2Test#finalFanoutRejection…`, `finalCommitRejectsEnforcing…`, `ResponseWatcherTest#historyCapacityRejectionDoesNotClaimHalfOpenProbe` |
+| 잘못된 intent 태그/예산 분류 | **변경 없음**: 예산 한도 활성일 때만 거절 | `IntentBudgetTest#missingIntentIsUnbudgetedAndInvalidTagsRejectedOnlyWhenEnabled` |
+
+보류: 규칙 미리보기, H(포트별 보호), 투기적 공정성 재작성. Burp 자체 `Drop all out-of-scope requests` 설정은 확장이 읽거나 바꾸지 않습니다.
+
+## 0.2.0 확장 — 선택형 자동 차단·예외 (소스 시험 근거, native 검증 아님)
+
+| 요구 | 처리 | 증거(소스 시험) |
+|---|---|---|
+| 자동 차단 종류를 골라 쓰기 | 대용량 master(기본 켜짐), 5xx 회로(선택·기본 꺼짐), 확산(경고만/서비스 차단/전체 일시정지)을 각각 설정. 끄거나 경고만으로 바꾸면 그 종류의 열린 차단만 즉시 논리 해제, 기록·누락 부채·native 자리 유지 | `ResponseWatcherTest#heavyMasterOff…`, `heavyOffOn…`, `fanoutOffOrWarn…`, `explicitCircuitOff…`, `GuardControllerV2Test#selectiveDetectorSaves…` |
+| 이미 자동 차단된 항목의 예외 | 자동 차단 탭 ‘예외 검토’: 원인 요청 원문 경로 → 그 종류만의 예외(대용량 0 / 회로·확산 정확 경로), 모든 확인 뒤·CAS에서 재검증, 다른 필드 불변 | `GuardControllerV2Test#overlayExceptionReview…`, `staleReleasedCleared…`, `overlayExceptionIsUnavailable…`, `GuardPanelV2Test#overlayException…` |
+| 예외 범위 | 회로·확산: 실제 서비스 + 완전한 단일 경로 HMAC, 모든 메서드·query; 대용량 0: 기존 별칭 규칙(양수 우선). 확산 예외도 적용 중 누락 부채는 우회 불가 | `ResponseWatcherTest#fanoutException…`, `explicitZeroRouteLimit…`, `WatcherRoutingInteropTest` |
+| 공유 용량 차단 | 모든 자동 차단이 비강제일 때만 해제(대용량 off·회로 off·확산 off/경고). 하나라도 켜져 있으면 유지 | `ResponseWatcherTest#sharedCapacityFence…` |
+| upstream 실패 후 자리 회수 | **PLATFORM_BLOCKED**: 지원되는 완료/실패 콜백 없음. TTL/추정 해제 미구현(안전성 이유) | 부모 판정 `UPSTREAM-FAILURE-ADJUDICATION` (native, 기준선) |

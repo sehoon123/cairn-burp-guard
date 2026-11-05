@@ -141,6 +141,45 @@ class GuardPanelV2Test {
         assertEquals(2,access.runtimeCalls);assertEquals(0,access.updates);
     }
 
+    @Test void overlayExceptionReviewSavesOnlyTheSelectedKindAndIsSeparateFromOneTimeRelease() throws Exception {
+        access.policy=fullPolicy();GuardConfig original=access.policy;
+        access.overlays=new ArrayList<>(List.of(overlay("heavy",5000)));
+        access.overlayExceptions.put("heavy",new GuardUiAccess.OverlayException("HEAVY","https","example.test",443,"/large/"+SECRET,null,access.new FakeOverlaySource()));open();
+        edt(()->{get("overlays.table",JTable.class).setRowSelectionInterval(0,0);assertTrue(get("overlays.exception",JButton.class).isEnabled());return null;});
+        dialogs.edit=(form,save)->{assertTrue(get("overlays.exceptionReview",JTextArea.class).getText().contains("/large/"+SECRET),"original triggering route");assertEquals(0,access.updates);};
+        edt(()->{click("overlays.exception");return null;});assertEquals(0,access.updates,"an unsaved draft writes nothing");
+        dialogs.edit=(form,save)->save.run();dialogs.confirmed=false;
+        edt(()->{click("overlays.exception");return null;});assertEquals(0,access.updates,"cancel writes nothing");
+        dialogs.confirmed=true;dialogs.confirmations.clear();
+        edt(()->{click("overlays.exception");return null;});
+        assertEquals(1,access.updates);assertEquals(0,access.runtimeCalls,"a saved exception is not a release");
+        GuardConfig.Limits l=access.policy.limits();
+        assertTrue(l.heavyPathLimits().contains(new PathByteLimit("https","example.test",443,"/large/"+SECRET,0)));
+        assertEquals(original.limits().circuit5xxExceptions(),l.circuit5xxExceptions());assertEquals(original.limits().fanoutExceptions(),l.fanoutExceptions());
+        assertEquals(original.limits().heavyResponseEnabled(),l.heavyResponseEnabled(),"a disabled detector is not enabled");
+        assertEquals(original.rules(),access.policy.rules());assertEquals(original.limits().circuit5xx(),l.circuit5xx());
+        assertTrue(dialogs.confirmations.stream().anyMatch(c->c.contains("대용량")&&c.contains("예외")),dialogs.confirmations.toString());
+    }
+
+    @Test void overlayExceptionSourceStaleInsideAnyConfirmationWritesNothingAndUnavailableRowsExplainWhy() throws Exception {
+        access.overlays=new ArrayList<>(List.of(overlay("fan",5000),overlay("cap",5000)));
+        access.overlayExceptions.put("fan",new GuardUiAccess.OverlayException("FANOUT","https","example.test",443,"/batch",null,access.new FakeOverlaySource()));
+        access.overlayExceptions.put("cap",new GuardUiAccess.OverlayException("NONE","","",0,"","NO_SERVICE_SOURCE",null));open();
+        dialogs.edit=(form,save)->save.run();
+        for(int confirmation=0;confirmation<2;confirmation++){
+            int stop=confirmation;int[] seen={0};access.overlayCurrent=true;dialogs.errors.clear();
+            dialogs.onConfirm=()->{if(seen[0]++==stop)access.overlayCurrent=false;};
+            edt(()->{JTable t=get("overlays.table",JTable.class);t.setRowSelectionInterval(0,0);click("overlays.exception");return null;});
+            assertEquals(0,access.updates,"stale at confirmation "+confirmation);assertTrue(dialogs.errors.contains(UiText.error("OVERLAY_EXCEPTION_STALE")),dialogs.errors.toString());
+        }
+        dialogs.onConfirm=()->{};access.overlayCurrent=true;
+        edt(()->{JTable t=get("overlays.table",JTable.class);t.setRowSelectionInterval(1,1);
+            assertFalse(get("overlays.exception",JButton.class).isEnabled());
+            assertTrue(get("overlays.exception",JButton.class).getToolTipText().contains("예외 불가"));
+            t.setRowSelectionInterval(0,0);click("overlays.exception");return null;});
+        assertEquals(1,access.updates);assertEquals(List.of(new ProbePath("https","example.test",443,"/batch")),access.policy.limits().fanoutExceptions());
+    }
+
     @Test void expiredOrReplacedOverlayIsNotMistakenForAReplacementAndStaleConfirmationCannotRelease() throws Exception {
         access.overlays=new ArrayList<>(List.of(overlay("old",5000)));open();
         edt(()->{
@@ -166,13 +205,48 @@ class GuardPanelV2Test {
         dialogs.edit=(form,save)->save.run();edt(()->{click("candidates.block");return null;});assertEquals(1,access.updates);assertTrue(access.policy.blockScope().isEmpty());assertEquals(Mode.BLOCK,access.policy.rules().getLast().mode());
     }
 
-    @Test void maskedCandidatesNeverHarvestRawDisplayIntoPolicyOrThresholdsAndIgnoreIsRuntimeOnly() throws Exception {
+    @Test void candidateWithoutARetainedOriginalHasNoDraftsAndNoMaskedSubstituteAndIgnoreIsRuntimeOnly() throws Exception {
         access.candidates=new ArrayList<>(List.of(candidate("hidden","",900)));open();
         edt(()->{
-            get("candidates.table",JTable.class).setRowSelectionInterval(0,0);
+            JTable t=get("candidates.table",JTable.class);t.setRowSelectionInterval(0,0);
             assertFalse(get("candidates.block",JButton.class).isEnabled());assertFalse(get("candidates.threshold",JButton.class).isEnabled());assertTrue(get("candidates.ignore",JButton.class).isEnabled());
+            assertTrue(((String)t.getValueAt(0,0)).contains("원문 없음"),"categorical, not a masked substitute");assertTrue(((String)t.getValueAt(0,7)).contains("원문 없음"));
             click("candidates.ignore");return null;
-        });assertEquals(0,access.updates);assertEquals(1,access.runtimeCalls);assertTrue(access.candidates.isEmpty());assertEquals(0,access.rawReads);
+        });assertEquals(0,access.updates);assertEquals(1,access.runtimeCalls);assertTrue(access.candidates.isEmpty());
+    }
+
+    @Test void remaskedPublicCandidateWithARetainedOriginalStillEnablesBothActionsAndShowsOriginalHostAndPath() throws Exception {
+        String original="https://original-host.test:8443/download/"+SECRET;
+        access.candidates=new ArrayList<>(List.of(candidate("secret","",900)));access.originalUrls.put("secret",original);open();
+        edt(()->{
+            JTable t=get("candidates.table",JTable.class);t.setRowSelectionInterval(0,0);
+            assertEquals("original-host.test",t.getValueAt(0,0));assertEquals("/download/"+SECRET,t.getValueAt(0,1));
+            assertTrue(get("candidates.block",JButton.class).isEnabled());assertTrue(get("candidates.threshold",JButton.class).isEnabled());
+            panel.refreshNow();assertTrue(get("candidates.block",JButton.class).isEnabled(),"timer refresh keeps both enabled");return null;
+        });
+        dialogs.edit=(form,save)->{
+            Rule draft=((RuleEditor)form).value();assertEquals(Match.REGEX,draft.condition().match());assertTrue(draft.condition().caseSensitive());
+            assertTrue(draft.condition().value().contains(SECRET.replace(".","\\.")) || draft.condition().value().contains(SECRET),"original actual-service URL seeds the draft");
+            assertEquals(0,access.updates);save.run();
+        };
+        edt(()->{click("candidates.block");return null;});
+        assertEquals(1,access.updates);assertTrue(dialogs.confirmations.stream().anyMatch(c->c.contains("원문 실제 대상 URL")&&c.contains("query")&&c.contains("대소문자")),dialogs.confirmations.toString());
+        dialogs.confirmations.clear();
+        dialogs.edit=(form,save)->{get("candidates.thresholdMiB",JTextField.class).setText("1");save.run();};
+        edt(()->{click("candidates.threshold");return null;});
+        assertEquals(2,access.updates);
+        assertEquals(new PathByteLimit("https","original-host.test",8443,"/download/"+SECRET,1_048_576),access.policy.limits().heavyPathLimits().getLast());
+    }
+
+    @Test void encodedRouteCandidateAllowsOrdinaryBlockDraftButByteActionExplainsWhy() throws Exception {
+        access.candidates=new ArrayList<>(List.of(candidate("enc","https://example.test/c/%2c",900)));open();
+        edt(()->{
+            JTable t=get("candidates.table",JTable.class);t.setRowSelectionInterval(0,0);
+            assertTrue(get("candidates.block",JButton.class).isEnabled(),"an ordinary BLOCK draft keeps the raw spelling");
+            assertFalse(get("candidates.threshold",JButton.class).isEnabled());
+            assertTrue(get("candidates.threshold",JButton.class).getToolTipText().contains("정확한 크기 한도 불가"),"specific honest reason");
+            assertTrue(((String)t.getValueAt(0,7)).startsWith("BLOCK 초안만"));return null;
+        });
     }
 
     @Test void thresholdIsAnExplicitPolicySaveWithFirstResponseWarningAndPreservesAllOtherSettings() throws Exception {
@@ -184,29 +258,151 @@ class GuardPanelV2Test {
         dialogs.confirmed=true;edt(()->{click("candidates.threshold");return null;});
         assertEquals(1,access.updates);Limits l=access.policy.limits();assertEquals(new PathByteLimit("https","example.test",443,"/z",2621440),l.heavyPathLimits().getLast());
         assertEquals(original.rules(),access.policy.rules());assertEquals(original.limits().circuit5xx(),l.circuit5xx());assertEquals(original.guardListenerPorts(),access.policy.guardListenerPorts());
+        assertEquals(original.limits().heavyResponseEnabled(),l.heavyResponseEnabled());assertEquals(original.limits().fanoutExceptions(),l.fanoutExceptions());assertEquals(original.limits().circuit5xxExceptions(),l.circuit5xxExceptions());
         assertEquals(0,access.runtimeCalls);
     }
 
-    @Test void candidateChangedByResponseRedactionDuringDraftCannotBeSaved() throws Exception {
+    @Test void sizeZeroThresholdConfirmationIsDistinctFromPositiveAndNeverPromisesTheRequestStaysBlocked() throws Exception {
         access.candidates=new ArrayList<>(List.of(candidate("large","https://example.test/z",900)));open();
-        dialogs.edit=(form,save)->{access.candidates=new ArrayList<>(List.of(candidate("large","",900)));save.run();};
-        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);click("candidates.block");return null;});assertEquals(0,access.updates);assertTrue(dialogs.errors.contains(UiText.error("CANDIDATE_UNSAFE")));
+        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);return null;});
+        for(String value:List.of("2.5","0")){
+            dialogs.confirmations.clear();dialogs.edit=(form,save)->{get("candidates.thresholdMiB",JTextField.class).setText(value);save.run();};
+            edt(()->{click("candidates.threshold");return null;});
+            String first=dialogs.confirmations.getFirst();
+            if(value.equals("0")){
+                assertTrue(first.contains("크기 감지 예외"),first);assertTrue(first.contains("즉시"),first);assertFalse(first.contains("이후 요청을 차단합니다"),first);assertFalse(first.contains("별도 해제/만료해야 합니다"),first);
+                assertTrue(first.contains("양수"),"alias rule disclosed: "+first);
+            } else {
+                assertTrue(first.contains("이후 요청을 차단합니다")&&first.contains("별도 해제/만료"),first);assertFalse(first.contains("크기 감지 예외"),first);
+            }
+        }
     }
 
-    @Test void rawUnmaskedRequestResponseUrlAndTagsAreOnlyOnScreenAndInspectionWarningsAreHonest() throws Exception {
+    @Test void alreadyExceptedOverlayHasATruthfulDisabledActionAndRetainedConditionalWording() throws Exception {
+        access.overlays=new ArrayList<>(List.of(overlay("heavy",5000)));
+        access.overlayExceptions.put("heavy",new GuardUiAccess.OverlayException("HEAVY","https","example.test",443,"/large","ALREADY_EXCEPTED",null));open();
+        edt(()->{
+            JTable t=get("overlays.table",JTable.class);t.setRowSelectionInterval(0,0);
+            JButton review=get("overlays.exception",JButton.class);
+            assertFalse(review.isEnabled(),"no authority, so no re-save and no reorder-only policy write");
+            assertTrue(review.getToolTipText().contains("이미 예외"),review.getToolTipText());
+            String reason=(String)t.getValueAt(0,6);assertTrue(reason.contains("예외 저장됨")&&reason.contains("조건부"),reason);
+            assertTrue(get("overlays.help",JTextArea.class).getText().contains("보존된 조건부 상태"));
+            String summary=get("overlays.summary",JTextArea.class).getText();
+            assertTrue(summary.contains("보존된 자동 보호 상태 1개")&&summary.contains("조건부"),summary);
+            assertFalse(summary.contains("열린 자동 차단 1개"),"no unqualified open-block count: "+summary);
+            assertFalse(summary.contains("모든 게이트")||summary.contains("해제됨"),summary);
+            assertTrue(summary.contains("회로 ")&&summary.contains("회로 재확인"),"live circuit/half-open counts stay: "+summary);
+            access.watcher=Map.of("overlays",1,"circuits",0);panel.refreshNow();
+            String diagnosis=get("dashboard.diagnosis",JTextArea.class).getText(),warn=get("dashboard.warning",JTextArea.class).getText();
+            assertTrue(diagnosis.contains("자동 차단 1")&&diagnosis.contains("보존된 조건부"),diagnosis);
+            assertTrue(warn.contains("보존된 조건부")&&warn.contains("꺼졌다는 뜻은 아닙니다"),warn);assertFalse(warn.contains("모두 해제")||warn.contains("모든 게이트가 꺼졌습니다"),warn);
+            click("overlays.exception");return null;
+        });
+        assertEquals(0,access.updates);
+    }
+
+    @Test void circuitExceptionSaveNeedsItsOwnConfirmationCancelWritesNothingAndDeletionOrUnrelatedEditsDoNot() throws Exception {
+        open();
+        dialogs.edit=(form,save)->{
+            get("settings.circuit.exceptions.add",JButton.class).doClick(0);
+            JTable t=get("settings.circuit.exceptions.table",JTable.class);t.setValueAt("example.test",0,1);t.setValueAt("/expected-error",0,3);save.run();
+        };
+        dialogs.confirmed=false;edt(()->{click("settings.edit");return null;});
+        assertEquals(0,access.updates);assertTrue(dialogs.confirmations.stream().anyMatch(c->c.contains("5xx 회로 예외")&&c.contains("모든 메서드")&&c.contains("query")&&c.contains("구버전")),dialogs.confirmations.toString());
+        dialogs.confirmations.clear();dialogs.confirmed=true;
+        edt(()->{click("settings.edit");return null;});
+        assertEquals(1,access.updates);assertEquals(List.of(new ProbePath("https","example.test",443,"/expected-error")),access.policy.limits().circuit5xxExceptions());
+        assertTrue(PolicyCodec.encode(access.policy).contains("circuit5xxExceptions"));
+        // an unrelated edit keeps the list and asks no exception confirmation
+        dialogs.confirmations.clear();
+        dialogs.edit=(form,save)->{get("settings.heavyMiB",JTextField.class).setText("8");save.run();};
+        edt(()->{click("settings.edit");return null;});
+        assertEquals(2,access.updates);assertEquals(1,access.policy.limits().circuit5xxExceptions().size());
+        assertTrue(dialogs.confirmations.stream().noneMatch(c->c.contains("5xx 회로 예외")),dialogs.confirmations.toString());
+        // deleting the exception only tightens protection: no weakening warning, still an explicit save
+        dialogs.edit=(form,save)->{JTable t=get("settings.circuit.exceptions.table",JTable.class);t.setRowSelectionInterval(0,0);get("settings.circuit.exceptions.remove",JButton.class).doClick(0);save.run();};
+        edt(()->{click("settings.edit");return null;});
+        assertEquals(3,access.updates);assertTrue(access.policy.limits().circuit5xxExceptions().isEmpty());
+        assertTrue(dialogs.confirmations.stream().noneMatch(c->c.contains("5xx 회로 예외")),dialogs.confirmations.toString());
+        assertFalse(PolicyCodec.encode(access.policy).contains("circuit5xxExceptions"));
+        edt(()->{assertTrue(get("settings.summary",JTextArea.class).getText().contains("5xx 회로 예외 경로: 0개"));return null;});
+    }
+
+    @Test void candidateSourceReplacedRemovedOrChangedInsideAnyConfirmationWritesNothingButRemaskingAloneDoesNot() throws Exception {
+        access.candidates=new ArrayList<>(List.of(candidate("large","https://example.test/z",900)));open();
+        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);return null;});
+        // 1) public policyUrl blanked by response remasking during the draft: the retained original still saves
+        dialogs.edit=(form,save)->{access.candidates=new ArrayList<>(List.of(candidate("large","",900)));access.originalUrls.put("large","https://example.test/z");save.run();};
+        edt(()->{click("candidates.block");return null;});assertEquals(1,access.updates);
+        // 2) source replaced by a newer observation DURING the final confirmation
+        access.candidates=new ArrayList<>(List.of(candidate("large","https://example.test/z",900)));access.originalUrls.clear();
+        dialogs.errors.clear();dialogs.edit=(form,save)->save.run();dialogs.onConfirm=()->access.replaceSource("large");
+        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);click("candidates.block");return null;});
+        assertEquals(1,access.updates);assertTrue(dialogs.errors.contains(UiText.error("CANDIDATE_STALE")),dialogs.errors.toString());
+        // 3) same for the byte-limit action (confirmation inside the editor save)
+        dialogs.errors.clear();dialogs.edit=(form,save)->{get("candidates.thresholdMiB",JTextField.class).setText("1");save.run();};
+        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);click("candidates.threshold");return null;});
+        assertEquals(1,access.updates);assertTrue(dialogs.errors.contains(UiText.error("CANDIDATE_STALE")),dialogs.errors.toString());
+        // 4) candidate removed while the draft is open
+        dialogs.errors.clear();dialogs.onConfirm=()->{};dialogs.edit=(form,save)->{access.candidates.clear();save.run();};
+        edt(()->{get("candidates.table",JTable.class).setRowSelectionInterval(0,0);click("candidates.block");return null;});
+        assertEquals(1,access.updates);assertFalse(dialogs.errors.isEmpty());
+    }
+
+    @Test void humanMethodFilterAndSearchUseTheDisplayedOriginalMethod() throws Exception {
+        // REAL EvidenceStore capture: a valid nonstandard token method is retained as the original everywhere.
+        RequestData custom=new RequestData("CUSTMETHOD","https://example.test/a","example.test",443,true,List.of(),new byte[0]);
+        RequestData get=new RequestData("GET","https://example.test/b","example.test",443,true,List.of(),new byte[0]);
+        Decision allow=new Decision(Mode.ALLOW,"DEFAULT_ALLOW",List.of());
+        String customId=access.store.begin("p","Synthetic",custom,allow,7);access.store.begin("p","Synthetic",get,allow,7);
+        open();
+        edt(()->{
+            TrafficEntry safe=access.rows().stream().filter(e->e.id().equals(customId)).findFirst().orElseThrow();
+            assertEquals("CUSTMETHOD",safe.method(),"the row carries the original method");
+            JTable t=get("traffic.table",JTable.class);
+            java.util.Set<Object> shown=new java.util.HashSet<>();for(int i=0;i<t.getRowCount();i++)shown.add(t.getValueAt(i,2));
+            assertEquals(java.util.Set.of("CUSTMETHOD","GET"),shown,"human table shows the retained originals");
+            return null;
+        });
+        // each branch is observed independently, with a full reset before every assertion
+        java.util.function.BiFunction<String,String,List<Object>> visible=(field,text)->{
+            try{return edt(()->{
+                for(String name:List.of("traffic.search","traffic.method"))get(name,JTextField.class).setText("");
+                get(field,JTextField.class).setText(text);
+                JTable t=get("traffic.table",JTable.class);List<Object> out=new ArrayList<>();for(int i=0;i<t.getRowCount();i++)out.add(t.getValueAt(i,2));return out;
+            });}catch(Exception e){throw new AssertionError(e);}
+        };
+        org.junit.jupiter.api.Assertions.assertAll(
+            ()->assertEquals(List.of("CUSTMETHOD"),visible.apply("traffic.method","CUSTMETHOD"),"dedicated method filter"),
+            ()->assertEquals(List.of("CUSTMETHOD"),visible.apply("traffic.search","CUSTMETHOD"),"general search"),
+            // controls: known method, and the safe masked text does not match a retained original
+            ()->assertEquals(List.of("GET"),visible.apply("traffic.method","GET"),"known method filter"),
+            ()->assertEquals(List.of("GET"),visible.apply("traffic.search","GET"),"known method search"),
+            ()->assertEquals(List.of(),visible.apply("traffic.method","[REDACTED]"),"safe text is not the displayed method"),
+            ()->assertEquals(List.of(),visible.apply("traffic.search","[REDACTED]"),"safe text is not the displayed method (search)"));
+        // original copy unavailable: the explicit fallback label is displayed, with the row's own (original) method
+        access.rawUnavailable=true;edt(()->{panel.refreshNow();return null;});
+        org.junit.jupiter.api.Assertions.assertEquals(List.of("[원문 없음] CUSTMETHOD"),visible.apply("traffic.method","CUSTMETHOD").stream().distinct().toList(),"unavailable fallback method filter");
+    }
+
+    @Test void rawRequestResponseUrlAndTagsAreOriginalOnScreenAndInspectionWarningsAreHonest() throws Exception {
         String id=access.addRaw("intent1","run1","exempt");open();
         edt(()->{
             JTable t=get("traffic.table",JTable.class);assertTrue(((String)t.getValueAt(0,3)).contains(SECRET));assertEquals("intent1",t.getValueAt(0,7));assertEquals("run1",t.getValueAt(0,8));
             t.setRowSelectionInterval(0,0);click("traffic.detail");
-            for(String name:List.of("traffic.request","traffic.response")){String text=get(name,JTextArea.class).getText();assertTrue(text.contains(SECRET));assertTrue(text.contains("화면 전용"));assertFalse(get(name,JTextArea.class).isEditable());}
+            for(String name:List.of("traffic.request","traffic.response")){String text=get(name,JTextArea.class).getText();assertTrue(text.contains(SECRET));assertTrue(text.contains("평문 원문"));assertFalse(get(name,JTextArea.class).isEditable());}
             String meta=get("traffic.metadata",JTextArea.class).getText();assertTrue(meta.contains("UNSUPPORTED_CHARSET"));assertTrue(meta.contains("PATH_INTERPRETATION_INCOMPLETE"));assertTrue(meta.contains("평가하지" )||meta.contains("검사 가능"));
             return null;
         });
         for(boolean har:List.of(false,true)){
-            dialogs.target=directory.resolve(har?"safe.har":"safe.json");
+            dialogs.target=directory.resolve(har?"human.har":"human.json");dialogs.confirmations.clear();
             edt(()->{get("traffic.exportFormat",JComboBox.class).setSelectedIndex(har?1:0);click("traffic.export");return null;});awaitExport();
-            String text=Files.readString(dialogs.target);assertFalse(text.contains(SECRET));assertTrue(text.contains("[REDACTED]"));assertFalse(access.exportOnEdt);
+            String text=Files.readString(dialogs.target);assertTrue(text.contains(SECRET),"explicit human export is plaintext");assertFalse(text.contains("[REDACTED]"));
+            assertTrue(text.contains("HUMAN_ORIGINAL"));assertFalse(access.exportOnEdt);
+            assertTrue(dialogs.confirmations.getFirst().contains("Authorization")&&dialogs.confirmations.getFirst().contains("평문"));
         }
+        assertTrue(access.store.exportJson(access.store.snapshot()).contains(SECRET), "the evidence rows are original too");
         assertEquals(id,access.rows().getFirst().id());assertEquals(0,access.updates);
     }
 
@@ -222,11 +418,11 @@ class GuardPanelV2Test {
         });
     }
 
-    @Test void rawEvictionClearProjectFailureAndCloseRemoveSensitiveScreenText() throws Exception {
+    @Test void rawUnavailableClearProjectFailureAndCloseRemoveSensitiveScreenText() throws Exception {
         access.addRaw("i","r","forwarded");open();
         edt(()->{
             get("traffic.table",JTable.class).setRowSelectionInterval(0,0);click("traffic.detail");assertTrue(get("traffic.request",JTextArea.class).getText().contains(SECRET));
-            access.rawUnavailable=true;panel.refreshNow();assertFalse(get("traffic.request",JTextArea.class).getText().contains(SECRET));assertTrue(get("traffic.request",JTextArea.class).getText().contains("생략"));
+            access.rawUnavailable=true;panel.refreshNow();assertFalse(get("traffic.request",JTextArea.class).getText().contains(SECRET));assertTrue(get("traffic.request",JTextArea.class).getText().contains("원문 없음"));
             access.rawUnavailable=false;panel.refreshNow();access.failStatus=true;panel.refreshNow();assertFalse(get("traffic.request",JTextArea.class).getText().contains(SECRET));assertEquals(0,get("traffic.table",JTable.class).getRowCount());
             access.failStatus=false;panel.refreshNow();click("settings.clear");assertEquals(0,get("traffic.table",JTable.class).getRowCount());panel.close();assertEquals("",get("traffic.request",JTextArea.class).getText());return null;
         });
@@ -253,6 +449,25 @@ class GuardPanelV2Test {
             assertTrue(warning.contains("누락 3건"));assertFalse(warning.contains("자동 안전 경고 없음"));
             access.watcher=Map.of();panel.refreshNow();
             assertTrue(get("dashboard.warning",JTextArea.class).getText().startsWith("자동 안전 경고 없음"));return null;
+        });
+    }
+
+    @Test void enforcingOmissionDebtIsShownAsActiveGateOnlyWhenEnforcingAndProtectionIsOn() throws Exception {
+        access.watcher=Map.of("fanoutHistoryOmitted",1L,"fanoutHistoryIncomplete",true,"fanoutHistoryIncompleteUntil",1767225600000L,"fanoutHistoryEnforcing",true,"fanoutHistoryRemainingMillis",59_001L,"circuits",1);access.guard="CAPACITY";open();
+        edt(()->{
+            String warning=get("dashboard.warning",JTextArea.class).getText();
+            assertTrue(warning.contains("적용 중"),warning);assertTrue(warning.contains("RESPONSE_WATCHER_CAPACITY"));assertTrue(warning.contains("약 60초"),warning);assertTrue(warning.contains("추가 전역"),warning);assertTrue(warning.contains("앞선"),warning);assertTrue(warning.contains("회로가 열려"),"circuit alert is shown alongside the debt: "+warning);assertTrue(warning.contains("원래 누락 창"),warning);assertTrue(warning.contains("자연히"),warning);assertFalse(warning.contains("자동 해제·초기화는 없습니다"),warning);assertFalse(get("dashboard.guidance",JTextArea.class).getText().contains("모든 새 보호 요청"));assertTrue(warning.contains("2026-01-01T00:00:00Z"),warning);
+            assertTrue(get("dashboard.state",JLabel.class).getText().contains("용량"));
+            assertTrue(get("dashboard.diagnosis",JTextArea.class).getText().contains("누락 부채 적용 중"));
+            access.off=true;access.guard="PROTECTED";panel.refreshNow();
+            warning=get("dashboard.warning",JTextArea.class).getText();
+            assertFalse(warning.contains("적용 중"),warning);assertTrue(warning.contains("보호 꺼짐"),warning);
+            assertFalse(get("dashboard.diagnosis",JTextArea.class).getText().contains("누락 부채 적용 중"));
+            access.off=false;access.watcher=Map.of("fanoutHistoryOmitted",1L,"fanoutHistoryIncomplete",true,"fanoutHistoryEnforcing",false,"fanoutHistoryRemainingMillis",30_000L);panel.refreshNow();
+            warning=get("dashboard.warning",JTextArea.class).getText();
+            assertFalse(warning.contains("적용 중"),warning);assertTrue(warning.contains("현재 확산 설정(WARN/꺼짐)에서는 거절하지 않습니다"),warning);assertTrue(warning.contains("약 30초"),warning);
+            assertFalse(get("dashboard.state",JLabel.class).getText().contains("용량"));
+            return null;
         });
     }
 
@@ -314,16 +529,19 @@ class GuardPanelV2Test {
         if(Files.getFileStore(directory).supportsFileAttributeView("posix"))assertEquals(PosixFilePermissions.fromString("rw-------"),Files.getPosixFilePermissions(dialogs.target));
     }
 
-    @Test void incidentExportValidatesUtcWindowAndUsesMaskedIncidentOnlyOffEdt() throws Exception {
+    @Test void incidentExportValidatesUtcWindowAndUsesTheConsentedHumanIncidentOffEdt() throws Exception {
         access.addRaw("i","r","forwarded");open();dialogs.target=directory.resolve("incident.json");
         edt(()->{get("incident.from",JTextField.class).setText("2026-01-01T00:00:00Z");get("incident.to",JTextField.class).setText("2026-01-01T01:00:00Z");click("incident.export");return null;});awaitExport();
         assertEquals(1767225600000L,access.incidentFrom);assertEquals(1767229200000L,access.incidentTo);assertFalse(access.exportOnEdt);
-        assertEquals("{\"events\":[{\"path\":\"/[REDACTED]\"}]}",Files.readString(dialogs.target));assertFalse(Files.readString(dialogs.target).contains(SECRET));assertEquals(0,access.updates);
+        assertEquals("{\"events\":[{\"path\":\"/original-incident-path\"}]}",Files.readString(dialogs.target));assertTrue(dialogs.confirmations.getFirst().contains("평문"));assertEquals(0,access.updates);
         int before=access.incidentCalls;
-        for(String to:List.of("2026-01-01T00:00:00Z","2026-01-02T00:00:00.001Z","2026-01-01T01:00:00+00:00","2026-01-01T00:00:00.000000001Z")) {
+        for(String to:List.of("2026-01-01T00:00:00Z","2025-12-31T00:00:00Z","2026-01-01T01:00:00+00:00","2026-01-01T00:00:00.000000001Z")) {
             edt(()->{get("incident.to",JTextField.class).setText(to);click("incident.export");return null;});
         }
         assertEquals(before,access.incidentCalls);assertEquals(4,dialogs.errors.size());
+        // a window longer than a day is valid: there is no 24-hour export refusal
+        edt(()->{get("incident.to",JTextField.class).setText("2026-03-01T00:00:00Z");click("incident.export");return null;});awaitExport();
+        assertEquals(1772323200000L,access.incidentTo);assertEquals(before+1,access.incidentCalls);
     }
 
     @Test void incidentExistingFileConsentSymlinkAndChangedProjectAreRejectedBeforeSerialization() throws Exception {
@@ -335,10 +553,39 @@ class GuardPanelV2Test {
         edt(()->{click("incident.export");return null;});assertEquals(0,access.incidentCalls);assertEquals("keep",Files.readString(target));
     }
 
+    @Test void trafficWarningsSeparateOptionalCaptureFromDemandedFieldInspectionInTableAndDetail() throws Exception {
+        GuardConfig pathOnly=new GuardConfig(2,List.of(new ScopeEntry(true,"example.test","https",443,"")),List.of(),List.of(new Rule("path","Path only",true,Mode.BLOCK,Condition.leaf(Field.PATH,Match.EXACT,"/never"))),Mode.ALLOW,GuardConfig.defaults().limits());
+        RequestData partial=new RequestData("POST","https://example.test/capture","example.test",443,true,List.of(),("body "+SECRET).getBytes(StandardCharsets.UTF_8),true,false);
+        Decision capture=new PolicyEngine().evaluate(pathOnly,partial);assertEquals(Mode.ALLOW,capture.mode());assertEquals(List.of("BODY_INCOMPLETE"),capture.inspectionWarnings());
+        GuardConfig json=new GuardConfig(2,pathOnly.allowScope(),List.of(),List.of(new Rule("json","JSON",true,Mode.BLOCK,Condition.leaf(Field.JSON,Match.CONTAINS,"never"))),Mode.ALLOW,GuardConfig.defaults().limits());
+        RequestData malformed=new RequestData("POST","https://example.test/json","example.test",443,true,List.of(new RequestData.Header("Content-Type","application/json")),"{broken".getBytes(StandardCharsets.UTF_8));
+        Decision demanded=new PolicyEngine().evaluate(json,malformed);assertEquals(Mode.ALLOW,demanded.mode());assertTrue(demanded.inspectionWarnings().contains("JSON_INSPECTION_UNAVAILABLE_MALFORMED_JSON"));
+        for(var begin:List.of(java.util.Map.entry(partial,capture),java.util.Map.entry(malformed,demanded),java.util.Map.entry(request("/hostile"),new Decision(Mode.ALLOW,"DEFAULT_ALLOW",List.of(),List.of("<html>"+SECRET+"</html>"))))){
+            String id=access.store.begin("p","Synthetic",begin.getKey(),begin.getValue(),7);access.store.outcome(id,"FORWARDED","NATIVE_RELEASED",200);
+        }
+        open();
+        edt(()->{
+            JTable t=get("traffic.table",JTable.class);assertEquals(3,t.getRowCount());
+            for(int row=0;row<3;row++){
+                String url=(String)t.getValueAt(row,3),cell=(String)t.getValueAt(row,10);
+                boolean hostile=url.endsWith("/hostile");
+                assertEquals(hostile,cell.contains("<html>"+SECRET+"</html>"),"an unknown code is shown plainly, only for the row that carries it");assertFalse(cell.contains("모호"));assertTrue(cell.length()<=600,cell);
+                if(url.endsWith("/capture")){assertTrue(cell.contains("본문 수집 불완전"),cell);assertTrue(cell.contains("요구했다는 뜻은 아님"),cell);assertFalse(cell.contains("검사 불가"),cell);}
+                else if(url.endsWith("/json")){assertTrue(cell.contains("JSON 조건 검사 불가"),cell);assertTrue(cell.contains("JSON 형식 오류"),cell);}
+                else assertTrue(cell.contains("알 수 없는 경고 코드: <html>"+SECRET+"</html>"),cell);
+                t.setRowSelectionInterval(row,row);click("traffic.detail");
+                String meta=get("traffic.metadata",JTextArea.class).getText();
+                for(String label:cell.split(" · "))assertTrue(meta.contains(label),"detail agrees with the table: "+label);assertEquals(hostile,meta.contains("<html>"+SECRET+"</html>"));
+                if(url.endsWith("/json"))assertTrue(meta.contains("JSON_INSPECTION_UNAVAILABLE_MALFORMED_JSON"),"machine ID retained for recognized warnings");
+            }
+            return null;
+        });
+    }
+
     @Test void latestAllPathAdviceAndEngineAllowOriginalPentestPathsWithFuzzedHostAndUnavailableBody() throws Exception {
         access.policy=new GuardConfig(2,List.of(new ScopeEntry(true,"example.test","https",443,"")),List.of(),List.of(
                 GuardConfig.defaults().rules().getFirst(),new Rule("body","Explicit body test",true,Mode.BLOCK,Condition.leaf(Field.BODY,Match.EXACT,"never-match"))),Mode.ALLOW,GuardConfig.defaults().limits());open();
-        edt(()->{String help=get("scope.help",JTextArea.class).getText();assertTrue(help.contains("/c/;/main.do"));assertTrue(help.contains("/c/%2e/main.do"));assertTrue(help.contains("원문 그대로"));return null;});
+        edt(()->{String help=get("scope.help",JTextArea.class).getText();assertTrue(help.contains("/c/;/main.do"));assertTrue(help.contains("/c/%2e/main.do"));assertTrue(help.contains("원문 그대로"));assertTrue(help.contains("Drop all out-of-scope requests"));assertTrue(help.contains("Burp Target Scope와 별개"));assertTrue(help.contains("Burp Target Scope 밖"));assertTrue(help.contains("로컬 451"));assertTrue(help.contains("결론을 낼 수 없"));assertFalse(help.contains("Cairn 판정이 아닙니다"));return null;});
         for(String path:List.of("/c/;/main.do","/c/%2e/main.do","/c/%252e/main.do","/c/%GG/main.do")) {
             RequestData r=new RequestData("POST","https://example.test"+path,"example.test",443,true,List.of(new RequestData.Header("Host","synthetic.invalid"),new RequestData.Header("Content-Type","application/json; charset=unsupported")),new byte[]{0,1,2});
             Decision decision=new PolicyEngine().evaluate(access.policy,r);assertEquals(Mode.ALLOW,decision.mode());assertTrue(decision.inspectionWarnings().stream().anyMatch(w->w.contains("UNSUPPORTED_CHARSET")));assertEquals("https://example.test"+path,r.url());
@@ -355,7 +602,7 @@ class GuardPanelV2Test {
     static RequestData request(String path){return new RequestData("GET","https://example.test"+path,"example.test",443,true,List.of(),new byte[0]);}
     static Overlay overlay(String id,long duration){long now=System.currentTimeMillis();return new Overlay(id,"heavy","example.test","/large",now,now+duration,"HEAVY_ENDPOINT_AUTO_BLOCKED");}
     static Candidate candidate(String id,String url,long max){return new Candidate(id,"example.test","/large",url,max,70,3,System.currentTimeMillis(),1);}
-    static GuardConfig fullPolicy(){Limits d=GuardConfig.defaults().limits();return new GuardConfig(2,List.of(),List.of(),GuardConfig.defaults().rules(),Mode.ALLOW,new Limits(d.globalRps(),d.perHostRps(),d.hostRps(),d.maxConcurrent(),d.maxQueued(),d.queueTimeoutMillis(),d.approvalTimeoutMillis(),d.requestTimeoutMillis(),123_456,789_123,new Circuit5xx(6000,7,8000,1),new Fanout(9000,10,FanoutAction.WARN),42,true,List.of(new ProbePath("https","example.test",443,"/health")),List.of(new PathByteLimit("https","example.test",443,"/small",123))),List.of(8080));}
+    static GuardConfig fullPolicy(){Limits d=GuardConfig.defaults().limits();return new GuardConfig(2,List.of(),List.of(),GuardConfig.defaults().rules(),Mode.ALLOW,new Limits(d.globalRps(),d.perHostRps(),d.hostRps(),d.maxConcurrent(),d.maxQueued(),d.queueTimeoutMillis(),d.approvalTimeoutMillis(),d.requestTimeoutMillis(),123_456,789_123,new Circuit5xx(6000,7,8000,1),new Fanout(9000,10,FanoutAction.WARN),42,true,List.of(new ProbePath("https","example.test",443,"/health")),List.of(new PathByteLimit("https","example.test",443,"/small",123)),List.of(new ProbePath("https","example.test",443,"/circuit-ok")),false,List.of(new ProbePath("https","example.test",443,"/fanout-ok"))),List.of(8080));}
 
     static final class Human implements GuardPanel.Dialogs {
         boolean confirmed=true;Path target;EditorForm<?> form;BiConsumer<EditorForm<?>,Runnable> edit=(f,s)->{};Runnable onConfirm=()->{};
@@ -385,14 +632,51 @@ class GuardPanelV2Test {
         @Override public void passthrough(boolean on,String p,long r){cas(p,r);off=on;revision++;}
         @Override public void refreshProject(){}
         @Override public List<Overlay> overlays(){return List.copyOf(overlays);}
+        @Override public List<HumanOverlay> humanOverlays(){return overlays.stream().map(o->new HumanOverlay(o,o.host(),o.path(),null,overlayExceptions.get(o.id()))).toList();}
+        final Map<String,OverlayException> overlayExceptions=new java.util.HashMap<>();boolean overlayCurrent=true;
+        final class FakeOverlaySource implements OverlaySource{}
+        @Override public boolean overlayExceptionCurrent(OverlaySource source){return overlayCurrent&&source instanceof FakeOverlaySource;}
+        @Override public void updateConfig(GuardConfig c,String p,long r,OverlaySource source){
+            updateAttempts++;cas(p,r);if(!overlayExceptionCurrent(source))throw new IllegalStateException("OVERLAY_EXCEPTION_STALE");
+            policy=c;persisted=PolicyCodec.encode(c);updates++;revision++;pendingMigration=false;
+        }
+        final Map<String,String> originalUrls=new java.util.HashMap<>();final Map<String,FakeSource> sources=new java.util.HashMap<>();
+        final class FakeSource implements CandidateSource{final String id;FakeSource(String id){this.id=id;}}
+        void replaceSource(String id){sources.put(id,new FakeSource(id));}
+        @Override public List<HumanCandidate> humanCandidates(){
+            List<HumanCandidate> out=new ArrayList<>();
+            for(Candidate c:candidates){
+                String original=originalUrls.containsKey(c.id())?originalUrls.get(c.id()):c.policyUrl();
+                if(original==null||original.isEmpty()){out.add(new HumanCandidate(c,"","",0,"",null,"ORIGINAL_UNAVAILABLE",null,"ORIGINAL_UNAVAILABLE",null));continue;}
+                java.net.URI u=java.net.URI.create(original);int port=u.getPort()>=0?u.getPort():u.getScheme().equals("https")?443:80;
+                boolean encoded=u.getRawPath().contains("%");
+                out.add(new HumanCandidate(c,u.getScheme(),u.getHost(),port,u.getRawPath(),original,null,encoded?null:u.getRawPath(),encoded?"ENCODED_OR_AMBIGUOUS_ROUTE":null,sources.computeIfAbsent(c.id(),FakeSource::new)));
+            }
+            return out;
+        }
+        @Override public void updateConfig(GuardConfig c,String p,long r,CandidateSource source,boolean byteLimit){
+            updateAttempts++;cas(p,r);
+            if(!(source instanceof FakeSource f)||sources.get(f.id)!=f||candidates.stream().noneMatch(x->x.id().equals(f.id)))throw new IllegalStateException("CANDIDATE_STALE");
+            policy=c;persisted=PolicyCodec.encode(c);updates++;revision++;pendingMigration=false;
+        }
+        @Override public HumanExport humanExport(List<String> ids,boolean har){
+            EvidenceStore.HumanEvidence evidence=store.humanEvidence(ids);
+            return ()->{exportOnEdt=SwingUtilities.isEventDispatchThread();return har?evidence.har(Map.of("projectId",project)):evidence.json(Map.of("projectId",project));};
+        }
+        @Override public HumanExport humanIncident(long from,long to){
+            incidentCalls++;incidentFrom=from;incidentTo=to;
+            return ()->{exportOnEdt=SwingUtilities.isEventDispatchThread();return "{\"events\":[{\"path\":\"/original-incident-path\"}]}".getBytes(StandardCharsets.UTF_8);};
+        }
+        @Override public boolean humanExportCurrent(HumanExport e){return true;}
         @Override public boolean releaseOverlay(String id,String p,long r){cas(p,r);runtimeCalls++;return overlays.removeIf(o->o.id().equals(id));}
         @Override public int releaseAllOverlays(String p,long r){cas(p,r);runtimeCalls++;int n=overlays.size();overlays.clear();return n;}
         @Override public List<Candidate> heavyCandidates(){return List.copyOf(candidates);}
         @Override public boolean ignoreCandidate(String id,String p,long r){cas(p,r);runtimeCalls++;return candidates.removeIf(c->c.id().equals(id));}
         @Override public void resetIntentBudgets(String p,long r){cas(p,r);runtimeCalls++;}
-        @Override public String exportIncident(long from,long to){exportOnEdt=SwingUtilities.isEventDispatchThread();incidentCalls++;incidentFrom=from;incidentTo=to;return "{\"events\":[{\"path\":\"/[REDACTED]\"}]}";}
+        @Override public String exportIncident(long from,long to){throw new AssertionError("the human UI must not use the safe masked incident export");}
         @Override public Map<String,Object> migrationView(){return Map.of("pending",pendingMigration,"original",original,"migrated",PolicyCodec.encode(policy));}
-        @Override public String rawRequest(String id){rawReads++;return rawUnavailable?null:store.rawRequest(id);}
+        volatile String bigRequest;
+        @Override public String rawRequest(String id){rawReads++;return rawUnavailable?null:bigRequest!=null?bigRequest:store.rawRequest(id);}
         @Override public String rawResponse(String id){rawReads++;return rawUnavailable?null:store.rawResponse(id);}
         @Override public String rawUrl(String id){rawReads++;return rawUnavailable?null:store.rawUrl(id);}
         @Override public Map<String,Object> rawCaptureInfo(String id){return rawUnavailable?Map.of("available",false):store.rawCaptureInfo(id);}

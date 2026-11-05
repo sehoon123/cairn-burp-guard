@@ -9,7 +9,6 @@ import dev.cairnguard.model.GuardState;
 import dev.cairnguard.model.Json;
 import dev.cairnguard.model.RequestData;
 import dev.cairnguard.policy.PolicyEngine;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -28,13 +27,14 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
-import java.util.function.UnaryOperator;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Project-epoch, memory-only availability protections. No I/O, timer threads, policy writes, native
- * messages, response copies, or native permits. Call observe with the native body LENGTH scalar,
+ * Project-epoch, memory-only availability protections plus ORIGINAL diagnostic history (actual service
+ * host and untouched path; no masking, no event/observation/candidate quota, retained until explicit
+ * clear, project epoch reset or unload). No I/O, timer threads, policy writes, native messages, response
+ * copies, or native permits. Call observe with the native body LENGTH scalar,
  * independently of whether optional response content inspection was possible. All public mutations
  * are serialized; check is advisory and commit is the final, atomic admission/half-open claim.
  */
@@ -42,14 +42,9 @@ public final class ResponseWatcher {
     private static final int MAX_HOSTS = 1_024;
     private static final int MAX_PATHS = 2_048;
     private static final int MAX_OVERLAYS = 1_024;
-    private static final int MAX_EVENTS = 4_096;
-    private static final int MAX_OBSERVATIONS = 8_192;
     private static final int MAX_FLIGHTS = 4_096;
     private static final int MAX_ROUTE_VIEWS = 9;
-    private static final int MAX_URL = 16_384;
-    private static final int MAX_DISPLAY = 2_048;
-    private static final long DAY_MILLIS = 86_400_000L;
-    private static final long DAY_NANOS = TimeUnit.MILLISECONDS.toNanos(DAY_MILLIS);
+    private static final int MAX_URL = 16_384; // per routing-view enforcement key validity, same as policy
     private static final long PROBE_INTERVAL = TimeUnit.SECONDS.toNanos(30);
     private static final String HEAVY = "HEAVY_ENDPOINT_AUTO_BLOCKED";
     private static final String CIRCUIT = "CIRCUIT_OPEN";
@@ -72,15 +67,21 @@ public final class ResponseWatcher {
     // Subset of flights, not another unbounded history. Logical timeout cannot discard eventual
     // response observation or reuse the physical host/path reservations. No raw/native data here.
     private final java.util.Set<Ticket> expiredFlights = new HashSet<>();
-    private final LinkedHashMap<String, CandidateMeta> candidateIndex = new LinkedHashMap<>(16, .75f, true);
-    private final Ring<Event> events;
-    private final Ring<Observation> observations;
+    // Diagnostic history only (no enforcement authority): kept until clearEvidence/reset, no quota.
+    private final Map<String, CandidateMeta> candidateIndex = new HashMap<>();
+    private final List<Event> events = new ArrayList<>();
+    private final List<Observation> observations = new ArrayList<>();
     private final Map<String, Long> pathLimits = new HashMap<>();
-    // Bounded privacy fences, not enforcement identities. Old prepared endpoints must not reintroduce
-    // display secrets learned by a later response. Saturation makes all display opaque, never evicts.
-    private final LinkedHashSet<String> maskedPaths = new LinkedHashSet<>();
-    private final LinkedHashSet<String> maskedServices = new LinkedHashSet<>();
-    private boolean displayOpaque;
+    // Keyed HMAC identities of the CURRENT exact 5xx circuit exception routes (no route plaintext).
+    private final java.util.Set<String> circuitExceptions = new HashSet<>();
+    // Bumped on every circuit enable/disable transition: older flights can never act on a newer circuit.
+    private long circuitGeneration;
+    // Bumped on every large-response master transition: older flights can never actuate a newer detector.
+    private long heavyGeneration;
+    // Keyed HMAC identities of the CURRENT exact fan-out exception routes (no route plaintext).
+    private final java.util.Set<String> fanoutExceptions = new HashSet<>();
+    // Bumped by clearEvidence: endpoints created earlier carry no display originals into later history.
+    private long displayGeneration;
     private Limits limits;
     private long epoch = 1;
     private long startedAt;
@@ -90,7 +91,6 @@ public final class ResponseWatcher {
     private long admitted;
     private long rejected;
     private long timedOut;
-    private long candidateEvictions;
     private long abandoned;
     // Bounded scalars, not a per-ticket ledger: WARN admissions whose NEW identity had no indexed
     // Seen slot. Active debt keeps BLOCK/PAUSE fail-closed until every omitted original window ends.
@@ -100,25 +100,21 @@ public final class ResponseWatcher {
     private long omissionExpiresAt; // Wall-clock diagnostic only; omissionUntil (monotonic) is authority.
 
     public ResponseWatcher(Limits limits) {
-        this(limits, System::nanoTime, System::currentTimeMillis, MAX_HOSTS, MAX_PATHS,
-                MAX_OVERLAYS, MAX_EVENTS, MAX_OBSERVATIONS);
+        this(limits, System::nanoTime, System::currentTimeMillis, MAX_HOSTS, MAX_PATHS, MAX_OVERLAYS);
     }
 
     public ResponseWatcher(Limits limits, LongSupplier nanoTime, LongSupplier milliTime) {
-        this(limits, nanoTime, milliTime, MAX_HOSTS, MAX_PATHS, MAX_OVERLAYS, MAX_EVENTS, MAX_OBSERVATIONS);
+        this(limits, nanoTime, milliTime, MAX_HOSTS, MAX_PATHS, MAX_OVERLAYS);
     }
 
-    /** Bounded fake-clock/capacity seam. All production ceilings still apply. */
+    /** Bounded fake-clock/enforcement-capacity seam. All production ceilings still apply. */
     public ResponseWatcher(Limits limits, LongSupplier nanoTime, LongSupplier milliTime,
-                           int hostCapacity, int pathCapacity, int overlayCapacity,
-                           int eventCapacity, int observationCapacity) {
+                           int hostCapacity, int pathCapacity, int overlayCapacity) {
         this.nanoTime = Objects.requireNonNull(nanoTime);
         this.milliTime = Objects.requireNonNull(milliTime);
         this.hostCapacity = capacity(hostCapacity, MAX_HOSTS);
         this.pathCapacity = capacity(pathCapacity, MAX_PATHS);
         this.overlayCapacity = capacity(overlayCapacity, MAX_OVERLAYS);
-        events = new Ring<>(capacity(eventCapacity, MAX_EVENTS));
-        observations = new Ring<>(capacity(observationCapacity, MAX_OBSERVATIONS));
         this.limits = validated(limits);
         new SecureRandom().nextBytes(key);
         startedAt = lastMillis = milliTime.getAsLong();
@@ -126,11 +122,11 @@ public final class ResponseWatcher {
     }
 
     /**
-     * Converts transient raw routing views to per-instance keyed HMACs. ONLY the supplied, already
-     * redacted URL supplies display data. Query, credentials, and raw route strings are not retained.
-     * The actual service, not a fuzzed Host header or URL authority, supplies enforcement identity.
+     * Converts transient raw routing views to per-instance keyed HMACs for enforcement. Display keeps the
+     * ORIGINAL actual service host and untouched first routing view (never a fuzzed Host header or URL
+     * authority). The actual service, not a Host header, supplies enforcement identity.
      */
-    public synchronized Endpoint endpoint(RequestData request, String redactedUrl, List<String> routingPaths) {
+    public synchronized Endpoint endpoint(RequestData request, List<String> routingPaths) {
         Objects.requireNonNull(request);
         if (routingPaths == null || routingPaths.isEmpty() || routingPaths.size() > MAX_ROUTE_VIEWS)
             throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
@@ -145,25 +141,15 @@ public final class ResponseWatcher {
         String rawPath = routingPaths.getFirst();
         LinkedHashSet<String> hashed = new LinkedHashSet<>();
         for (String route : routingPaths) hashed.add(hash("path", service, route));
-        String host = "[REDACTED]";
-        String displayPath = "[REDACTED]";
-        String policyUrl = "";
-        try {
-            URI safe = uri(redactedUrl);
-            if (safe.getRawUserInfo() != null || safe.getRawFragment() != null)
-                throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
-            String safePath = path(safe);
-            host = safe.getHost();
-            displayPath = safePath.length() <= MAX_DISPLAY ? safePath : "[OMITTED: PATH_LIMIT]";
-            String safeService = service(safe.getScheme(), safe.getHost(), port(safe));
-            if (safePath.length() <= MAX_DISPLAY && service.equals(safeService)
-                    && rawPath.equals(safePath)) policyUrl = safeService + safePath;
-        } catch (IllegalArgumentException ignored) {
-            // A failed redaction never falls back to the raw request URL/host/path.
-        }
         boolean safeMethod = "GET".equals(request.method()) || "HEAD".equals(request.method());
-        return fenced(new Endpoint(hash("service", service), List.copyOf(hashed), host, displayPath,
-                policyUrl, identity, epoch, safeMethod));
+        // Exact-route identity only for one complete, unambiguous routing view of the ACTUAL target.
+        String exact = PolicyEngine.exactRoutingPath(request);
+        boolean single = exact != null && routingPaths.size() == 1 && rawPath.equals(exact);
+        String routeKey = single ? hash("path", service, exact) : null;
+        // Query-free draft hint only when the original path is a faithful ordinary URL path.
+        String policyUrl = single && draftable(rawPath) ? service + rawPath : "";
+        return new Endpoint(hash("service", service), List.copyOf(hashed), request.host(), rawPath,
+                policyUrl, identity, epoch, safeMethod, routeKey, UUID.randomUUID().toString(), displayGeneration);
     }
 
     /** Same-project updates retain active protections, probe debt, and in-flight logical deadlines. */
@@ -171,15 +157,44 @@ public final class ResponseWatcher {
         replacement = validated(replacement);
         Time now = time();
         sweep(now);
+        boolean wasOn = limits.circuit5xx() != null;
+        boolean heavyWasOn = limits.heavyResponseEnabled();
         limits = replacement;
         compilePathLimits();
-        Fanout fanout = replacement.fanout();
-        // A WARN latch is not a protection; it must not suppress enforcing detection. History stays.
-        if (fanout != null && fanout.action() != FanoutAction.WARN) {
-            for (Host host : hosts.values()) {
-                if (host.episode != null && host.episode.action == FanoutAction.WARN) host.episode = null;
-            }
+        if (heavyWasOn != replacement.heavyResponseEnabled()) {
+            heavyGeneration++;
+            // Large-response OFF ends heavy ENFORCEMENT only; observations, flights and reservations remain.
+            if (heavyWasOn) for (Protection protection : List.copyOf(protections.values()))
+                if (protection.reason.equals(HEAVY)) remove(protection);
         }
+        if (wasOn != (replacement.circuit5xx() != null)) {
+            circuitGeneration++;
+            // Explicit OFF is a logical circuit reset, not releaseAll: flights, tickets, Seen history,
+            // reservations and every other protection (including the shared capacity fence) remain.
+            // OFF -> ON simply starts the new generation; nothing old can be revived.
+            if (wasOn) for (Protection protection : List.copyOf(protections.values()))
+                if (protection.reason.equals(CIRCUIT)) remove(protection);
+            for (Host host : hosts.values()) { host.failures.clear(); host.hasProbeAttempt = false; }
+        }
+        Fanout fanout = replacement.fanout();
+        // Mode transitions detach logical episodes only. Seen history, pending marks and omission debt stay
+        // (never remove()'s destructive Seen clear). BLOCK <-> PAUSE keeps id/TTL/source of the episode.
+        for (Host host : hosts.values()) {
+            Protection episode = host.episode;
+            if (episode == null) continue;
+            boolean warnLatch = episode.action == FanoutAction.WARN;
+            if (fanout == null) detachFanout(host);
+            else if (fanout.action() == FanoutAction.WARN) { if (!warnLatch) detachFanout(host); }
+            // A WARN latch is not a protection; it must not suppress enforcing detection.
+            else if (warnLatch) host.episode = null;
+            else { episode.action = fanout.action(); episode.global = fanout.action() == FanoutAction.PAUSE; }
+        }
+        // Shared capacity fence (no contributor ledger): only when EVERY automatic actuator is non-enforcing.
+        // Its producers are install() via heavy (needs master ON), circuit sampling (needs circuit5xx) and an
+        // enforcing fan-out commit; none can run in this state, and old flights are generation-fenced.
+        if (!replacement.heavyResponseEnabled() && replacement.circuit5xx() == null
+                && (fanout == null || fanout.action() == FanoutAction.WARN) && protections.isEmpty())
+            capacityProtection = null;
     }
 
     /** Actual project epoch change/explicit reset only. Old tickets/endpoints/releases cannot act. */
@@ -191,13 +206,10 @@ public final class ResponseWatcher {
         flights.clear();
         expiredFlights.clear();
         candidateIndex.clear();
-        maskedPaths.clear();
-        maskedServices.clear();
-        displayOpaque = false;
         events.clear();
         observations.clear();
         capacityProtection = null;
-        admitted = rejected = timedOut = candidateEvictions = abandoned = 0;
+        admitted = rejected = timedOut = abandoned = 0;
         fanoutOmitted = omissionUntil = omissionExpiresAt = 0;
         omissionActive = false;
         epoch++;
@@ -222,11 +234,18 @@ public final class ResponseWatcher {
         sweep(now);
         Gate gate = gate(endpoint, healthProbe, now);
         if (!gate.allowed()) throw reject(gate);
-        endpoint = fenced(endpoint);
+        endpoint = current(endpoint);
         Host host = hosts.get(endpoint.hostKey());
-        if (host == null) { host = new Host(endpoint.host()); hosts.put(endpoint.hostKey(), host); }
+        if (host == null) {
+            if (hosts.size() >= hostCapacity) reclaim(reclaimableHost(now), now); // gate() proved a candidate exists
+            host = new Host();
+            hosts.put(endpoint.hostKey(), host);
+        }
         Fanout fanout = limits.fanout();
         boolean omitted = false;
+        // Final-commit fan-out exclusion: no count, Seen/Mark, retention or debt for THIS admission.
+        boolean fanoutExcluded = fanout != null && fanoutExcluded(endpoint);
+        if (fanoutExcluded) fanout = null;
         if (fanout != null) {
             pruneSeen(host, now);
             String pathKey = endpoint.pathKeys().getLast();
@@ -242,7 +261,8 @@ public final class ResponseWatcher {
         }
         // All potentially rejecting work precedes the claim. check() never reserves a probe.
         Protection circuit = host.circuit;
-        boolean halfOpen = !healthProbe && circuit != null;
+        boolean excluded = circuitExcluded(endpoint);
+        boolean halfOpen = !healthProbe && circuit != null && !excluded;
         Ticket ticket = new Ticket(epoch, halfOpen);
         if (halfOpen) {
             circuit.probe = ticket;
@@ -271,8 +291,10 @@ public final class ResponseWatcher {
             seen.pending.put(ticket, mark);
         }
         host.inFlight++;
+        boolean heavyEligible = limits.heavyResponseEnabled() && responseBound(endpoint) > 0;
         flights.put(ticket, new Flight(endpoint, host, healthProbe, halfOpen ? circuit : null,
-                now.nano, millis(limits.requestTimeoutMillis()), seen, mark));
+                now.nano, millis(limits.requestTimeoutMillis()), seen, mark, excluded, circuitGeneration,
+                heavyEligible, heavyGeneration));
         admitted = increment(admitted);
         // evidenceId is intentionally NOT retained. It can contain reflected client metadata.
         return ticket;
@@ -286,21 +308,22 @@ public final class ResponseWatcher {
         flights.remove(ticket);
         expiredFlights.remove(ticket);
         finish(ticket, flight, true, now);
-        Endpoint endpoint = fenced(flight.endpoint);
+        Endpoint endpoint = current(flight.endpoint);
         bytes = Math.max(0, bytes);
         rememberCandidate(endpoint);
         observations.add(new Observation(endpoint.pathKeys().getLast(), endpoint.hostKey(), endpoint.pathKeys(),
-                endpoint.host(), endpoint.path(), endpoint.policyUrl(), status, bytes, now.millis, now.nano));
+                endpoint.host(), endpoint.path(), endpoint.policyUrl(), status, bytes, now.millis, now.nano, endpoint.source));
         long bound = responseBound(endpoint);
-        if (bound > 0 && bytes > bound) heavy(endpoint, bytes, now);
+        if (flight.heavyEligible && flight.heavyGeneration == heavyGeneration && limits.heavyResponseEnabled()
+                && bound > 0 && bytes > bound) heavy(endpoint, bytes, now);
         if (flight.probeCircuit != null) {
             // A released/replaced/expired probe's late callback cannot close another episode (ABA).
             if (flight.host.circuit == flight.probeCircuit && flight.probeCircuit.probe == ticket) {
                 flight.probeCircuit.probe = null;
                 if (status >= 200 && status <= 499) remove(flight.probeCircuit);
-                else reopen(flight.host, flight.probeCircuit, now);
+                else reopen(flight.host, flight.probeCircuit, now, flight.endpoint.source);
             }
-        } else if (status >= 500 && status <= 599) {
+        } else if (status >= 500 && status <= 599 && !flight.circuitExcluded && flight.circuitGeneration == circuitGeneration) {
             record5xx(flight.host, endpoint, now);
         }
     }
@@ -318,7 +341,7 @@ public final class ResponseWatcher {
                 && flight.probeCircuit.probe == ticket) flight.probeCircuit.probe = null;
     }
 
-    /** Logical missing-response failure ONLY. Retain bounded masked metadata for a real late response. */
+    /** Logical missing-response failure ONLY. Retain the bounded flight for a real late response. */
     public synchronized void abandon(Ticket ticket) {
         Time now = time();
         sweep(now);
@@ -329,98 +352,44 @@ public final class ResponseWatcher {
     }
 
     /**
-     * Response-time privacy refresh. Apply CURRENT per-entry evidence fingerprints to individual
-     * structured display values, never a serialized incident document or its schema keys. Refreshes
-     * existing observations/events/overlays and all flights, so late/concurrent completions cannot
-     * revive send-time URLs. Keyed enforcement identities, leases, statistics and TTLs are unchanged.
-     * The sanitizer is used synchronously and never retained. Missing evidence must sanitize opaque.
+     * Clear only diagnostic history and the display/source references to originals, NOT active automatic
+     * protections, their keys/leases/deadlines, probe debt, reservations or native work.
      */
-    public synchronized void refreshDisplay(UnaryOperator<String> sanitizer) {
-        Objects.requireNonNull(sanitizer);
-        sweep(time());
-        flights.replaceAll((ticket, flight) -> new Flight(sanitized(flight.endpoint, sanitizer), flight.host,
-                flight.healthProbe, flight.probeCircuit, flight.started, flight.timeout, flight.seen, flight.mark));
-        observations.map(observation -> {
-            String host = safeDisplay(sanitizer, observation.host);
-            String path = safeDisplay(sanitizer, observation.path);
-            String policy = safePolicy(sanitizer, observation.policyUrl);
-            rememberMask(observation.hostKey, observation.pathKeys, !host.equals(observation.host),
-                    !path.equals(observation.path) || !policy.equals(observation.policyUrl));
-            return new Observation(observation.id, observation.hostKey, observation.pathKeys,
-                    host, path, policy, observation.status, observation.bytes, observation.ts, observation.nano);
-        });
-        events.map(event -> new Event(event.kind, safeDisplay(sanitizer, event.host), safeDisplay(sanitizer, event.path),
-                event.bytes, event.count5xx, event.distinctPaths, event.ts, event.nano));
-        for (Protection protection : protections.values()) {
-            String host = safeDisplay(sanitizer, protection.displayHost);
-            String path = safeDisplay(sanitizer, protection.displayPath);
-            rememberMask(protection.serviceKey, protection.pathKeys, !host.equals(protection.displayHost),
-                    !path.equals(protection.displayPath));
-            protection.displayHost = host;
-            protection.displayPath = path;
-        }
-        for (Host host : hosts.values()) host.display = safeDisplay(sanitizer, host.display);
-        // Fences cover alias-equivalent routes and older prepared endpoints as well as future ones.
-        flights.replaceAll((ticket, flight) -> new Flight(fenced(flight.endpoint), flight.host, flight.healthProbe,
-                flight.probeCircuit, flight.started, flight.timeout, flight.seen, flight.mark));
-        observations.map(observation -> {
-            boolean hostMasked = displayOpaque || maskedServices.contains(observation.hostKey);
-            boolean pathMasked = displayOpaque || observation.pathKeys.stream().anyMatch(maskedPaths::contains);
-            return new Observation(observation.id, observation.hostKey, observation.pathKeys,
-                    hostMasked ? "[REDACTED]" : observation.host, pathMasked ? "[REDACTED]" : observation.path,
-                    hostMasked || pathMasked ? "" : observation.policyUrl,
-                    observation.status, observation.bytes, observation.ts, observation.nano);
-        });
-    }
-
-    /** Clear only diagnostic history, NOT active automatic protections, probe debt or native work. */
     public synchronized void clearEvidence() {
         events.clear();
         observations.clear();
         candidateIndex.clear();
-        candidateEvictions = 0;
+        displayGeneration++;
+        for (Protection protection : protections.values()) {
+            protection.displayHost = "";
+            protection.displayPath = "";
+        }
+        // WARN episodes are not installed as protections but still hold the original display host.
+        for (Host host : hosts.values()) if (host.episode != null) { host.episode.displayHost = ""; host.episode.displayPath = ""; }
+        // A released/OFF half-open circuit is detached from protections but its in-flight probe still references it.
+        for (Flight flight : flights.values()) if (flight.probeCircuit != null) { flight.probeCircuit.displayHost = ""; flight.probeCircuit.displayPath = ""; }
+        flights.replaceAll((ticket, flight) -> new Flight(current(flight.endpoint), flight.host, flight.healthProbe,
+                flight.probeCircuit, flight.started, flight.timeout, flight.seen, flight.mark,
+                flight.circuitExcluded, flight.circuitGeneration, flight.heavyEligible, flight.heavyGeneration));
         Time now = time();
         startedAt = now.millis;
     }
 
-    private Endpoint sanitized(Endpoint endpoint, UnaryOperator<String> sanitizer) {
-        String host = safeDisplay(sanitizer, endpoint.host());
-        String path = safeDisplay(sanitizer, endpoint.path());
-        String policy = safePolicy(sanitizer, endpoint.policyUrl());
-        rememberMask(endpoint.hostKey(), endpoint.pathKeys(), !host.equals(endpoint.host()),
-                !path.equals(endpoint.path()) || !policy.equals(endpoint.policyUrl()));
-        return new Endpoint(endpoint.hostKey(), endpoint.pathKeys(), host, path, policy,
-                endpoint.owner, endpoint.epoch, endpoint.safeMethod);
+    /** An endpoint from before the latest explicit clear keeps its keys but carries no display originals. */
+    private Endpoint current(Endpoint endpoint) {
+        if (endpoint.displayGeneration == displayGeneration) return endpoint;
+        return new Endpoint(endpoint.hostKey(), endpoint.pathKeys(), "", "", "", endpoint.owner, endpoint.epoch,
+                endpoint.safeMethod, endpoint.routeKey, endpoint.source, displayGeneration);
     }
-    private Endpoint fenced(Endpoint endpoint) {
-        boolean host = displayOpaque || maskedServices.contains(endpoint.hostKey());
-        boolean path = displayOpaque || endpoint.pathKeys().stream().anyMatch(maskedPaths::contains);
-        if (!host && !path) return endpoint;
-        return new Endpoint(endpoint.hostKey(), endpoint.pathKeys(), host ? "[REDACTED]" : endpoint.host(),
-                path ? "[REDACTED]" : endpoint.path(), "", endpoint.owner, endpoint.epoch, endpoint.safeMethod);
-    }
-    private void rememberMask(String host, List<String> paths, boolean maskHost, boolean maskPath) {
-        if (maskHost && host != null && !host.isEmpty()) maskedServices.add(host);
-        if (maskPath) maskedPaths.addAll(paths);
-        if (maskedServices.size() > MAX_HOSTS || maskedPaths.size() > MAX_PATHS) {
-            displayOpaque = true;
-            maskedServices.clear();
-            maskedPaths.clear();
+    private static boolean draftable(String path) {
+        if (!path.startsWith("/")) return false;
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (c <= 0x20 || c >= 0x7f || c == '#' || c == '?' || c == '\\') return false;
+            if (c == '%' && (i + 2 >= path.length() || Character.digit(path.charAt(i + 1), 16) < 0
+                    || Character.digit(path.charAt(i + 2), 16) < 0)) return false;
         }
-    }
-    private static String safeDisplay(UnaryOperator<String> sanitizer, String value) {
-        if (value.isEmpty()) return "";
-        try {
-            String safe = sanitizer.apply(value);
-            if (safe == null || safe.length() > MAX_DISPLAY) return "[REDACTED]";
-            for (int i = 0; i < safe.length(); i++) if (Character.isISOControl(safe.charAt(i))) return "[REDACTED]";
-            return safe;
-        } catch (RuntimeException ignored) { return "[REDACTED]"; }
-    }
-    private static String safePolicy(UnaryOperator<String> sanitizer, String value) {
-        if (value.isEmpty()) return "";
-        // Any changed/opaque URL is non-actionable. Never turn a masked display into a policy draft.
-        return value.equals(safeDisplay(sanitizer, value)) ? value : "";
+        return true;
     }
 
     public synchronized List<Overlay> overlays() {
@@ -460,6 +429,23 @@ public final class ResponseWatcher {
         return stats.values().stream().map(Aggregate::candidate).sorted(CANDIDATE_ORDER).toList();
     }
 
+    /** In-process human projection support: safe records plus their opaque original references. */
+    public record SourcedCandidate(Candidate candidate, String source) {}
+    public record SourcedOverlay(Overlay overlay, String source, boolean pathScoped) {}
+    public synchronized List<SourcedCandidate> sourcedCandidates() {
+        sweep(time());
+        return aggregate(Long.MIN_VALUE, Long.MAX_VALUE, true).values().stream()
+                .sorted(java.util.Comparator.comparing(Aggregate::candidate, CANDIDATE_ORDER))
+                .map(a -> new SourcedCandidate(a.candidate(), a.source)).toList();
+    }
+    public synchronized List<SourcedOverlay> sourcedOverlays() {
+        sweep(time());
+        List<SourcedOverlay> out = new ArrayList<>();
+        for (Protection p : protections.values()) out.add(new SourcedOverlay(p.view(), p.source, p.reason.equals(HEAVY)));
+        if (capacityProtection != null) out.add(new SourcedOverlay(capacityProtection.view(), null, false));
+        return List.copyOf(out);
+    }
+
     /** Runtime candidate-list suppression only, NOT a policy edit or a protection bypass. */
     public synchronized boolean ignoreCandidate(String id) {
         sweep(time());
@@ -488,56 +474,75 @@ public final class ResponseWatcher {
         out.put("fanoutHistoryOmitted", fanoutOmitted);
         out.put("fanoutHistoryIncomplete", omissionActive);
         out.put("fanoutHistoryIncompleteUntil", omissionActive ? omissionExpiresAt : 0L);
+        // Watcher-local configuration only: the controller's OFF/lifecycle bypass is not reflected here.
+        Fanout fanout = limits.fanout();
+        out.put("fanoutHistoryEnforcing", omissionActive && fanout != null && fanout.action() != FanoutAction.WARN);
+        // Monotonic, rounded UP so live debt never reads as 0 ms remaining.
+        out.put("fanoutHistoryRemainingMillis", omissionActive ? (remaining(omissionUntil, now.nano) + 999_999) / 1_000_000 : 0L);
         out.put("automaticPause", protections.values().stream().anyMatch(p -> p.global));
         out.put("capacityBlocked", capacityProtection != null);
         out.put("admitted", admitted);
         out.put("rejected", rejected);
         out.put("timedOut", timedOut);
         out.put("abandoned", abandoned);
-        out.put("events", events.values.size());
-        out.put("observations", observations.values.size());
-        out.put("eventsTruncated", events.dropped);
-        out.put("observationsTruncated", observations.dropped);
-        out.put("candidateEvictions", candidateEvictions);
+        out.put("events", events.size());
+        out.put("observations", observations.size());
+        // Compatibility keys: diagnostic history has no capacity, ring or eviction any more.
+        out.put("eventsTruncated", false);
+        out.put("observationsTruncated", false);
+        out.put("candidateEvictions", 0L);
         out.put("ignoredCandidates", candidateIndex.values().stream().filter(c -> c.ignored).count());
-        out.put("candidatesIncomplete", observations.dropped || candidateEvictions != 0);
+        out.put("candidatesIncomplete", false);
         out.put("p95Approximate", true);
         out.put("clockRegressed", clockRegressed);
         return Map.copyOf(out);
     }
 
-    /** Exact statistics of RETAINED scalar observations in [from,to), not lifetime candidate totals. */
+    /** Exact statistics of retained scalar observations in [from,to) (since start/explicit clear), not wire totals. */
     public synchronized String incidentJson(long fromMillis, long toMillis) {
-        if (toMillis <= fromMillis || toMillis - fromMillis < 0 || toMillis - fromMillis > DAY_MILLIS)
-            throw new IllegalArgumentException("INVALID_INCIDENT_WINDOW");
+        return Json.write(incidentDocument(fromMillis, toMillis, false));
+    }
+
+    /**
+     * Incident document. With sourced=true (in-process human export only) every event/top row also
+     * carries its opaque "_source" original reference, for the controller to resolve or report
+     * unavailable; such a map must never be serialized as is.
+     */
+    public synchronized Map<String, Object> incidentDocument(long fromMillis, long toMillis, boolean sourced) {
+        if (toMillis <= fromMillis) throw new IllegalArgumentException("INVALID_INCIDENT_WINDOW");
         Time now = time();
         sweep(now);
-        List<Map<String, Object>> selectedEvents = events.values.stream()
-                .filter(e -> e.ts >= fromMillis && e.ts < toMillis).map(Event::view).toList();
-        List<Candidate> stats = aggregate(fromMillis, toMillis, false).values().stream()
-                .map(Aggregate::candidate).toList();
-        boolean eventComplete = complete(events, fromMillis, toMillis, now);
-        boolean observationComplete = complete(observations, fromMillis, toMillis, now);
+        List<Map<String, Object>> selectedEvents = events.stream()
+                .filter(e -> e.ts >= fromMillis && e.ts < toMillis).map(e -> {
+                    if (!sourced) return e.view();
+                    Map<String, Object> view = new LinkedHashMap<>(e.view());
+                    view.put("_source", e.source == null ? "" : e.source);
+                    return view;
+                }).toList();
+        List<Aggregate> stats = List.copyOf(aggregate(fromMillis, toMillis, false).values());
+        boolean eventComplete = complete(fromMillis, toMillis, now);
+        boolean observationComplete = eventComplete;
         // Epoch-wide and conservative: omissions are not attributed to a specific incident window.
         boolean fanoutComplete = fanoutOmitted == 0;
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("window", Map.of("from", fromMillis, "to", toMillis));
         out.put("events", selectedEvents);
-        out.put("top5xx", stats.stream().filter(c -> c.count5xx() > 0)
-                .sorted(Comparator.comparingLong(Candidate::count5xx).reversed().thenComparing(Candidate::id))
-                .limit(20).toList());
-        out.put("topBytes", stats.stream().sorted(CANDIDATE_ORDER).limit(20).toList());
+        out.put("top5xx", stats.stream().filter(a -> a.count5xx > 0)
+                .sorted(Comparator.comparingLong((Aggregate a) -> a.count5xx).reversed().thenComparing(a -> a.id))
+                .limit(20).map(a -> sourced ? a.sourcedView() : (Object) a.candidate()).toList());
+        out.put("topBytes", stats.stream().sorted(Comparator.comparing(Aggregate::candidate, CANDIDATE_ORDER)).limit(20)
+                .map(a -> sourced ? a.sourcedView() : (Object) a.candidate()).toList());
         out.put("complete", eventComplete && observationComplete && fanoutComplete);
         out.put("truncated", !eventComplete || !observationComplete || !fanoutComplete);
         out.put("fanoutHistoryComplete", fanoutComplete);
         out.put("approximate", true);
         out.put("approximation", Map.of("p95Bytes", "log2_histogram_upper_bound",
                 "countMaxBytesLastSeen5xx", "exact_retained_window"));
-        out.put("retention", Map.of("maxMillis", DAY_MILLIS, "startedAt", startedAt,
+        out.put("retention", Map.of("mode", "UNTIL_CLEAR_PROJECT_OR_UNLOAD", "startedAt", startedAt,
                 "eventsComplete", eventComplete, "observationsComplete", observationComplete,
-                "eventsDropped", events.dropped, "observationsDropped", observations.dropped,
+                "eventsDropped", false, "observationsDropped", false,
                 "clockRegressed", clockRegressed, "fanoutHistoryOmitted", fanoutOmitted));
-        return Json.write(out);
+        return out;
     }
 
     public record Gate(boolean allowed, String reason, GuardState guardState, String overlayId) {}
@@ -560,11 +565,15 @@ public final class ResponseWatcher {
         private final Object owner;
         private final long epoch;
         private final boolean safeMethod;
+        private final String routeKey; // exact-route HMAC, null when not eligible; never serialized
+        // Random opaque reference to the human-local original of THIS request; never serialized.
+        private final String source;
+        private final long displayGeneration;
         public Endpoint(String hostKey, List<String> pathKeys, String host, String path, String policyUrl) {
-            this(hostKey, pathKeys, host, path, policyUrl, null, 0, false);
+            this(hostKey, pathKeys, host, path, policyUrl, null, 0, false, null, null, 0);
         }
         private Endpoint(String hostKey, List<String> pathKeys, String host, String path, String policyUrl,
-                         Object owner, long epoch, boolean safeMethod) {
+                         Object owner, long epoch, boolean safeMethod, String routeKey, String source, long displayGeneration) {
             this.hostKey = Objects.requireNonNull(hostKey);
             this.pathKeys = List.copyOf(pathKeys);
             this.host = Objects.requireNonNull(host);
@@ -573,7 +582,12 @@ public final class ResponseWatcher {
             this.owner = owner;
             this.epoch = epoch;
             this.safeMethod = safeMethod;
+            this.routeKey = routeKey;
+            this.source = source;
+            this.displayGeneration = displayGeneration;
         }
+        /** Opaque human-original reference (controller binds it to the retained raw capture). */
+        String source() { return source; }
         public String hostKey() { return hostKey; }
         public List<String> pathKeys() { return pathKeys; }
         public String host() { return host; }
@@ -610,33 +624,80 @@ public final class ResponseWatcher {
         if (endpoint == null || endpoint.owner != identity || endpoint.epoch != epoch)
             return new Gate(false, "POLICY_CHANGED", GuardState.PROJECT_UNVERIFIED, "");
         if (capacityProtection != null) return denied(capacityProtection, GuardState.CAPACITY);
+        boolean fanoutExcluded = fanoutExcluded(endpoint);
         for (Protection protection : protections.values()) {
-            if (protection.global) return denied(protection, GuardState.OVERLAY_BLOCK);
+            // Only a fan-out episode is ever global (automatic PAUSE); an exact exception bypasses only it.
+            if (protection.global && !fanoutExcluded) return denied(protection, GuardState.OVERLAY_BLOCK);
         }
-        for (String path : endpoint.pathKeys()) {
-            Protection heavy = heavyPaths.get(path);
-            if (heavy != null) return denied(heavy, GuardState.OVERLAY_BLOCK);
+        // Heavy gating is current: master OFF or an authored size-0 route exception bypasses ONLY heavy.
+        if (limits.heavyResponseEnabled() && !heavyExcepted(endpoint)) {
+            for (String path : endpoint.pathKeys()) {
+                Protection heavy = heavyPaths.get(path);
+                if (heavy != null) return denied(heavy, GuardState.OVERLAY_BLOCK);
+            }
         }
         Host host = hosts.get(endpoint.hostKey());
-        if (host != null && host.episode != null && host.episode.action == FanoutAction.BLOCK)
+        if (host != null && host.episode != null && host.episode.action == FanoutAction.BLOCK && !fanoutExcluded)
             return denied(host.episode, GuardState.OVERLAY_BLOCK);
-        if (host != null && host.circuit != null && !healthProbe) {
+        if (host != null && host.circuit != null && !healthProbe && !circuitExcluded(endpoint)) {
             Protection circuit = host.circuit;
             if (!endpoint.safeMethod || circuit.probe != null || !reached(now.nano, circuit.until)
                     || host.hasProbeAttempt && now.nano - host.lastProbeAttempt < PROBE_INTERVAL)
                 return denied(circuit, GuardState.CIRCUIT_OPEN);
         }
-        if (host == null && hosts.size() >= hostCapacity || flights.size() >= MAX_FLIGHTS)
+        if (host == null && hosts.size() >= hostCapacity && reclaimableHost(now) == null || flights.size() >= MAX_FLIGHTS)
             return new Gate(false, CAPACITY, GuardState.CAPACITY, "");
         int additional = 0;
         for (String path : endpoint.pathKeys()) if (!paths.containsKey(path)) additional++;
         if (paths.size() + additional > pathCapacity)
             return new Gate(false, CAPACITY, GuardState.CAPACITY, "");
         Fanout fanout = limits.fanout();
+        // Enforcing omission debt binds every request, excluded or not; an excluded admission needs no NEW Seen slot.
         if (fanout != null && fanout.action() != FanoutAction.WARN && (omissionActive
-                || (host == null || !host.seen.containsKey(endpoint.pathKeys().getLast())) && indexedSeen() >= pathCapacity))
+                || !fanoutExcluded && (host == null || !host.seen.containsKey(endpoint.pathKeys().getLast())) && indexedSeen() >= pathCapacity))
             return new Gate(false, CAPACITY, GuardState.CAPACITY, "");
         return ALLOWED;
+    }
+
+    /**
+     * Idle, purely diagnostic host history that WARN/disabled fan-out may give up when HOST capacity is
+     * the only blocker: no native work (incl. late), circuit, enforcing episode, failure samples, live
+     * probe cadence or pending Seen mark. Pure selection, shared by gate() feasibility and commit().
+     * Returns the candidate with the least remaining history, or null.
+     */
+    private Map.Entry<String, Host> reclaimableHost(Time now) {
+        Fanout fanout = limits.fanout();
+        if (fanout != null && fanout.action() != FanoutAction.WARN) return null;
+        Map.Entry<String, Host> best = null;
+        long bestRemaining = 0;
+        for (Map.Entry<String, Host> entry : hosts.entrySet()) {
+            Host host = entry.getValue();
+            if (host.inFlight != 0 || host.circuit != null || !host.failures.isEmpty()
+                    || host.episode != null && host.episode.action != FanoutAction.WARN
+                    || host.hasProbeAttempt && now.nano - host.lastProbeAttempt < PROBE_INTERVAL) continue;
+            long latest = 0;
+            boolean idle = true;
+            for (Seen seen : host.seen.values()) {
+                if (!seen.pending.isEmpty() || !seen.confirmed) { idle = false; break; }
+                latest = Math.max(latest, remaining(seen.until, now.nano));
+            }
+            if (idle && (best == null || latest < bestRemaining)) { best = entry; bestRemaining = latest; }
+        }
+        return best;
+    }
+
+    /** Each discarded confirmed history becomes saturating omission debt with its ORIGINAL monotonic deadline. */
+    private void reclaim(Map.Entry<String, Host> candidate, Time now) {
+        hosts.remove(candidate.getKey(), candidate.getValue());
+        for (Seen seen : candidate.getValue().seen.values()) {
+            fanoutOmitted = increment(fanoutOmitted);
+            if (!omissionActive || remaining(seen.until, now.nano) > remaining(omissionUntil, now.nano)) {
+                omissionUntil = seen.until;
+                // Wall time is display only; round UP so live debt never displays as already expired.
+                omissionExpiresAt = add(now.millis, (remaining(seen.until, now.nano) + 999_999) / 1_000_000);
+            }
+            omissionActive = true;
+        }
     }
 
     private Rejected reject(Gate gate) { rejected = increment(rejected); return new Rejected(gate); }
@@ -659,7 +720,7 @@ public final class ResponseWatcher {
             }
         }
         Protection protection = new Protection(HEAVY, endpoint, now, limits.autoBlockMillis());
-        events.add(new Event(HEAVY, endpoint.host(), endpoint.path(), bytes, -1, -1, now.millis, now.nano));
+        events.add(new Event(HEAVY, endpoint.host(), endpoint.path(), bytes, -1, -1, now.millis, now.nano, endpoint.source));
         if (!install(protection, now, limits.autoBlockMillis())) return;
         protection.pathKeys = endpoint.pathKeys();
         for (String pathKey : endpoint.pathKeys()) heavyPaths.put(pathKey, protection);
@@ -676,7 +737,7 @@ public final class ResponseWatcher {
         Protection circuit = new Protection(CIRCUIT, endpoint, now, config.openMillis());
         circuit.openMillis = config.openMillis();
         circuit.host = host;
-        events.add(new Event(CIRCUIT, endpoint.host(), "", -1, host.failures.size(), -1, now.millis, now.nano));
+        events.add(new Event(CIRCUIT, endpoint.host(), "", -1, host.failures.size(), -1, now.millis, now.nano, endpoint.source));
         if (!install(circuit, now, config.openMillis())) { host.failures.clear(); return; }
         host.circuit = circuit;
         host.failures.clear();
@@ -688,7 +749,7 @@ public final class ResponseWatcher {
         episode.action = config.action();
         episode.global = config.action() == FanoutAction.PAUSE;
         // WARN is visible in the bounded host state and incident ring but is not an enforced overlay.
-        events.add(new Event(FANOUT, endpoint.host(), "", -1, -1, distinct, now.millis, now.nano));
+        events.add(new Event(FANOUT, endpoint.host(), "", -1, -1, distinct, now.millis, now.nano, endpoint.source));
         if (config.action() != FanoutAction.WARN && !install(episode, now, limits.autoBlockMillis()))
             return capacityProtection;
         host.episode = episode;
@@ -710,12 +771,12 @@ public final class ResponseWatcher {
         return true;
     }
 
-    private void reopen(Host host, Protection circuit, Time now) {
+    private void reopen(Host host, Protection circuit, Time now, String source) {
         circuit.probe = null;
         circuit.until = now.nano + millis(circuit.openMillis);
         circuit.expiresAt = add(now.millis, circuit.openMillis);
         host.failures.clear();
-        events.add(new Event(CIRCUIT, circuit.displayHost, "", -1, 1, -1, now.millis, now.nano));
+        events.add(new Event(CIRCUIT, circuit.displayHost, "", -1, 1, -1, now.millis, now.nano, source));
     }
 
     private void remove(Protection protection) {
@@ -735,7 +796,7 @@ public final class ResponseWatcher {
             Flight flight = entry.getValue();
             if (now.nano - flight.started < flight.timeout || !expiredFlights.add(entry.getKey())) continue;
             // Timeout fails a half-open lease ONCE, not its later native observation. Host/path
-            // reservations and the privacy-remasked endpoint stay bounded by MAX_FLIGHTS until
+            // reservations and the endpoint stay bounded by MAX_FLIGHTS until
             // observe/cancel/reset. A late success can never heal the failed/replacement probe.
             timedOut = increment(timedOut);
             failProbe(entry.getKey(), flight, now);
@@ -758,17 +819,11 @@ public final class ResponseWatcher {
         hosts.values().removeIf(host -> host.inFlight == 0 && host.circuit == null && host.episode == null
                 && host.seen.isEmpty() && host.failures.isEmpty()
                 && (!host.hasProbeAttempt || now.nano - host.lastProbeAttempt >= PROBE_INTERVAL));
-        events.prune(now.nano);
-        observations.prune(now.nano);
-        // Empty expired candidates must not retain stale policy URLs forever.
-        LinkedHashSet<String> retained = new LinkedHashSet<>();
-        for (Observation observation : observations.values) retained.add(observation.id);
-        candidateIndex.entrySet().removeIf(entry -> !entry.getValue().ignored && !retained.contains(entry.getKey()));
     }
 
     private void failProbe(Ticket ticket, Flight flight, Time now) {
         if (flight.probeCircuit != null && flight.host.circuit == flight.probeCircuit
-                && flight.probeCircuit.probe == ticket) reopen(flight.host, flight.probeCircuit, now);
+                && flight.probeCircuit.probe == ticket) reopen(flight.host, flight.probeCircuit, now, flight.endpoint.source);
     }
 
     private Flight current(Ticket ticket) {
@@ -805,7 +860,35 @@ public final class ResponseWatcher {
         state.retained = true;
     }
 
+    /** Current exact exception membership; evaluated at check AND final commit, never at response time. */
+    private boolean circuitExcluded(Endpoint endpoint) {
+        return endpoint.owner == identity && endpoint.epoch == epoch && endpoint.routeKey != null
+                && circuitExceptions.contains(endpoint.routeKey);
+    }
+
+    private boolean fanoutExcluded(Endpoint endpoint) {
+        return endpoint.owner == identity && endpoint.epoch == epoch && endpoint.routeKey != null
+                && fanoutExceptions.contains(endpoint.routeKey);
+    }
+    /** An AUTHORED zero for a matching route view (and no positive alias override) is a size exception. */
+    private boolean heavyExcepted(Endpoint endpoint) {
+        Long matched = authoredBound(endpoint);
+        return matched != null && matched == 0;
+    }
+    /** Fan-out logical episode detach for configuration changes: never clears Seen history. */
+    private void detachFanout(Host host) {
+        Protection episode = host.episode;
+        host.episode = null;
+        if (episode != null) protections.remove(episode.id, episode);
+    }
+
     private void compilePathLimits() {
+        circuitExceptions.clear();
+        fanoutExceptions.clear();
+        for (GuardConfig.ProbePath route : limits.fanoutExceptions())
+            fanoutExceptions.add(hash("path", service(route.scheme(), route.host(), route.port()), route.path()));
+        for (GuardConfig.ProbePath route : limits.circuit5xxExceptions())
+            circuitExceptions.add(hash("path", service(route.scheme(), route.host(), route.port()), route.path()));
         pathLimits.clear();
         for (GuardConfig.PathByteLimit limit : limits.heavyPathLimits()) {
             String service = service(limit.scheme(), limit.host(), limit.port());
@@ -814,6 +897,10 @@ public final class ResponseWatcher {
     }
 
     private long responseBound(Endpoint endpoint) {
+        Long matched = authoredBound(endpoint);
+        return matched == null ? limits.perPathMaxResponseBytes() : matched;
+    }
+    private Long authoredBound(Endpoint endpoint) {
         Long matched = null;
         for (String path : endpoint.pathKeys()) {
             Long value = pathLimits.get(path);
@@ -823,27 +910,16 @@ public final class ResponseWatcher {
                 if (matched == null || matched == 0 || value > 0 && value < matched) matched = value;
             }
         }
-        return matched == null ? limits.perPathMaxResponseBytes() : matched;
+        return matched;
     }
 
     private void rememberCandidate(Endpoint endpoint) {
-        String id = endpoint.pathKeys().getLast();
-        if (candidateIndex.containsKey(id)) { candidateIndex.get(id); return; }
-        if (candidateIndex.size() >= pathCapacity) {
-            Iterator<Map.Entry<String, CandidateMeta>> iterator = candidateIndex.entrySet().iterator();
-            boolean removed = false;
-            while (iterator.hasNext()) {
-                if (!iterator.next().getValue().ignored) { iterator.remove(); removed = true; break; }
-            }
-            candidateEvictions = increment(candidateEvictions);
-            if (!removed) return;
-        }
-        candidateIndex.put(id, new CandidateMeta());
+        candidateIndex.putIfAbsent(endpoint.pathKeys().getLast(), new CandidateMeta());
     }
 
     private Map<String, Aggregate> aggregate(long from, long to, boolean candidatesOnly) {
         Map<String, Aggregate> out = new HashMap<>();
-        for (Observation observation : observations.values) {
+        for (Observation observation : observations) {
             if (!candidatesOnly && (observation.ts < from || observation.ts >= to)) continue;
             if (candidatesOnly) {
                 CandidateMeta meta = candidateIndex.get(observation.id);
@@ -854,9 +930,8 @@ public final class ResponseWatcher {
         return out;
     }
 
-    private boolean complete(Ring<?> ring, long from, long to, Time now) {
-        return !clockRegressed && from >= startedAt && from >= add(now.millis, -DAY_MILLIS)
-                && to <= add(now.millis, 1) && !ring.lostIn(from, to);
+    private boolean complete(long from, long to, Time now) {
+        return !clockRegressed && from >= startedAt && to <= add(now.millis, 1);
     }
 
     private Time time() {
@@ -891,24 +966,6 @@ public final class ResponseWatcher {
         } catch (RuntimeException ignored) { throw new IllegalArgumentException("INVALID_LIMITS"); }
     }
 
-    private static URI uri(String url) {
-        if (url == null || url.length() > MAX_URL) throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
-        try {
-            URI uri = URI.create(url);
-            if (uri.getHost() == null || uri.getScheme() == null
-                    || !(uri.getScheme().equalsIgnoreCase("https") || uri.getScheme().equalsIgnoreCase("http")))
-                throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
-            return uri;
-        } catch (RuntimeException ignored) { throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT"); }
-    }
-
-    private static String path(URI uri) {
-        String path = uri.getRawPath();
-        return path == null || path.isEmpty() ? "/" : path;
-    }
-    private static int port(URI uri) {
-        return uri.getPort() == -1 ? uri.getScheme().equalsIgnoreCase("https") ? 443 : 80 : uri.getPort();
-    }
     private static String service(String scheme, String host, int port) {
         if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
                 || port < 1 || port > 65_535) throw new IllegalArgumentException("INVALID_WATCHER_ENDPOINT");
@@ -949,11 +1006,10 @@ public final class ResponseWatcher {
                     || pending.values().stream().anyMatch(mark -> now - mark.at < mark.window);
         }
     }
-    private interface Timed { long ts(); long nano(); }
     private record Observation(String id, String hostKey, List<String> pathKeys, String host, String path,
-                               String policyUrl, int status, long bytes, long ts, long nano) implements Timed {}
+                               String policyUrl, int status, long bytes, long ts, long nano, String source) {}
     private record Event(String kind, String host, String path, long bytes, long count5xx,
-                         long distinctPaths, long ts, long nano) implements Timed {
+                         long distinctPaths, long ts, long nano, String source) {
         Map<String, Object> view() {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("kind", kind);
@@ -966,35 +1022,7 @@ public final class ResponseWatcher {
             return Map.copyOf(out);
         }
     }
-    private static final class Ring<T extends Timed> {
-        final int capacity;
-        final ArrayDeque<T> values = new ArrayDeque<>();
-        boolean dropped;
-        long lostMin = Long.MAX_VALUE;
-        long lostMax = Long.MIN_VALUE;
-        Ring(int capacity) { this.capacity = capacity; }
-        void add(T value) {
-            if (values.size() == capacity) lost(values.removeFirst());
-            values.addLast(value);
-        }
-        void map(UnaryOperator<T> transform) {
-            List<T> replacement = values.stream().map(transform).toList();
-            values.clear();
-            values.addAll(replacement);
-        }
-        void prune(long now) {
-            while (!values.isEmpty() && now - values.peekFirst().nano() > DAY_NANOS) lost(values.removeFirst());
-        }
-        void lost(T value) {
-            dropped = true;
-            lostMin = Math.min(lostMin, value.ts());
-            lostMax = Math.max(lostMax, value.ts());
-        }
-        boolean lostIn(long from, long to) { return dropped && from <= lostMax && to > lostMin; }
-        void clear() { values.clear(); dropped = false; lostMin = Long.MAX_VALUE; lostMax = Long.MIN_VALUE; }
-    }
     private static final class Host {
-        String display;
         final ArrayDeque<Long> failures = new ArrayDeque<>();
         final Map<String, Seen> seen = new HashMap<>();
         int inFlight;
@@ -1003,7 +1031,6 @@ public final class ResponseWatcher {
         long lastProbeAttempt;
         Protection circuit;
         Protection episode;
-        Host(String display) { this.display = display; }
     }
     private static final class PathState {
         int inFlight;
@@ -1012,7 +1039,9 @@ public final class ResponseWatcher {
     }
     private static final class CandidateMeta { boolean ignored; }
     private record Flight(Endpoint endpoint, Host host, boolean healthProbe, Protection probeCircuit,
-                          long started, long timeout, Seen seen, Mark mark) {}
+                          long started, long timeout, Seen seen, Mark mark,
+                          boolean circuitExcluded, long circuitGeneration,
+                          boolean heavyEligible, long heavyGeneration) {}
     private static final class Protection {
         final String id = UUID.randomUUID().toString();
         final String reason;
@@ -1028,8 +1057,10 @@ public final class ResponseWatcher {
         Ticket probe;
         FanoutAction action;
         boolean global;
+        final String source; // triggering request's opaque human-original reference (null: capacity fence)
         Protection(String reason, Endpoint endpoint, Time now, long duration) {
             this.reason = reason;
+            source = endpoint == null ? null : endpoint.source;
             serviceKey = endpoint == null ? "" : endpoint.hostKey();
             displayHost = endpoint == null ? "" : endpoint.host();
             displayPath = reason.equals(HEAVY) && endpoint != null ? endpoint.path() : "";
@@ -1044,7 +1075,7 @@ public final class ResponseWatcher {
         String host;
         String path;
         String policyUrl;
-        boolean redacted;
+        String source;
         long max;
         long count;
         long lastSeen = Long.MIN_VALUE;
@@ -1061,12 +1092,17 @@ public final class ResponseWatcher {
                 host = observation.host;
                 path = observation.path;
                 policyUrl = observation.policyUrl;
+                source = observation.source;
             }
-            // A previously masked observation must never become an actionable raw policy URL.
-            redacted |= observation.policyUrl.isEmpty();
-            if (redacted) policyUrl = "";
         }
         Candidate candidate() { return new Candidate(id, host, path, policyUrl, max, p95(), count, lastSeen, count5xx); }
+        Map<String, Object> sourcedView() {
+            Map<String, Object> view = new LinkedHashMap<>();
+            view.put("id", id); view.put("host", host); view.put("path", path); view.put("policyUrl", policyUrl);
+            view.put("maxBytes", max); view.put("p95Bytes", p95()); view.put("count", count);
+            view.put("lastSeen", lastSeen); view.put("count5xx", count5xx); view.put("_source", source == null ? "" : source);
+            return view;
+        }
         long p95() {
             long rank = (count * 95 + 99) / 100;
             long seen = 0;

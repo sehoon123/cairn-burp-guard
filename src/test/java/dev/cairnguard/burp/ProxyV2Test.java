@@ -71,11 +71,13 @@ class ProxyV2Test {
         var rules = List.of(rule("query", Mode.BLOCK, Field.QUERY, Match.CONTAINS, "operator-denied-marker"));
         var controller = new GuardController(new MemoryProject(policy(limits(0, null, null, 0, List.of()), rules, List.of())));
         try (var handler = new ProxyGuardHandler(controller, new Actions())) {
-            var request = request(1); when(request.path()).thenReturn("/safe?q=" + "x".repeat(2 * NativeCapture.MAX_URL));
+            String target = "/safe?q=" + "x".repeat(2 * 16_384);
+            var request = request(1); when(request.path()).thenReturn(target);
             assertSame(request, handler.handleHttpRequestToBeSent(request).request());
             var row = controller.traffic().getFirst();
             assertTrue(row.inspectionWarnings().stream().anyMatch(w -> w.startsWith("QUERY_INSPECTION_UNAVAILABLE_")));
-            assertEquals(true, controller.rawCaptureInfo(row.id()).get("requestTruncated")); handler.handleHttpResponseReceived(response(1, "{}"));
+            assertEquals(false, controller.rawCaptureInfo(row.id()).get("requestTruncated"));
+            assertTrue(controller.rawUrl(row.id()).endsWith(target), "the complete optional query is retained"); handler.handleHttpResponseReceived(response(1, "{}"));
         }
     }
     @Test void spoofedHostCannotAuthorizeDifferentActualService() throws Exception {
@@ -129,7 +131,7 @@ class ProxyV2Test {
             assertEquals("exempt", controller.traffic().getFirst().outcome()); handler.handleHttpResponseReceived(response(3, "{}"));
         }
     }
-    @Test void nativeRawAuthCookieGrantAppearOnlyInHumanGettersNeverEvidenceOrExports() {
+    @Test void nativeAuthCookieGrantAreOriginalsInHumanGettersEvidenceAndExports() {
         var controller = controller(); var actions = new Actions();
         String auth = "synthetic-native-auth-9164", cookie = "synthetic-native-cookie-9164", grant = "synthetic-native-grant-9164";
         try (var handler = new ProxyGuardHandler(controller, actions)) {
@@ -139,22 +141,21 @@ class ProxyV2Test {
             var response = response(1, "{\"token\":\"" + grant + "\"}"); assertSame(response, handler.handleHttpResponseReceived(response).response());
             var row = controller.traffic().getFirst(); String raw = controller.rawRequest(row.id());
             for (String secret : List.of(auth, cookie, grant)) {
-                assertTrue(raw.contains(secret)); assertFalse(row.request().contains(secret));
-                assertFalse(controller.exportJson(controller.traffic()).contains(secret)); assertFalse(controller.exportHar(controller.traffic()).contains(secret));
-                assertFalse(controller.exportIncident(System.currentTimeMillis() - 60_000, System.currentTimeMillis() + 1).contains(secret));
+                assertTrue(raw.contains(secret)); assertTrue(row.request().contains(secret));
+                assertTrue(controller.exportJson(controller.traffic()).contains(secret)); assertTrue(controller.exportHar(controller.traffic()).contains(secret));
             }
-            assertTrue(controller.rawResponse(row.id()).contains(grant)); assertFalse(row.response().contains(grant));
+            assertTrue(controller.rawResponse(row.id()).contains(grant)); assertTrue(row.response().contains(grant));
             controller.clearEvidence(); assertNull(controller.rawRequest(row.id())); assertNull(controller.rawResponse(row.id()));
         }
     }
-    @Test void sixMiBObservedEvenWithoutCopyCreatesOverlayTyped451AndDoesNotSavePolicy() throws Exception {
+    @Test void sixMiBObservedEvenWhenTheCopyIsUnavailableCreatesOverlayTyped451AndDoesNotSavePolicy() throws Exception {
         var project = new MemoryProject(policy(limits(5L * 1_048_576, null, null, 0, List.of()), List.of(), List.of()));
         String before = project.json; var controller = new GuardController(project); var actions = new Actions();
         try (var handler = new ProxyGuardHandler(controller, actions)) {
             handler.handleHttpRequestToBeSent(request(1)); var response = response(1, "{}"); var huge = mock(ByteArray.class);
             when(huge.length()).thenReturn(6 * 1_048_576); when(response.body()).thenReturn(huge);
             when(response.headers()).thenReturn(List.of(header("Content-Length", "1")));
-            assertSame(response, handler.handleHttpResponseReceived(response).response()); verify(huge, never()).getBytes();
+            assertSame(response, handler.handleHttpResponseReceived(response).response()); // mocked getBytes() supplies nothing
             var row = controller.traffic().getFirst(); assertEquals(6L * 1_048_576, row.responseBytes());
             assertEquals(false, controller.rawCaptureInfo(row.id()).get("responseBodyComplete"));
             assertTrue(controller.rawResponse(row.id()).contains("Body incomplete or omitted"));
@@ -230,7 +231,7 @@ class ProxyV2Test {
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(3)).action()); handler.handleHttpResponseReceived(response(3, "{}"));
         }
     }
-    @Test void responseScalarStillOpensHeavyOverlayWhenAllInspectionSlotsAreBusy() throws Exception {
+    @Test void responseScalarStillOpensHeavyOverlayWhenAllRequestInspectionSlotsAreBusy() throws Exception {
         var controller = new GuardController(new MemoryProject(policy(limits(5L * 1_048_576, null, null, 0, List.of()), List.of(), List.of())));
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var worker = Executors.newSingleThreadExecutor();
         try (var handler = new ProxyGuardHandler(controller, new Actions(), 2, 1)) {
@@ -238,12 +239,12 @@ class ProxyV2Test {
             when(second.body().getBytes()).thenAnswer(i -> { entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)); return new byte[0]; });
             var pending = worker.submit(() -> handler.handleHttpRequestToBeSent(second)); assertTrue(entered.await(5, TimeUnit.SECONDS));
             var response = response(1, "{}"); var huge = mock(ByteArray.class); when(huge.length()).thenReturn(6 * 1_048_576); when(response.body()).thenReturn(huge);
-            handler.handleHttpResponseReceived(response); verify(huge, never()).getBytes(); verify(response, never()).headers();
+            handler.handleHttpResponseReceived(response); verify(response).headers(); // response copies need no inspection slot
             assertEquals(1, controller.overlays().size()); assertEquals(0, gate(controller).get("active"));
             release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(5, TimeUnit.SECONDS).action()); handler.handleHttpResponseReceived(response(2, "{}"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }
     }
-    @Test void exactHealthProbeNeedsVerifiedEmptyBodyEvenWhenOptionalCaptureSlotUnavailable() throws Exception {
+    @Test void exactHealthProbeNeedsVerifiedEmptyBodyEvenWhenInspectionSlotUnavailable() throws Exception {
         var probes = List.of(new ProbePath("https", "example.test", 443, "/health"));
         var controller = new GuardController(new MemoryProject(policy(limits(0, null, null, 0, probes), List.of(), List.of())));
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var worker = Executors.newSingleThreadExecutor(); var actions = new Actions();
@@ -258,7 +259,8 @@ class ProxyV2Test {
             }
             var health = request(5); when(health.path()).thenReturn("/health");
             assertSame(health, handler.handleHttpRequestToBeSent(health).request());
-            assertEquals("probe_allowed", controller.traffic().getFirst().outcome()); verify(health.body(), never()).getBytes(); verify(health, never()).headers();
+            assertEquals("probe_allowed", controller.traffic().getFirst().outcome());
+            assertEquals(true, controller.rawCaptureInfo(controller.traffic().getFirst().id()).get("bodyComplete"), "verified EMPTY copy");
             handler.handleHttpResponseReceived(response(5, "{}"));
             release.countDown(); assertEquals(RequestAction.SPOOF_RESPONSE, pending.get(5, TimeUnit.SECONDS).action());
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }

@@ -1,5 +1,13 @@
 # Controller, native-boundary mocks and owned-loopback verification
 
+> **2026-11-05 note:** masking and collection quotas were removed (see [EVIDENCE.md](EVIDENCE.md)).
+> `RedactorTest`, `HexReflectionRedactionTest`, `EvidenceStoreWatcherMaskingTest` and
+> `ResponseWatcherRemaskingTest` no longer exist; their still-relevant lifecycle/seal/routing
+> checks moved to `EvidenceStoreTest`, `ResponseWatcherTest`, `LateResponseRegressionTest` and
+> `UnmaskedCollectionTest` (beyond-old-limit retention, plaintext across surfaces). Counts and
+> masking/bound expectations below are historical records of earlier snapshots.
+
+
 **Latest correction:** native Proxy/HTTP identity assumptions were falsified.
 Production supplies no listener proof and restricted mode is unsupported/H FAIL.
 The safe437503… snapshot passed fresh Java1231, Python27/local18 and Swing27 at
