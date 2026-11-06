@@ -2,11 +2,11 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립 Burp Extension 개발 프로젝트입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> **현재 소스: 자동 차단 제거 개발 변경 — 새 exact JAR의 native Burp 검증은 미실행.** 사용자가 공개를 명시적으로 요청한 개발 빌드입니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
+> **현재 개발 프리릴리즈: 자동 차단 제거 — 이 exact JAR의 native Burp 검증은 미실행.** 사용자가 공개를 명시적으로 요청한 개발 빌드입니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
 
-**[무마스킹·무제한 수집 개발 빌드 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-unmasked-unbounded)** · [이번 릴리스의 검증·한계·출처](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-unmasked-unbounded) · [이전 artifact별 검증](docs/VERIFICATION.md) · [전체 Proxy 과거 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
+**[자동 차단 제거 개발 빌드 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix)** · [이번 릴리스의 검증·한계·출처](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix) · [이전 artifact별 검증](docs/VERIFICATION.md) · [전체 Proxy 과거 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
 
-## 현재 소스 변경: 자동 차단 제거 (아직 새 배포/native 검증 아님)
+## 현재 개발 프리릴리즈: 자동 차단 제거 (native 검증 미실행)
 
 이전 응답5xx·크기·fan-out, 느린/스트리밍 응답, 미확인/늦은 콜백,
 추정 timeout·회로·native-flight/correlation 용량으로 새 요청을 자동 차단하는
@@ -27,9 +27,9 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 - 원문 전체 무마스킹·무제한 메모리 보관, 평문 확인·owner-only atomic 내보내기는 유지합니다.
   **평문 자격증명·무제한 메모리/OOM·무제한 native 동시성** 위험은 사용자가 관리해야 합니다.
 
-[테스트 변경 지도](docs/AUTOBLOCK_REMOVAL_TEST_MAP.md)와 현재 소스 계약을 보세요.
-과거 [무마스킹 프리릴리즈](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-unmasked-unbounded) 및 native 보고서는 이전 artifact의 기록입니다.
-이번 소스의 배포·native 수용·독립 검토 완료 증거가 아닙니다. 원문 자동 디스크 저장은 없습니다.
+이 빌드는 Java **1,294건**, Python **38건**, fixture template **18건**, 실제 Swing scale1·2 각각 **28건**을 통과했습니다 (실패·오류·skip0). 두 clean build의 JAR은 **2,941,968 bytes**로 일치하며 SHA-256은 `6213885ed1f0691b0cc15c7ab9c2df509d1d356ecbdf27fb13aee7d5fc39547f`입니다. 정확한 소스·산출물 결합을 독립 Sol 검토와 부모 직접 검사로 확인했습니다. 이는 **설치 Burp/native·upstream/model E2E 검증이나 누락 callback 수정 주장이 아닙니다**.
+
+[테스트 변경 지도](docs/AUTOBLOCK_REMOVAL_TEST_MAP.md), 현재 소스 계약과 새 릴리스의 BUILDINFO/검증 범위를 보세요. 과거 [무마스킹 프리릴리즈](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-unmasked-unbounded) 및 native 보고서는 보존된 이전 artifact의 기록이며 이번 JAR의 native 성공 증거가 아닙니다. 원문 자동 디스크 저장은 없습니다.
 
 ## 역할과 제외 범위
 
