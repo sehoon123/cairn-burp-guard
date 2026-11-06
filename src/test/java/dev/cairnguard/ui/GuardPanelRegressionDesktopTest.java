@@ -173,6 +173,55 @@ class GuardPanelRegressionDesktopTest {
         }
     }
 
+    @ParameterizedTest @ValueSource(strings = {"INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED", "DEFAULT_ALLOW"})
+    void relatedSettingsUsesSelectedReasonWithoutChangingControls(String reason) throws Exception {
+        try (View view = new View()) {
+            edt(() -> {
+                boolean denied = !reason.equals("DEFAULT_ALLOW");
+                String id = view.addRequest("https://example.test/intent-tag", Mode.ALLOW);
+                if (denied) view.source.store.outcome(id, "BLOCKED", reason, 451);
+                TrafficEntry before = view.source.rows().getFirst();
+                var policy = view.source.policy;
+                Map<String, Object> status = view.source.status();
+                List<Pending> approvals = List.copyOf(view.approvals);
+                String original = view.source.store.rawRequest(id);
+                assertEquals(reason, before.reason(), "the real store must retain the selected categorical reason");
+                assertEquals(denied ? "BLOCKED" : "PENDING", before.disposition());
+                assertEquals(denied ? Integer.valueOf(451) : null, before.statusCode());
+                view.panel.refreshNow();
+                JTabbedPane tabs = view.get("tabs", JTabbedPane.class);
+                tabs.setSelectedIndex(3);
+                JButton resolve = view.get("traffic.resolve", JButton.class);
+                assertTrue(view.frame.isShowing());
+                assertTrue(view.table().isShowing());
+                assertTrue(resolve.isShowing());
+                assertEquals(1, view.table().getRowCount());
+                assertEquals(0, view.table().getSelectedRowCount());
+                assertFalse(resolve.isEnabled(), "related settings requires a selected history row");
+                view.table().setRowSelectionInterval(0, 0);
+                System.out.printf("ISSUE1 selected reason=%s retainedReason=%s showing=%s enabled=%s expectedEnabled=%s tab=%d%n",
+                        reason, before.reason(), resolve.isShowing(), resolve.isEnabled(), denied, tabs.getSelectedIndex());
+                assertEquals(denied, resolve.isEnabled(), reason + " must offer related settings only for a mapped reason");
+                resolve.doClick(0);
+                assertEquals(denied ? 5 : 3, tabs.getSelectedIndex(), "related settings must navigate without changing protection");
+                assertTrue(tabs.getSelectedComponent().isShowing());
+                assertEquals(denied, view.get("settings.summary", JTextArea.class).isShowing());
+                assertAll(
+                        () -> assertEquals(policy, view.source.policy),
+                        () -> assertEquals(status, view.source.status(), "project, revision, pause and protection OFF must stay unchanged"),
+                        () -> assertEquals(List.of(before), view.source.rows(), "navigation must not change retained evidence"),
+                        () -> assertEquals(original, view.source.store.rawRequest(id)),
+                        () -> assertEquals(approvals, view.approvals),
+                        () -> assertEquals(0, view.source.updates),
+                        () -> assertEquals(0, view.source.updateAttempts),
+                        () -> assertEquals(0, view.source.runtimeCalls));
+                System.out.printf("ISSUE1 resolved reason=%s tab=%d settingsShowing=%s controlsUnchanged=true%n",
+                        reason, tabs.getSelectedIndex(), view.get("settings.summary", JTextArea.class).isShowing());
+                return null;
+            });
+        }
+    }
+
     private static List<String> searchableMetadata(TrafficEntry entry) {
         return List.of(entry.url(), entry.method(), entry.timestamp(), String.valueOf(entry.statusCode()), entry.reason(), entry.id());
     }
