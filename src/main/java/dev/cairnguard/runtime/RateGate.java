@@ -10,22 +10,16 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
-/**
- * Shared bounded callback-admission gate: per-host FIFO, round-robin among eligible host heads.
- * Global pacing/concurrency can still block all hosts. No threads, network I/O, or burst credit.
- * A permit MUST stay open until native completion, or conclusively unsent dispatch.
- */
+/** Authored fixed-rate pacing only: host FIFO and eligible-host round-robin, never native lifetime. */
 public final class RateGate implements AutoCloseable {
     private static final int MAX_HOSTS = 4_096;
     private static final int MAX_HOST_METRICS = 64;
@@ -38,7 +32,6 @@ public final class RateGate implements AutoCloseable {
     private final ArrayDeque<Waiter> queue = new ArrayDeque<>();
     private final ArrayDeque<Host> roundRobin = new ArrayDeque<>();
     private final Map<String, Host> hosts = new HashMap<>();
-    private final Set<Permit> active = new LinkedHashSet<>();
     private final LongSupplier nanoTime;
     private final int hostCapacity;
     private Settings settings;
@@ -48,7 +41,6 @@ public final class RateGate implements AutoCloseable {
     private long nextAdmission;
     private long admitted;
     private long rejected;
-    private long timedOut;
 
     public RateGate(Limits limits) {
         this(limits, System::nanoTime, MAX_HOSTS);
@@ -62,22 +54,22 @@ public final class RateGate implements AutoCloseable {
         this.settings = validated(limits);
     }
 
-    /** Atomic live update. Previously committed rate debt is never erased by a settings change. */
+    /** Atomic live update: positive rates retain committed debt; zero disables that axis immediately. */
     public void update(Limits limits) {
         Settings replacement = validated(limits);
         lock.lock();
         try {
             long now = nanoTime.getAsLong();
-            // An increase of a timeout cannot revive already expired native work or waiters.
-            markStalled(now);
+            // Queued deadlines still apply when an authored timeout changes.
             expireWaiters(now);
             settings = replacement;
-            if (hasAdmission) nextAdmission = extend(nextAdmission, lastAdmission + settings.globalInterval(), now);
+            if (hasAdmission) nextAdmission = settings.globalInterval() == 0 ? now
+                    : extend(nextAdmission, lastAdmission + settings.globalInterval(), now);
             for (Host host : hosts.values()) {
                 if (host.hasAdmission)
-                    host.nextAdmission = extend(host.nextAdmission, host.lastAdmission + hostInterval(host.key), now);
+                    host.nextAdmission = hostInterval(host.key) == 0 ? now
+                            : extend(host.nextAdmission, host.lastAdmission + hostInterval(host.key), now);
             }
-            markStalled(now);
             expireWaiters(now);
             // Retain oldest globally, subject to the competing-host fairness bound below.
             while (queue.size() > limits.maxQueued()) fail(queue.peekLast(), "QUEUE_FULL");
@@ -92,7 +84,7 @@ public final class RateGate implements AutoCloseable {
      * Waits off the EDT. The predicate must be short, nonblocking, and contain no traffic.
      * Enqueue order is FIFO within a host; an ineligible host never owns another host's turn.
      */
-    public Permit acquire(String host, BooleanSupplier stillCurrent) throws Rejected, InterruptedException {
+    public long acquire(String host, BooleanSupplier stillCurrent) throws Rejected, InterruptedException {
         Objects.requireNonNull(stillCurrent);
         String key;
         try { key = PolicyEngine.canonicalHost(host); }
@@ -110,25 +102,19 @@ public final class RateGate implements AutoCloseable {
                 if (!current(stillCurrent)) throw reject("POLICY_CHANGED");
                 if (closed) throw reject("SHUTDOWN");
                 long now = nanoTime.getAsLong();
-                int stalled = markStalled(now);
                 expireWaiters(now);
                 if (waiter != null && waiter.failure != null) throw reject(waiter.failure);
                 if (state == null) state = host(key, now);
-                if (state.stalled > 0 || stalled >= settings.limits().maxConcurrent())
-                    throw reject("IN_FLIGHT_TIMEOUT");
                 if (eligible(waiter, state, now)) {
                     // The adapter/controller must also check policy/project immediately adjacent
                     // to its native continuation. Predicates cannot make that external step atomic.
                     if (!current(stillCurrent)) throw reject("POLICY_CHANGED");
                     if (closed) throw reject("SHUTDOWN");
                     now = nanoTime.getAsLong();
-                    stalled = markStalled(now);
                     expireWaiters(now);
                     if (waiter != null && waiter.failure != null) throw reject(waiter.failure);
                     // Defensive against predicates reentering update/close/acquire.
                     if (hosts.get(key) != state) { state = null; continue; }
-                    if (state.stalled > 0 || stalled >= settings.limits().maxConcurrent())
-                        throw reject("IN_FLIGHT_TIMEOUT");
                     if (!eligible(waiter, state, now)) continue;
                     long waitNanos = waiter == null ? 0 : elapsed(now, waiter.createdAt);
                     if (waiter != null) {
@@ -146,24 +132,15 @@ public final class RateGate implements AutoCloseable {
                     state.lastAdmission = now;
                     state.nextAdmission = now + hostInterval(key);
                     state.recordWait(waitNanos);
-                    state.active++;
-                    Permit permit = new Permit(state, now);
-                    active.add(permit);
                     admitted = increment(admitted);
                     changed.signalAll();
-                    return permit;
+                    return now;
                 }
                 // maxQueued=0 still permits the immediate path; only actual waits consume slots.
                 if (waiter == null) waiter = enqueue(state, now);
                 long wait = Math.min(CURRENT_POLL,
                         millis(settings.limits().queueTimeoutMillis()) - elapsed(now, waiter.createdAt));
-                for (Permit permit : active) {
-                    if (!permit.stalled) {
-                        long untilStalled = millis(settings.limits().requestTimeoutMillis()) - elapsed(now, permit.admittedAt);
-                        wait = Math.min(wait, untilStalled);
-                    }
-                }
-                if (state.waiters.peekFirst() == waiter && active.size() < settings.limits().maxConcurrent()) {
+                if (state.waiters.peekFirst() == waiter) {
                     long rateWait = Math.max(hasAdmission ? remaining(nextAdmission, now) : 0,
                             state.hasAdmission ? remaining(state.nextAdmission, now) : 0);
                     if (rateWait > 0) wait = Math.min(wait, rateWait);
@@ -176,7 +153,7 @@ public final class RateGate implements AutoCloseable {
                 changed.signalAll();
             }
             // A never-admitted, unreferenced host has no rate debt to retain.
-            if (state != null && !state.hasAdmission && state.active == 0 && state.waiters.isEmpty())
+            if (state != null && !state.hasAdmission && state.waiters.isEmpty())
                 hosts.remove(key, state);
             lock.unlock();
         }
@@ -187,30 +164,24 @@ public final class RateGate implements AutoCloseable {
         lock.lock();
         try {
             long now = nanoTime.getAsLong();
-            int stalled = markStalled(now);
             expireWaiters(now);
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("active", active.size());
             result.put("queued", queue.size());
-            result.put("stalled", stalled);
             result.put("admitted", admitted);
             result.put("rejected", rejected);
             result.put("closed", closed);
             result.put("globalRps", settings.limits().globalRps());
             result.put("perHostRps", settings.limits().perHostRps());
-            result.put("maxConcurrent", settings.limits().maxConcurrent());
             result.put("maxQueued", settings.limits().maxQueued());
             result.put("hosts", hosts.size()); // Preserve numeric compatibility; rows are separate.
-            result.put("timedOut", timedOut);
             List<Host> ranked = hosts.values().stream().sorted(Comparator
-                    .comparingInt((Host host) -> host.active + host.waiters.size()).reversed()
+                    .comparingInt((Host host) -> host.waiters.size()).reversed()
                     .thenComparing(host -> host.key)).limit(MAX_HOST_METRICS).toList();
             List<Map<String, Object>> metrics = new ArrayList<>(ranked.size());
             for (Host host : ranked) {
                 Map<String, Object> metric = new LinkedHashMap<>();
                 metric.put("host", host.key);
                 metric.put("rps", settings.hostRates().getOrDefault(host.key, settings.limits().perHostRps()));
-                metric.put("inFlight", host.active);
                 metric.put("queued", host.waiters.size());
                 metric.put("p95WaitMillis", host.p95WaitMillis());
                 metrics.add(Map.copyOf(metric));
@@ -224,7 +195,7 @@ public final class RateGate implements AutoCloseable {
         }
     }
 
-    /** Rejects/wakes waiters; never frees a possibly still-running native operation. */
+    /** Rejects and wakes pacing waiters. */
     @Override public void close() {
         lock.lock();
         try {
@@ -246,40 +217,8 @@ public final class RateGate implements AutoCloseable {
         public String reason() { return reason; }
     }
 
-    /**
-     * Sole release mechanism, idempotent and cross-thread safe. Timeout, policy changes and gate
-     * shutdown NEVER call this on the caller's behalf. It does not itself prove native completion.
-     */
-    public final class Permit implements AutoCloseable {
-        private final Host host;
-        private final long admittedAt;
-        private boolean stalled;
-        private boolean released;
-        private Permit(Host host, long admittedAt) {
-            this.host = host;
-            this.admittedAt = admittedAt;
-        }
-        // Strict synthetic assertions use the admission clock, not thread rescheduling after return.
-        long admittedAtNanos() { return admittedAt; }
-        @Override public void close() {
-            lock.lock();
-            try {
-                if (released) return;
-                markStalled(nanoTime.getAsLong());
-                released = true;
-                active.remove(this);
-                host.active--;
-                if (stalled) host.stalled--;
-                changed.signalAll();
-            } finally {
-                lock.unlock();
-            }
-        }
-    }
-
     private boolean eligible(Waiter waiter, Host host, long now) {
-        if (active.size() >= settings.limits().maxConcurrent()
-                || (hasAdmission && remaining(nextAdmission, now) != 0) || !hostReady(host, now)) return false;
+        if ((hasAdmission && remaining(nextAdmission, now) != 0) || !hostReady(host, now)) return false;
         if (waiter == null) return host.waiters.isEmpty() && nextEligibleHost(now) == null;
         return host.waiters.peekFirst() == waiter && nextEligibleHost(now) == host;
     }
@@ -290,14 +229,14 @@ public final class RateGate implements AutoCloseable {
     }
 
     private static boolean hostReady(Host host, long now) {
-        return host.stalled == 0 && (!host.hasAdmission || remaining(host.nextAdmission, now) == 0);
+        return !host.hasAdmission || remaining(host.nextAdmission, now) == 0;
     }
 
     private Waiter enqueue(Host host, long now) throws Rejected {
         boolean competing = roundRobin.size() > (host.waiters.isEmpty() ? 0 : 1);
         if (competing) {
             // A sole host may fill maxQueued. A newly waiting competitor reclaims capacity by
-            // rejecting newest excess waiters, never by evicting permits or committed rate debt.
+            // rejecting newest excess waiters, never by erasing committed rate debt.
             trimHostQueues(fairQueueBound());
             if (host.waiters.size() >= fairQueueBound()) throw reject("QUEUE_FULL");
         }
@@ -324,7 +263,7 @@ public final class RateGate implements AutoCloseable {
             Iterator<Host> iterator = hosts.values().iterator();
             while (iterator.hasNext()) {
                 Host candidate = iterator.next();
-                if (candidate.active == 0 && candidate.waiters.isEmpty()
+                if (candidate.waiters.isEmpty()
                         && (!candidate.hasAdmission || remaining(candidate.nextAdmission, now) == 0)) iterator.remove();
             }
         }
@@ -332,20 +271,6 @@ public final class RateGate implements AutoCloseable {
         Host created = new Host(key);
         hosts.put(key, created);
         return created;
-    }
-
-    private int markStalled(long now) {
-        int count = 0;
-        for (Permit permit : active) {
-            if (!permit.stalled && elapsed(now, permit.admittedAt) >= millis(settings.limits().requestTimeoutMillis())) {
-                permit.stalled = true;
-                permit.host.stalled++;
-                timedOut = increment(timedOut);
-                changed.signalAll();
-            }
-            if (permit.stalled) count++;
-        }
-        return count;
     }
 
     private void expireWaiters(long now) {
@@ -404,7 +329,7 @@ public final class RateGate implements AutoCloseable {
         try { return predicate.getAsBoolean(); }
         catch (RuntimeException e) { return false; }
     }
-    private static long interval(int rps) { return (SECOND + rps - 1) / rps; }
+    private static long interval(int rps) { return rps == 0 ? 0 : (SECOND + rps - 1) / rps; }
     private static long millis(long value) { return TimeUnit.MILLISECONDS.toNanos(value); }
     private static long elapsed(long now, long start) { return now - start; }
     private static long remaining(long deadline, long now) { return Math.max(0, deadline - now); }
@@ -424,8 +349,6 @@ public final class RateGate implements AutoCloseable {
         private boolean hasAdmission;
         private long lastAdmission;
         private long nextAdmission;
-        private int active;
-        private int stalled;
         private Host(String key) { this.key = key; }
         private void recordWait(long nanos) {
             waitNanos[sampleCursor] = nanos;

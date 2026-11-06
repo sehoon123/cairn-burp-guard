@@ -25,5 +25,5 @@
     {"id": "fixture-ask", "name": "Human approval for owned fixture only", "enabled": true, "mode": "ASK", "condition": {"logic": "LEAF", "field": "PATH", "name": "", "match": "EXACT", "value": "/ask", "caseSensitive": true, "children": []}}
   ],
   "defaultMode": "ALLOW",
-  "limits": {"globalRps": 5, "perHostRps": 5, "hostRps": {}, "maxConcurrent": 5, "maxQueued": 100, "queueTimeoutMillis": 30000, "approvalTimeoutMillis": 30000, "requestTimeoutMillis": 60000}
+  "limits": {"globalRps": 0, "perHostRps": 0, "hostRps": {}, "maxConcurrent": 5, "maxQueued": 100, "queueTimeoutMillis": 30000, "approvalTimeoutMillis": 30000, "requestTimeoutMillis": 60000}
 }

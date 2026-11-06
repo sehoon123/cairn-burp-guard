@@ -27,6 +27,7 @@ final class UiText {
             case "PENDING", "pending" -> "검사 대기";
             case "AWAITING_APPROVAL" -> "승인 대기";
             case "QUEUED" -> "전송 대기";
+            case "UNPAIRED_RESPONSE", "unpaired_response" -> "응답만 기록 (요청 연결 불가)";
             case "ERROR" -> "처리 오류";
             default -> "확인 필요";
         };
@@ -56,14 +57,16 @@ final class UiText {
         return switch (reason) {
             case "SCOPE_NOT_ALLOWED" -> "허용 대상에 포함되지 않는 요청입니다.";
             case "SCOPE_BLOCKED" -> "차단 대상으로 등록된 주소입니다.";
-            case "EXEMPT", "RULE_EXEMPT" -> "EXEMPT에 따라 일반 BLOCK·ASK를 무시했습니다. 범위와 자동 안전 제어는 유지됩니다.";
-            case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "대용량 응답을 관찰하여 이 경로를 임시 차단했습니다.";
-            case "CIRCUIT_OPEN" -> "5xx 회로가 열려 이 서비스의 새 요청을 차단했습니다.";
-            case "FANOUT_SUSPECTED" -> "짧은 시간에 서로 다른 경로가 확산되어 자동 안전 제어가 적용됐습니다.";
-            case "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "자동 안전 제어/태그 사용량을 안전하게 보관할 용량이 없습니다.";
+            case "EXEMPT", "RULE_EXEMPT" -> "EXEMPT에 따라 일반 BLOCK·ASK를 무시했습니다. 범위·수동 일시중지·명시 속도·태그 예산은 유지됩니다.";
+            case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "이전 버전의 대용량 자동 차단 기록입니다. 현재 기능은 제거되었습니다.";
+            case "CIRCUIT_OPEN" -> "이전 버전의 5xx 회로 차단 기록입니다. 현재 기능은 제거되었습니다.";
+            case "FANOUT_SUSPECTED" -> "이전 버전의 확산 자동 차단 기록입니다. 현재 기능은 제거되었습니다.";
+            case "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "명시한 태그 예산 사용량을 안전하게 보관할 용량이 없습니다.";
+            case "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "이전 버전의 자동 감지 용량 진단입니다. 현재는 자동 감지 차단을 실행하지 않습니다.";
             case "INTENT_BUDGET_EXCEEDED" -> "같은 (Run, Intent)의 전송 예산을 소진했습니다.";
             case "INTENT_TAG_INVALID", "INVALID_INTENT_TAG" -> "예산 사용 중 태그가 중복·잘못된 형식이거나 헤더 검사 불완전입니다.";
             case "LISTENER_UNVERIFIED" -> "실제 인바운드 리스너를 확인하지 못해 내용 수집 없이 차단했습니다.";
+            case "RESPONSE_CORRELATION_UNAVAILABLE" -> "응답과 요청을 안전하게 연결할 수 없습니다. 확인된 보호 출처의 응답만 별도로 보존하며 요청을 추측하지 않습니다.";
             case "PATH_INTERPRETATION_INCOMPLETE" -> "경로 해석이 불완전합니다. 모든 경로 범위는 원문 전송 가능하지만 제한 경로·경로 EXEMPT를 검증할 수 없습니다.";
             case "HEADERS_INCOMPLETE", "BODY_INCOMPLETE" -> "선택 헤더/본문 수집이 불완전합니다. 이 표시만으로 규칙이 해당 필드를 요구했다는 뜻은 아니며 형식 자체로 자동 차단하지 않습니다.";
             case "HEADER_INSPECTION_UNAVAILABLE", "BODY_INSPECTION_UNAVAILABLE" -> "규칙이 요구한 헤더/본문 조건을 검사할 수 없어 해당 조건을 평가하지 못했습니다 (형식 자체로 자동 차단하지 않음).";
@@ -71,7 +74,7 @@ final class UiText {
             case "DEFAULT_BLOCK" -> "일치하는 규칙이 없어 기본 차단이 적용됐습니다.";
             case "RULE_MATCH" -> "등록한 규칙의 조건에 해당합니다.";
             case "ASK" -> "사람의 승인을 기다리고 있습니다.";
-            case "QUEUED" -> "속도·동시성 제한에 따라 전송을 기다리고 있습니다.";
+            case "QUEUED" -> "작성한 속도 제한에 따라 전송을 기다리고 있습니다.";
             case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION" -> "허용 범위와 정책에 따라 처리했습니다.";
             case "NATIVE_RELEASED", "NATIVE_FORWARDED" -> "Burp에 전송을 허용했습니다. 대상에 도착했다는 뜻은 아닙니다.";
             case "DENIED" -> "사용자가 이 요청을 거절했습니다.";
@@ -79,7 +82,7 @@ final class UiText {
             case "APPROVAL_TIMEOUT" -> "제한 시간 안에 승인하지 않아 차단했습니다.";
             case "QUEUE_TIMEOUT" -> "전송 대기 시간이 초과되어 차단했습니다.";
             case "QUEUE_FULL", "APPROVAL_CAPACITY", "HOST_CAPACITY", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY", "CORRELATION_CAPACITY" -> "안전하게 처리할 수 있는 대기·검사 용량을 초과했습니다.";
-            case "IN_FLIGHT_TIMEOUT" -> "같은 호스트의 실제 미완료 요청 하나가 ‘응답 대기 제한’(기본 60초)을 넘겨 그 호스트의 새 전송을 막았거나, 제한을 넘긴 요청이 동시 요청 한도를 모두 차지했습니다. 5xx 회로나 대상 서버 장애의 증거가 아닙니다.";
+            case "IN_FLIGHT_TIMEOUT" -> "이전 버전의 응답 미확인 격리 기록입니다. 현재는 제거되었으며 이전 응답·콜백을 기다려 새 요청을 차단하지 않습니다.";
             case "POLICY_CHANGED", "PROJECT_CHANGED", "FINAL_CHECK_REJECTED" -> "대기 중 정책 또는 프로젝트가 바뀌어 이전 요청을 차단했습니다.";
             case "SHUTDOWN", "CANCELLED" -> "종료 또는 취소된 요청입니다.";
             case "WEBSOCKET_UNSUPPORTED" -> "WebSocket 프레임은 안전 검사를 지원하지 않습니다.";
@@ -152,7 +155,7 @@ final class UiText {
         return switch (reason) {
             case "NATIVE_RELEASED", "NATIVE_FORWARDED" -> "화면 원문은 민감정보를 포함합니다. 응답과 대상 측 증거를 확인하되 전송 해제만으로 대상 도착이나 처리 성공을 단정하지 마세요.";
             case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION", "EXEMPT", "RULE_EXEMPT" -> "요청 기록의 처리 결과·검사 경고·응답을 확인하세요. 정책상 허용과 실제 대상 도착은 다릅니다.";
-            case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "‘자동 차단’에서 만료·해제와 ‘사건 내보내기’를 확인하세요. 로컬 451을 대상 장애로 오인하지 마세요. 첫 큰 응답은 예방할 수 없습니다.";
+            case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY", "RESPONSE_WATCHER_CAPACITY" -> "이전 버전의 자동 차단 진단입니다. 현재 기능은 제거되었습니다. 대상 장애로 단정하지 마세요.";
             case "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "‘설정’의 태그 한도와 클라이언트 X-Cairn 태그를 검토하세요. 초기화는 ‘개요’에서 명시 확인해야 하며 태그는 인증이 아닙니다.";
             case "LISTENER_UNVERIFIED" -> "이전 포트 제한이 남아 있습니다. 포트별 보호는 추후 지원하므로 ‘설정’에서 기존 목록을 직접 비우고 모든 Proxy 보호 전환을 확인해 저장하세요. 자동 삭제나 리스너 추정은 하지 않습니다.";
             case "PATH_INTERPRETATION_INCOMPLETE" -> "명시적 모든 경로 범위에서 원래 target은 바꾸지 않습니다. 제한 경로·명시 차단은 계속 검사하며 불완전 경로로 EXEMPT를 부여하지 않습니다.";
@@ -162,10 +165,10 @@ final class UiText {
             case "DEFAULT_BLOCK" -> "‘설정 → 설정 변경 → 상세 설정’의 기본 동작을 확인하세요. 허용 범위 밖 요청은 계속 차단됩니다.";
             case "PAUSED" -> "‘개요’에서 일시중지 사유를 확인하고, 준비됐을 때 보호를 재개하세요.";
             case "ASK" -> "‘승인 대기’에서 이 요청의 원문 주소·이유·내용을 확인한 뒤 한 번 승인하거나 거절하세요.";
-            case "QUEUED" -> "진행 중 요청의 완료와 전송 예산을 기다립니다. 도착 여부는 응답과 별도 증거로 확인하세요.";
+            case "QUEUED" -> "작성한 전송 간격을 기다립니다. 이전 응답·완료를 기다리지 않습니다. 도착 여부는 응답과 별도 증거로 확인하세요.";
             case "APPROVAL_TIMEOUT", "DENIED" -> "필요한 요청이라면 다시 실행하고 ‘승인 대기’에서 새 요청을 검토하세요. 만료된 요청은 재승인할 수 없습니다.";
-            case "QUEUE_TIMEOUT", "QUEUE_FULL", "APPROVAL_CAPACITY", "HOST_CAPACITY", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY", "CORRELATION_CAPACITY" -> "요청 발생 속도를 줄이세요. ‘설정’에서 속도·동시성·대기 제한을 검토하되 안전 한도를 무작정 높이지 마세요.";
-            case "IN_FLIGHT_TIMEOUT" -> "원인은 진단되지 않았습니다: 긴 스트리밍·대기, 인터셉트 대기, 실패, 응답 콜백 누락 등이 모두 가능합니다. 격리는 같은 호스트에만 적용되고 다른 호스트는 실제 남은 슬롯만 쓸 수 있으며, 제한을 넘긴 요청이 동시 요청 한도를 모두 차지하면 전체가 막힙니다. 제한 시간을 늘려도, 설정 저장·재개를 해도 이미 초과한 요청의 자리는 풀리지 않으며 실제 완료 또는 전송되지 않았다는 확정이 필요하며 Cairn은 미완료 요청의 자리를 강제로 비우지 않습니다. 확인된 한계: 일부 실제 upstream 실패(예: 연결 거부)는 클라이언트에 오류가 가도 이 확장에 완료 콜백이 오지 않아 자리가 계속 남을 수 있고, 회복된 같은 호스트를 막거나 모든 슬롯이 묶이면 다른 호스트도 막습니다(자동 복구 없음). 회로 끄기·예외·저장·재개로도 풀리지 않으며 확장 언로드/재로드도 진행 중 native 작업에 안전한 일반 복구로 검증되지 않았습니다. 상단 ‘모두 통과 (보호 끔)…’은 복구가 아니라 새 요청에 한해 이 격리를 포함한 모든 Cairn 보호를 건너뛰고 새 내용은 수집하지 않으며, 다시 켜도 이전 미완료 요청의 소유는 유지됩니다.";
+            case "QUEUE_TIMEOUT", "QUEUE_FULL", "APPROVAL_CAPACITY", "HOST_CAPACITY", "CALLBACK_CAPACITY", "INSPECTION_CAPACITY", "CORRELATION_CAPACITY" -> "요청 발생 속도를 줄이세요. ‘설정’에서 작성한 속도·대기 제한을 검토하되 안전 한도를 무작정 높이지 마세요.";
+            case "IN_FLIGHT_TIMEOUT" -> "이전 버전의 응답 미확인 격리 기록입니다. 현재는 제거되었으며 이전 응답·콜백을 기다려 새 요청을 차단하지 않습니다.";
             case "POLICY_CHANGED", "PROJECT_CHANGED", "FINAL_CHECK_REJECTED" -> "현재 프로젝트와 설정을 확인한 뒤 필요한 요청만 새로 실행하세요. 이전 승인을 재사용하지 않습니다.";
             default -> "실제 목적지·정책·검사 경고·보호 상태를 확인하세요. 선택 헤더/본문이 해석 불가여도 형식 자체로 자동 거절하지 않습니다. 범위·유효성·용량 등 필수 거절은 승인으로 우회할 수 없습니다.";
         };

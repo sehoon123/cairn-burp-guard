@@ -8,7 +8,7 @@
 
 | 상태 | 새 Proxy 요청 | 조작 |
 |---|---|---|
-| **보호 켜짐** | 보호 대상 listener에 실제 목적지/경로 범위·규칙·승인·자동 안전 제어·예산·속도/동시성 적용. 빈 허용 목록은 차단 | 기본 상태 / 상단 **보호 다시 켜기** |
+| **보호 켜짐** | 보호 대상 listener에 실제 목적지/경로 범위·규칙·승인·명시 태그 예산·선택적 수동 속도 적용 (0=끔, 기본 0/0). 빈 허용 목록은 차단 | 기본 상태 / 상단 **보호 다시 켜기** |
 | **전체 통과 · 보호 꺼짐** | 범위 밖·차단 대상·차단 규칙·지원하지 않는 검사 형식도 검사 없이 원본 continuation으로 전달 | 상단 **모두 통과 (보호 끔)…** → 경고 검토 → **모두 통과**를 명시적으로 클릭 |
 | **새 요청 차단 중** | 보호 대상 listener의 새 요청을 `PAUSED` 로컬 차단. 명시한 health GET 예외는 별도. 전체 통과가 아님 | 개요 **새 요청 모두 차단** / **보호 재개** |
 
@@ -18,30 +18,30 @@
 
 - **승인 대기 / 전송 대기 / 승인 뒤 전송 대기**: 모드 전환은 revision을 증가시키고 기존 대기를 취소합니다. 자동 승인하거나 전체 통과로 승격시키지 않습니다. 필요한 요청만 사람이 새로 실행합니다.
 - **검사/continuation 생성 중**: 마지막 project/revision/mode 검사가 실패하면 차단합니다. 전체 통과 토큰도 continuation 생성 **후** 재검사하므로 보호 복원·재전환·저장·프로젝트 변경·종료 사이의 오래된 OFF 권한을 재사용하지 않습니다.
-- **보호 상태에서 이미 전송한 요청**: 취소했다고 주장하지 않습니다. 기존 permit과 상관관계를 그대로 두며 실제 응답에서만 해제하고 기존 원문 증거(마스킹·수집 한도 없음)를 갱신할 수 있습니다. OFF 전환·복원·설정 저장으로 격리된 permit을 강제 반환하지 않습니다.
-- **전체 통과에서 새로 시작한 요청**: 요청/응답 내용·URL·호스트를 확장 증거로 수집하지 않으며 permit이나 correlation entry도 만들지 않습니다. 현재 controller에 바인딩된 프로젝트 구간의 포화형 누적 `passthroughCount`만 증가시키고, 보호 복원 후에도 상단에 표시합니다. 다른 ID의 프로젝트 정책으로 바인딩하면 초기화하며 A→B→A로 실제 바인딩했을 때 A의 예전 횟수를 복원하지 않습니다. 프로젝트 확인 실패로 OFF만 종료하고 다른 ID로 바인딩하지 않았다면 직전 횟수는 유지됩니다. 이는 대상 도착 횟수가 아니라 native continuation 해제 횟수입니다. **Burp 자체 history/다른 확장의 기록 정책은 변경하지 않습니다.**
-- **보호 복원 후**: 새 요청부터 다시 검사합니다. 이전 전체 통과 요청은 계속 추적하지 않으므로 보호 복원 전에 요청 발생을 멈추고 기존 연결 완료를 별도로 확인하세요. 제한 통계는 보호한 요청의 permit만 포함하며 OFF 트래픽의 동시성/속도를 소급해서 증명하지 않습니다.
+- **보호 상태에서 이미 전송한 요청**: 취소했다고 주장하지 않습니다. 여전히 유효하고 명확한 보호 요청 association은 실제 응답의 원문 증거를 갱신할 수 있습니다. native permit·응답 완료 의존 동시성 한도·미응답 격리는 없습니다. 응답 누락·지연·5xx·크기·확산은 다음 정책상 허용 요청을 막지 않습니다.
+- **전체 통과에서 새로 시작한 요청**: 요청/응답 내용·URL·호스트를 수집하지 않으며 증거 association도 만들지 않습니다. 현재 controller 프로젝트 구간의 포화형 누적 `passthroughCount`만 증가시키고 보호 복원 후에도 표시합니다. 다른 프로젝트 ID로 바인딩하면 초기화하며 A→B→A의 예전 횟수를 복원하지 않습니다. 프로젝트 확인 실패로 OFF만 종료하고 다른 ID로 바인딩하지 않았다면 직전 횟수는 유지됩니다. 횟수는 native continuation 해제이지 대상 도착 증거가 아닙니다. **Burp 자체 history/다른 확장의 기록 정책은 변경하지 않습니다.**
+- **내용 없는 ID fencing**: handler 수명 동안 사용된 숫자 ID tombstone을 OFF ID까지 메모리에 남깁니다. OFF 트래픽의 내용·대상·증거 association·허용/거절 권한은 담지 않으며 내보내거나 저장하지 않습니다. ID 재사용/충돌 자체로 허용 요청을 거절하지 않습니다. 중복 ID의 응답을 최신 요청에 추측 연결하지 않습니다. 여전히 보관된 보호 provenance만 명확할 때 요청 메타데이터를 ‘없음’으로 표시한 unpaired-response 원문을 남길 수 있습니다. unknown/OFF/mixed/clear/이전 프로젝트 provenance는 추측하지 않습니다. tombstone도 무한히 늘 수 있어 heap/OOM 위험이 있습니다.
+- **보호 복원 후**: 새 요청부터 다시 검사합니다. 이전 OFF 요청은 증거 association이 없으므로 복원 전에 요청 발생을 멈추고 연결 완료를 별도로 확인하세요. OFF 횟수나 증거 행으로 native 동시성·대상 도착을 증명하지 않습니다.
 
 ## 수명·실패·저장
 
-새 요청 차단/자동 overlay/circuit/미응답 격리 상태에서 OFF로 전환하면 그 상태도
-OFF의 새 요청을 막지 않습니다. 다만 **이전 운영자 수동 pause는 OFF/ON을 넘어
-보존됩니다**. ‘보호 다시 켜기’ 후 그 pause로 돌아오며 명시적으로 **보호 재개**해야
-해제됩니다. OFF는 Resume이 아닙니다. `status.paused=false`는 OFF 중 호환 표시이며
-`status.operatorPaused`는 원래 선택을 유지합니다. 미해결 native permit·자동 차단·
-probe cadence·Intent debt도 남습니다. 설정 저장/감지 OFF로 이를 지우지 않습니다.
-이 점을 OFF 확인 창에서도 설명합니다.
+**이전 운영자 수동 pause는 OFF/ON을 넘어 보존됩니다**. ‘보호 다시 켜기’ 후
+그 pause로 돌아오며 명시적으로 **보호 재개**해야 해제됩니다. OFF는 Resume이
+아닙니다. `status.paused=false`는 OFF 중 호환 표시이며 `status.operatorPaused`는
+원래 선택을 유지합니다. Intent 사용량도 남으며 OFF/ON·설정 저장으로 초기화하지
+않습니다. 자동 overlay/circuit/자동 pause/미응답 격리는 제거되었고 과거 설정은
+비활성 호환 데이터입니다. 새 스위치나 예외/해제 기능으로 대체하지 않습니다.
 
 `GuardUiAccess.passthrough(enabled, expectedProjectId, expectedRevision)`는 사람 UI의 원래 snapshot으로 compare-and-set합니다. 확인 창이 열린 동안 상태가 바뀌면 현재 버전을 몰래 대입하지 않고 거절합니다. 프로젝트가 확인되지 않거나 정책 재확인이 필요한 상태에서는 OFF를 새로 허용하지 않습니다.
 
-OFF는 `GuardConfig`나 project storage/global preferences에 저장하지 않습니다. 확장 재로드/재시작·감지된 프로젝트 전환에서 OFF를 해제하고, 프로젝트/저장 불확실성에서는 OFF 해제와 함께 새 요청 차단을 유지합니다. 프로젝트를 확인할 수 없으면 atomic tri-state `nativeMode(messageId)`가 capture 전에 내용 미수집 거절을 반환합니다 (구 no-ID API도 호환용으로 남음). null 토큰을 일반 검사로 잘못 해석하지 않습니다. 실제 프로젝트 확인 실패를 감지하면 OFF를 즉시 종료하고 버전을 올려 차단/재확인 상태로 둡니다. UI refresh 전 A→B→A로 돌아와도 옛 OFF가 되살아나지 않으며, 재확인 전 콜백도 내용 미수집 거절합니다. 종료/충돌/stale 토큰 같은 실패에는 생략 placeholder와 고정 사유만 있는 거절 증거가 남을 수 있으나 실제 요청/응답 내용·URL·호스트는 수집하지 않습니다. 설정 저장에 성공해도 OFF를 자동으로 켜거나 끄지 않습니다. 저장 불확실성은 예외로 fail-closed 전환합니다.
+OFF는 `GuardConfig`나 project storage/global preferences에 저장하지 않습니다. 확장 재로드/재시작·감지된 프로젝트 전환에서 OFF를 해제하고, 프로젝트/저장 불확실성에서는 OFF 해제와 함께 새 요청 차단을 유지합니다. 프로젝트를 확인할 수 없으면 atomic tri-state `nativeMode(messageId)`가 capture 전에 내용 미수집 거절을 반환합니다 (구 no-ID API도 호환용으로 남음). null 토큰을 일반 검사로 잘못 해석하지 않습니다. 실제 프로젝트 확인 실패를 감지하면 OFF를 즉시 종료하고 버전을 올려 차단/재확인 상태로 둡니다. UI refresh 전 A→B→A로 돌아와도 옛 OFF가 되살아나지 않으며, 재확인 전 콜백도 내용 미수집 거절합니다. 종료/stale 토큰 같은 실패에는 생략 placeholder와 고정 사유만 있는 거절 증거가 남을 수 있으나 실제 요청/응답 내용·URL·호스트는 수집하지 않습니다. 설정 저장에 성공해도 OFF를 자동으로 켜거나 끄지 않습니다. 저장 불확실성은 예외로 fail-closed 전환합니다.
 
-OFF도 확장 종료·유효하지 않거나 확인 불가능한 정책/프로젝트·stale generation·native continuation factory 실패를 허용으로 처리하지 않습니다. 기존 보호 요청의 ID와 충돌하는 잘못된 native callback은 이전 permit을 훼손하지 않도록 drop합니다. 이는 scope/검사/속도 제한을 OFF에 몰래 남기는 기능이 아니라 lifecycle/SDK 오류 처리입니다. 프록시 밖의 직접 연결, 다른 도구·확장 소켓, 콜백에 없는 트래픽은 원래부터 보장하지 않습니다.
+OFF도 확장 종료·유효하지 않거나 확인 불가능한 정책/프로젝트·stale generation·native continuation factory 실패를 허용으로 처리하지 않습니다. ID 충돌·재사용·상관관계 용량은 거절 근거가 아니며 응답 증거 연결에만 영향을 줍니다. OFF에서도 현재 프로젝트·정책·토큰·종료·최종 continuation 검사는 유지됩니다. 프록시 밖의 직접 연결, 다른 도구·확장 소켓, 콜백에 없는 트래픽은 원래부터 보장하지 않습니다.
 
 ## OFF와 listener 선택·health 예외를 혼동하지 마세요
 
 - `guardListenerPorts=[]`는 정상적인 모든 Proxy listener 보호입니다. 제한 목록은
-  실제 inbound 포트이며 목적지 포트가 아니지만 **현재 native 한정은 미지원(H FAIL)**입니다.
+  실제 inbound 포트이며 목적지 포트가 아니지만 **현재 native 한정은 미지원이며 H는 추후 과제**입니다.
   Proxy/HTTP 숫자 ID·원본 annotation 연결은 검증에 실패했습니다. Observer는 원래
   request/annotations를 그대로 continuation할 뿐 ID/listener/content를 읽거나 기록하지
   않습니다. Native producer가 없어 제한 목록은 선택·미선택 모두 내용 검사 전에
@@ -54,11 +54,10 @@ OFF도 확장 종료·유효하지 않거나 확인 불가능한 정책/프로�
   `commitPassthrough`하며 OFF/미선택 횟수를 구분합니다. 오래된 protected Prepared를
   bypass로 승격하지 않습니다. callback handoff 횟수이지 도착 횟수가 아닙니다.
 - Health는 별도 기본 OFF 사람 설정입니다. 정확한 실제 scheme/host/port/path의
-  **query/body 없는 GET**만 운영자 pause/circuit을 통과합니다. scope/일반 규칙·ASK/
-  heavy/fanout/예산/rate/용량/수명 실패는 넘지 못하고 health 응답은 circuit을
-  치유하지 않습니다. GET도 부작용이 있어 활성화/경로 변경 저장에 확인이 필요합니다.
+  **query/body 없는 GET**만 운영자 pause를 통과합니다. scope/일반 규칙·ASK/
+  명시 예산/rate/실제 집행 용량/수명 실패는 넘지 못합니다. GET도 부작용이 있어 활성화/경로 변경 저장에 확인이 필요합니다.
 - 보호 ON도 Host fuzz·지원하지 않는 본문/charset·선택적 capture 실패를 이유로
-  무조건451하지 않습니다. 실제 목적지 hard scope와 명시 규칙·안전 제어는 유지하고
+  무조건451하지 않습니다. 실제 목적지 hard scope와 명시 규칙·수동 제어·수명 검사는 유지하고
   unavailable inspection을 경고합니다. 모든 경로 허용은 `/c/;/main.do`,
   `/c/%2e/main.do` 등을 normalize/rewrite하지 않습니다. OFF만의 허용 기능이 아닙니다.
 
@@ -80,6 +79,11 @@ OFF 전 기록이 남을 수 있어 화면을 비운다는 뜻이 아닙니다. 
 - 상태 표시는 Cairn Guard 확장 탭 내부입니다. 다른 Burp 도구 탭 전체를 덮는 경고 UI나 native project API의 비차단 실행을 보장하지 않습니다.
 
 ## 검증 구분
+
+자동 차단 제거 후보의 installed-Burp/native callback 전달·대상 도착은 **UNVERIFIED**입니다.
+[현재 제거 인지 절차](MANUAL_BURP_SMOKE.md#current-removal-aware-procedure)를 사용하세요.
+아래 과거 수치·해시는 수정된 후보의 검증이 아닙니다. 단위/adapter/loopback/Swing 성공은 native 성공이 아닙니다.
+
 
 Headless layout, 실제 Swing modal lifecycle, Mockito native-boundary, owned socket,
 설치 Burp는 서로 다른 층입니다. 최신437503…의 Java1231 / Swing27(scale1·2),

@@ -68,7 +68,7 @@ configured health probe.
    is **EXEMPT > BLOCK > ASK > ALLOW**; MONITOR only records. With no actionable
    hit, use the configured default. Defaults do not compete with explicit rules.
 5. EXEMPT bypasses ordinary policy BLOCK/ASK only. It never bypasses project or
-   lifecycle validity, automatic safety overlays, budgets, pacing, queue limits,
+   lifecycle validity, manual pause, authored budgets/pacing, queue limits,
    shutdown or actual destination scope. It cannot be the default mode or a v1
    rule; empty/common syntactically universal exemptions are rejected.
 
@@ -82,11 +82,10 @@ children. CONTAINS/EXACT are literal; REGEX uses bounded RE2/J `find` semantics;
 EXACT and scope expressions full-match. Unsupported RE2 syntax is rejected, never
 run by Java backtracking regex. Case-insensitive matching uses RE2 case folding.
 
-Automatic protections (large-response, 5xx circuit, distinct-path fan-out) are
-NOT rules and never act as EXEMPT/ALLOW: their per-kind ON/OFF switches and exact
-route exceptions (heavy size 0, circuit/fan-out exact routes) bypass only that
-automatic actuator. Scope, these rules, approval, operator pause, rate, intent,
-lifecycle, timeout and physical capacity still apply. See INTERFACES.md.
+Automatic blocking is removed: prior 5xx, response size, path fan-out, missing/late
+callbacks, timeout quarantine and native-flight correlation never decide admission.
+Legacy detector/concurrency/response-timeout settings are strict round-trip data
+only, not switches that can reactivate the feature. See INTERFACES.md.
 
 ## Inspection views and limitations
 
@@ -143,9 +142,9 @@ not the apex or suffix lookalikes. This is not an IDNA2008 resolver-equivalence 
 | Rule ID / name / literal / selector | 128 / 256 / 4,096 / 512 characters |
 | RE2 source / program | 2,048 characters / 4,096 instructions |
 | Aggregate RE2 sources / programs | 65,536 characters / 131,072 instructions |
-| Global/per-host/override RPS / overrides | 1–1,000 / 256 exact hosts |
-| Concurrent / queued | 1–100 / 0–10,000 |
-| Queue/approval/request timeout | 1–600,000 ms |
+| Global/per-host/override RPS / overrides | 0 (off) or 1–1,000 / 256 exact hosts |
+| Legacy concurrent (inactive) / authored queued | 1–100 / 0–10,000 |
+| Queue/approval timeout; legacy request timeout (inactive) | 1–600,000 ms |
 | Routing URL/path | 16,384 characters |
 | Optional header count / text | 256 / 65,536 characters |
 | Optional body inspection | 1,048,576 bytes |
@@ -157,7 +156,7 @@ Configuration/mandatory routing capacity is distinct from optional content
 inspection. Optional exhaustion reports unavailable inspection. These are ceilings,
 not throughput guarantees. The compiled cache retains one immutable policy by
 identity, not requests. `RequestData.body()` defensively clones; the native adapter
-must bound its own copy before constructing it.
+retains the full supplied copy independently of these inspection bounds.
 
 ## Verification boundaries
 

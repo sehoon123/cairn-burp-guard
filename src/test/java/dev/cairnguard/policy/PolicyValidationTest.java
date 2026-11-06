@@ -115,9 +115,9 @@ class PolicyValidationTest {
 
     static Stream<Limits> badLimits() {
         return Stream.of(
-                new Limits(0, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000),
+                new Limits(-1, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000),
                 new Limits(1_001, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000),
-                new Limits(5, 0, Map.of(), 5, 100, 30_000, 30_000, 60_000),
+                new Limits(5, -1, Map.of(), 5, 100, 30_000, 30_000, 60_000),
                 new Limits(5, 5, Map.of(), 0, 100, 30_000, 30_000, 60_000),
                 new Limits(5, 5, Map.of(), 101, 100, 30_000, 30_000, 60_000),
                 new Limits(5, 5, Map.of(), 5, -1, 30_000, 30_000, 60_000),
@@ -126,7 +126,7 @@ class PolicyValidationTest {
                 new Limits(5, 5, Map.of(), 5, 100, 30_000, 600_001, 60_000),
                 new Limits(5, 5, Map.of(), 5, 100, 30_000, 30_000, Long.MAX_VALUE),
                 new Limits(5, 5, Map.of("*.example.test", 3), 5, 100, 30_000, 30_000, 60_000),
-                new Limits(5, 5, Map.of("example.test", 0), 5, 100, 30_000, 30_000, 60_000),
+                new Limits(5, 5, Map.of("example.test", -1), 5, 100, 30_000, 30_000, 60_000),
                 new Limits(5, 5, Map.of("EXAMPLE.test", 3, "example.test.", 4), 5, 100, 30_000, 30_000, 60_000));
     }
 

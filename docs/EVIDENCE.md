@@ -147,7 +147,7 @@ has no size cap and is a callback copy, not wire proof. Then:
 ## Counters, rows and schema-2 exports
 
 `stats()` is an immutable map of long counters/gauges; none contains payload.
-`begun`, `forwarded`, `blocked`, `responses`, `localResponses`, `upstreamResponses`,
+`begun`, `forwarded`, `blocked`, `responses`, `localResponses`, `upstreamResponses`, `unpairedResponses`,
 `truncations` (rows whose supplied copy was incomplete), `retainedEntries`,
 `retainedBytes`/`rawRetainedBytes` (informational estimates only), `bookmarked`,
 `clears`, `clearedEntries`, `orphan*`, `outcomeCallbacks`, `responseCallbacks`,
@@ -157,8 +157,8 @@ compatibility: nothing is evicted.
 `snapshot()` is newest-first and immutable. `entry(id)` is the current row. `bookmark`
 creates a new immutable record. `clear()` releases rows, byte captures and source
 references (not cumulative counters); the controller's `clearEvidence()` also clears the
-watcher's diagnostic history and display/source references **but not** active overlays,
-host/path reservations, probe cadence, Seen/omission debt, intent debt or native permits.
+watcher's diagnostic history and display/source references, but not authored rate
+debt or intent usage. No native permit, timeout quarantine or automatic overlay exists.
 
 `exportJson(selection)` / `exportHar(selection)` return strings and never write
 automatically. An in-memory HMAC seal over every exported field (including
@@ -189,27 +189,54 @@ selections then fail with `INVALID_EVIDENCE_SELECTION`.
 A scalar watcher projection of retained diagnostic history with the **original**
 actual-service host and untouched path. `[from,to)` is any ordered window
 (`to > from`); the 24-hour limit, the 4096-event/8192-observation rings, the day
-pruning and the 2048-candidate LRU no longer exist. Fields: `window`, `events`, top20
-`top5xx`/`topBytes` (the documented aggregate format), `complete`, `truncated`,
+pruning and the 2048-candidate LRU no longer exist. Automatic-block events no longer
+exist: `events` remains an empty compatibility array. Fields: `window`, `events`, all retained
+`top5xx`/`topBytes` aggregates (ordered by count5xx/maxBytes, without a row quota), `complete`, `truncated`,
 `approximate`, `approximation`, `retention`. Retention is
 `{"mode":"UNTIL_CLEAR_PROJECT_OR_UNLOAD","startedAt":…,"clockRegressed":…,
 "fanoutHistoryOmitted":…}` (the event/observation `…Dropped` flags stay `false`).
 `complete` is false for a window starting before collection started or an explicit
-clear, a future window, a regressed clock or omitted fan-out history. Count/max/lastSeen/
+clear, a future window or a regressed clock. Fan-out enforcement/history debt no longer
+exists; `fanoutHistoryOmitted` is zero and `fanoutHistoryComplete` is true. Count/max/lastSeen/
 5xx are exact over the retained observations; `p95Bytes` is a **log2-histogram
 upper-bound approximation**. Candidate IDs are opaque keyed route IDs. `policyUrl` is an
 optional query-free actual-service draft hint, empty when the path is not a faithful
-ordinary URL path. Candidate "ignore" is a runtime display suppression only.
+ordinary URL path. Aggregates are observational exports only; candidate authoring/ignore and overlay UI/APIs are removed.
+
+## Response correlation is evidence only
+
+Never-reused Proxy IDs pair an original response with its retained protected request.
+Missing/reused/ambiguous IDs never deny a policy-allowed request. Content-free used-ID
+tombstones last until handler unload, including IDs encountered while OFF. They have
+no admission authority, capture no OFF contents/association, and are not persisted.
+
+When an ID's protected provenance still resolves in the current evidence epoch but
+its request pairing is ambiguous, retain each complete supplied response in a new
+`UNPAIRED_RESPONSE` / `unpaired_response` row. Its reason/warning is
+`RESPONSE_CORRELATION_UNAVAILABLE`; request method/URL/hits/tags/revision are unavailable,
+not copied from a guessed request. `rawRequest` is null, `requestAvailable=false`,
+human JSON `original.request=null` with `requestUnavailable`, and both HAR formats
+have empty method/URL and `_unavailable`. Response headers and every body byte remain
+original; the row supports bookmarks, consented exports and clear/project/unload.
+`unpairedResponses` is separate from `upstreamResponses`/`localResponses`: ambiguous
+origin is not guessed. `begun`/`forwarded` are not incremented for response-only rows.
+
+Unknown provenance, mixed OFF/protected reuse, unreadable IDs, wrong-tool callbacks,
+and cleared/old-project sources cannot be assigned to current evidence and are not
+captured. Missing response capture is unavailable, not a fabricated match/completion.
+Unpaired rows cannot be attributed to a route for watcher statistics; use request
+history JSON/HAR for their originals. No timeout, clear or callback manufactures
+native completion; the extension no longer owns native admission permits.
 
 ## Limits that remain (enforcement / parser / algorithm, not collection)
 
 Policy inspection: `RequestData.MAX_INSPECT_BYTES` (1 MiB, **policy only**), header/
 pair/JSON-node/depth/pattern/program/decode-round budgets, 16 KiB routing-view URL
 bound, method token length; unavailable inspection is reported, never silently passed.
-Capacities: callbacks 128, inspection slots 8, in-flight 100, controller tickets 4096,
-approvals, queues, rate/host metrics, intent keys, listener entries; watcher hosts 1024,
-paths 2048, overlays 1024, flights 4096, route views 9, Seen/failure/debt windows and
-detector thresholds. Content-Type **classification** is bounded at 1024 characters
+Capacities: callbacks 128, inspection slots 8, approvals, authored pacing queues/
+host state, intent keys and listener entries. Native-flight/correlation100 and
+controller/watcher ticket/host/path/overlay admission capacities are removed.
+Bounded routing views remain9. Content-Type **classification** is bounded at 1024 characters
 (longer values are kept whole but treated as an unknown declaration → bytes). Policy/
 config editors keep their own input limits. These are not raw-traffic quotas.
 

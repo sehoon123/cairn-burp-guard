@@ -109,6 +109,13 @@ final class RawTrafficStore {
         return capture;
     }
 
+    void beginUnpaired(String projectId, String projectName, String id) {
+        var capture = new Capture("", "", projectId, projectName, List.of(), "-", "-",
+                List.of("RESPONSE_CORRELATION_UNAVAILABLE"), null, null);
+        entries.put(id, capture);
+        update(capture);
+    }
+
     Part response(String id, int status, List<Header> headers, byte[] body, boolean headersComplete, boolean bodyComplete) {
         Capture capture = entries.get(id);
         // A late callback must not resurrect data cleared by an epoch change or explicit clear.
@@ -139,7 +146,7 @@ final class RawTrafficStore {
         return c == null ? null : new View(c, c.request, c.response);
     }
 
-    String request(String id) { Capture c = entries.get(id); return c == null ? null : render(c.request); }
+    String request(String id) { Capture c = entries.get(id); return c == null || c.request == null ? null : render(c.request); }
     String response(String id) { Capture c = entries.get(id); return c == null || c.response == null ? null : render(c.response); }
     String url(String id) { Capture c = entries.get(id); return c == null ? null : c.url; }
     Map<String, Object> info(String id) {
@@ -149,17 +156,17 @@ final class RawTrafficStore {
         info.put("available", true);
         info.put("label", LABEL);
         info.put("completeWireCapture", false);
-        info.put("requestAvailable", true);
+        info.put("requestAvailable", c.request != null);
         info.put("responseAvailable", c.response != null);
-        info.put("requestTruncated", c.request.partial());
+        info.put("requestTruncated", c.request != null && c.request.partial());
         info.put("responseTruncated", c.response != null && c.response.partial());
-        info.put("requestOmitted", c.request.omitted);
+        info.put("requestOmitted", c.request == null || c.request.omitted);
         info.put("responseOmitted", c.response == null || c.response.omitted);
-        info.put("headersComplete", c.request.headersComplete);
-        info.put("bodyComplete", c.request.bodyComplete);
+        info.put("headersComplete", c.request != null && c.request.headersComplete);
+        info.put("bodyComplete", c.request != null && c.request.bodyComplete);
         info.put("responseHeadersComplete", c.response != null && c.response.headersComplete);
         info.put("responseBodyComplete", c.response != null && c.response.bodyComplete);
-        info.put("requestBodyDisplay", c.request.bodyDisplay);
+        info.put("requestBodyDisplay", c.request == null ? "UNAVAILABLE" : c.request.bodyDisplay);
         info.put("responseBodyDisplay", c.response == null ? "UNAVAILABLE" : c.response.bodyDisplay);
         info.put("intentId", c.intent);
         info.put("runId", c.run);
@@ -208,7 +215,7 @@ final class RawTrafficStore {
     private void update(Capture c) {
         retainedBytes -= c.bytes;
         c.bytes = 2048 + cost(c.url) + cost(c.method) + cost(c.projectId) + cost(c.projectName) + cost(c.intent) + cost(c.run)
-                + cost(c.source) + c.request.cost() + (c.response == null ? 0 : c.response.cost());
+                + cost(c.source) + (c.request == null ? 0 : c.request.cost()) + (c.response == null ? 0 : c.response.cost());
         for (String warning : c.warnings) c.bytes += cost(warning);
         for (Decision.RuleHit hit : c.hits) c.bytes += 64 + cost(hit.id()) + cost(hit.name());
         if (c.route != null) c.bytes += 96 + cost(c.route.scheme()) + cost(c.route.host()) + cost(c.route.rawTarget()) + cost(c.route.exactPath());

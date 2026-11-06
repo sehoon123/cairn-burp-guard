@@ -9,8 +9,6 @@ import dev.cairnguard.model.Json;
 import dev.cairnguard.model.PolicyCodec;
 import dev.cairnguard.policy.PolicyEngine;
 import dev.cairnguard.runtime.ApprovalQueue.Pending;
-import dev.cairnguard.ui.GuardUiAccess.HumanCandidate;
-import dev.cairnguard.ui.GuardUiAccess.HumanOverlay;
 import dev.cairnguard.ui.editor.EditorForm;
 import dev.cairnguard.ui.editor.FormValidationException;
 import dev.cairnguard.ui.editor.RuleEditor;
@@ -42,7 +40,6 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.IOException;
-import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -123,7 +120,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTextField intentFilter = textField("traffic.intent");
     private final JTextField runFilter = textField("traffic.run");
     private final JTextField stateFilter = textField("traffic.guardState");
-    private final JComboBox<String> outcomeFilter = named(new JComboBox<>(new String[]{"모든 결과", "차단됨", "전송 해제", "대기 중", "EXEMPT 예외", "상태 확인 통과", "회로 재확인"}), "traffic.outcome");
+    private final JComboBox<String> outcomeFilter = named(new JComboBox<>(new String[]{"모든 결과", "차단됨", "전송 해제", "대기 중", "EXEMPT 예외", "상태 확인 통과"}), "traffic.outcome");
     private final JComboBox<String> projectFilter = named(new JComboBox<>(new String[]{ALL_PROJECTS}), "traffic.project");
     private final JCheckBox bookmarksOnly = named(new JCheckBox("보관한 요청만"), "traffic.bookmarked");
     private final JLabel trafficCount = named(new JLabel("기록 없음"), "traffic.count");
@@ -133,26 +130,6 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTextArea responseDetail = viewer("traffic.response");
     private final JTextArea trafficDetail = viewer("traffic.metadata");
     private JTabbedPane trafficDetails;
-    private final RowsModel<HumanOverlay> overlayModel = new RowsModel<>(
-            new String[]{"종류", "호스트 (원문)", "경로 (원문)", "시작 (UTC)", "만료 (UTC)", "남은 시간 (초)", "이유"},
-            new Class<?>[]{String.class, String.class, String.class, String.class, String.class, Long.class, String.class},
-            h -> new Object[]{h.overlay().kind(), h.unavailable() == null ? h.host() : unavailable(h.unavailable()), h.unavailable() == null ? h.path() : "",
-                    utc(h.overlay().createdAt()), utc(h.overlay().expiresAt()), Math.max(0, (h.overlay().expiresAt() - System.currentTimeMillis() + 999) / 1000),
-                    UiText.reason(h.overlay().reason()) + (h.exception() != null && "ALREADY_EXCEPTED".equals(h.exception().unavailable())
-                            ? " · 예외 저장됨 (보존된 조건부 상태이며 이 요청이 계속 차단된다는 뜻이 아님)" : "")});
-    private final JTable overlayTable = table("overlays.table", overlayModel, false);
-    private final RowsModel<HumanCandidate> candidateModel = new RowsModel<>(
-            new String[]{"호스트 (원문)", "경로 (원문, query 제외)", "최대 bytes", "p95 bytes (근사)", "응답 수", "5xx 수", "최근 (UTC)", "정책 초안 가능"},
-            new Class<?>[]{String.class, String.class, Long.class, Long.class, Long.class, Long.class, String.class, String.class},
-            h -> new Object[]{h.ruleUnavailable() != null && h.host().isEmpty() ? unavailable(h.ruleUnavailable()) : h.host(), h.path(),
-                    h.candidate().maxBytes(), h.candidate().p95Bytes(), h.candidate().count(), h.candidate().count5xx(), utc(h.candidate().lastSeen()), draftState(h)});
-    private final JTable candidateTable = table("candidates.table", candidateModel, false);
-    private final JTextArea runtimeSummary = note("overlays.summary", "");
-    private final JTextArea candidateSummary = note("candidates.summary", "");
-    private JButton candidateBlock;
-    private JButton candidateLimit;
-    private JButton candidateIgnore;
-    private JButton overlayException;
     private final JTextField incidentFrom = textField("incident.from");
     private final JTextField incidentTo = textField("incident.to");
     private final RowsModel<Pending> approvalModel = new RowsModel<>(
@@ -205,8 +182,6 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         tabs.addTab("요청 기록", trafficTab());
         tabs.addTab("승인 대기", approvalTab());
         tabs.addTab("설정", settingsTab());
-        tabs.addTab("자동 차단", overlaysTab());
-        tabs.addTab("대용량 후보", candidatesTab());
         tabs.addTab("사건 내보내기", incidentTab());
         add(tabs, BorderLayout.CENTER);
         message.setBorder(BorderFactory.createEmptyBorder(4, 2, 2, 2));
@@ -243,9 +218,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         diagnosis.setBorder(BorderFactory.createTitledBorder("로컬 차단 / 대상 응답 구분"));
         warnings.setForeground(new java.awt.Color(180, 65, 0));
         content.add(diagnosis); content.add(warnings); content.add(reasonCounters);
-        content.add(buttons(button("dashboard.overlays", "자동 차단 보기", () -> tabs.setSelectedIndex(6)),
-                button("dashboard.candidates", "대용량 후보 보기", () -> tabs.setSelectedIndex(7)),
-                policyButton("dashboard.resetIntent", "Intent 예산 초기화…", this::resetIntentBudgets)));
+        content.add(buttons(policyButton("dashboard.resetIntent", "Intent 예산 초기화…", this::resetIntentBudgets)));
         content.add(Box.createVerticalStrut(10));
         content.add(note("dashboard.boundary", "이 확장은 Burp Proxy에 전달된 요청만 제어합니다. 직접 연결·Proxy 우회·다른 Burp 도구의 트래픽까지 막는 네트워크 방화벽이 아닙니다. 허용한 원본 요청·응답·인증 상태를 변경하지 않습니다."));
         JPanel result = new JPanel(new BorderLayout());
@@ -261,7 +234,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         lists.addTab("허용 대상", scopeList(false));
         lists.addTab("차단 대상", scopeList(true));
         panel.add(lists, BorderLayout.CENTER);
-        panel.add(note("scope.help", "실제 연결 목적지의 호스트·scheme·port와 원래 요청 path로 범위를 판정합니다 (fuzz한 Host/:authority는 대상 변경이 아님). 모든 경로를 허용하면 /c/;/main.do, /c/%2e/main.do도 원문 그대로 전송할 수 있습니다. 제한된 경로는 내부 해석 뷰 모두가 범위여야 하며 해석 불완전 경고를 숨기지 않습니다. 차단 대상·명시 규칙·자동 안전 제어는 별도입니다. 헤더/본문 형식 자체를 자동 차단하지 않으며 편집은 명시적 저장 전에는 적용되지 않습니다.\n이 허용 대상은 Burp Target Scope와 별개입니다. Burp의 ‘Drop all out-of-scope requests’가 켜져 있으면 Burp Target Scope 밖 요청은 Cairn이 허용하거나 보호가 꺼져 있어도 Burp가 전송 전에 버릴 수 있고 클라이언트에 Burp 자체 오류가 보일 수 있습니다 (Cairn은 Burp 설정을 읽거나 바꾸지 않습니다). X-Cairn-Guard 로컬 451은 Cairn 거절의 긍정 표시이지 인증된 증명이나 모든 거절 방식의 목록이 아닙니다. 451이나 Cairn 증거 행이 없다는 사실만으로는 결론을 낼 수 없고(보호 꺼짐·지우기/프로젝트 전환·drop-only/실패 경로), 행이 있어도 대상 도착을 뜻하지 않습니다."), BorderLayout.SOUTH);
+        panel.add(note("scope.help", "실제 연결 목적지의 호스트·scheme·port와 원래 요청 path로 범위를 판정합니다 (fuzz한 Host/:authority는 대상 변경이 아님). 모든 경로를 허용하면 /c/;/main.do, /c/%2e/main.do도 원문 그대로 전송할 수 있습니다. 제한된 경로는 내부 해석 뷰 모두가 범위여야 하며 해석 불완전 경고를 숨기지 않습니다. 차단 대상·명시 규칙·수동 일시중지·작성한 속도와 태그 예산은 별도입니다. 헤더/본문 형식 자체를 자동 차단하지 않으며 편집은 명시적 저장 전에는 적용되지 않습니다.\n이 허용 대상은 Burp Target Scope와 별개입니다. Burp의 ‘Drop all out-of-scope requests’가 켜져 있으면 Burp Target Scope 밖 요청은 Cairn이 허용하거나 보호가 꺼져 있어도 Burp가 전송 전에 버릴 수 있고 클라이언트에 Burp 자체 오류가 보일 수 있습니다 (Cairn은 Burp 설정을 읽거나 바꾸지 않습니다). X-Cairn-Guard 로컬 451은 Cairn 거절의 긍정 표시이지 인증된 증명이나 모든 거절 방식의 목록이 아닙니다. 451이나 Cairn 증거 행이 없다는 사실만으로는 결론을 낼 수 없고(보호 꺼짐·지우기/프로젝트 전환·drop-only/실패 경로), 행이 있어도 대상 도착을 뜻하지 않습니다."), BorderLayout.SOUTH);
         return panel;
     }
 
@@ -281,7 +254,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private JPanel rulesTab() {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         JPanel header = new JPanel(new BorderLayout());
-        header.add(note("rules.help", "EXEMPT 예외 > 차단 > 승인 요청 > 허용. 주황색 EXEMPT는 일반 BLOCK·ASK를 무시하므로 명시적 저장 확인이 필요합니다. 표에서 예외를 위로 고정해도 정책 순서는 바꾸지 않습니다. 범위·유효성·일시중지·자동 차단·속도·예산은 예외로 우회할 수 없습니다. 헤더·본문 조건은 검사 가능할 때 적용하며 불완전 검사는 경고로 표시합니다."), BorderLayout.NORTH);
+        header.add(note("rules.help", "EXEMPT 예외 > 차단 > 승인 요청 > 허용. 주황색 EXEMPT는 일반 BLOCK·ASK를 무시하므로 명시적 저장 확인이 필요합니다. 표에서 예외를 위로 고정해도 정책 순서는 바꾸지 않습니다. 범위·유효성·일시중지·수동 속도·예산은 예외로 우회할 수 없습니다. 헤더·본문 조건은 검사 가능할 때 적용하며 불완전 검사는 경고로 표시합니다."), BorderLayout.NORTH);
         header.add(buttons(policyButton("rules.add", "규칙 만들기…", () -> editRule(true)),
                 policyButton("rules.edit", "선택 규칙 편집…", () -> editRule(false)),
                 policyButton("rules.toggle", "사용 / 중지", () -> mutateRule(false)),
@@ -298,11 +271,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         panel.add(buttons(policyButton("settings.edit", "요청 제어 설정 변경…", this::editSettings)), BorderLayout.NORTH);
         panel.add(new JScrollPane(settingsSummary), BorderLayout.CENTER);
         JPanel footer = new JPanel(new BorderLayout());
-        footer.add(note("settings.help", "속도·동시성과 대기 시간을 설정합니다. 로그인·쿠키/토큰 주입·세션 갱신은 제공하지 않습니다. 일반 작업에는 JSON 편집이 필요하지 않습니다."), BorderLayout.NORTH);
+        footer.add(note("settings.help", "수동 속도과 대기 시간을 설정합니다. 로그인·쿠키/토큰 주입·세션 갱신은 제공하지 않습니다. 일반 작업에는 JSON 편집이 필요하지 않습니다."), BorderLayout.NORTH);
         footer.add(buttons(policyButton("settings.policyJson", "고급: 정책 JSON 가져오기 / 복사…", this::editPolicyJson),
                 button("settings.diagnostics", "진단 정보…", this::diagnostics),
                 button("settings.clear", "보관 기록 비우기…", () -> {
-                    if (dialogs.confirm(this, "보관된 요청 기록과 화면 원문·사건 기록을 모두 지울까요? 누적 처리 수·열린 자동 차단·태그 사용량은 남을 수 있으며 복구할 수 없습니다.")) {
+                    if (dialogs.confirm(this, "보관된 요청 기록과 화면 원문·사건 기록을 모두 지울까요? 누적 처리 수·열린 태그 사용량은 남을 수 있으며 복구할 수 없습니다.")) {
                         access.clearEvidence(); refreshNow(); message.setText("보관 기록과 화면 원문·사건을 비웠습니다. 열린 차단·태그 사용량은 별도입니다.");
                     }
                 })), BorderLayout.SOUTH);
@@ -360,38 +333,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return panel;
     }
 
-    private JPanel overlaysTab() {
-        JPanel panel = new JPanel(new BorderLayout(6, 6));
-        JPanel header = new JPanel(new BorderLayout());
-        header.add(note("overlays.help", "자동 차단은 정책과 분리된 메모리 상태입니다. 만료·수동 해제가 가능하며 저장 파일을 바꾸지 않습니다. 행은 만료·해제 전까지 보존된 조건부 상태일 수 있으며(예외를 저장했거나 감지를 껐어도 남을 수 있고 그 요청이 여전히 차단된다는 뜻이 아님) 해제는 1회성이며 다시 열릴 수 있고, ‘예외 검토’는 그 자동 차단을 일으킨 요청의 원문 실제 대상 경로를 그 종류(대용량/5xx/확산)만의 예외로 검토 후 명시적으로 저장합니다(다른 감지·설정은 바꾸지 않음). 회로의 만료는 닫힘 보장이 아니라 GET/HEAD 재확인 가능 시각입니다 (최대 30초당 한 번). 해제 후 다음 응답·확산으로 다시 열릴 수 있습니다."), BorderLayout.NORTH);
-        overlayException = policyButton("overlays.exception", "이 자동 차단 종류의 예외 검토…", this::reviewOverlayException);
-        header.add(buttons(policyButton("overlays.release", "선택 차단 해제 (1회)…", () -> releaseOverlays(false)),
-                policyButton("overlays.releaseAll", "모든 자동 차단 해제…", () -> releaseOverlays(true)), overlayException), BorderLayout.SOUTH);
-        overlayTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updateOverlayActions(); });
-        panel.add(header, BorderLayout.NORTH); panel.add(new JScrollPane(overlayTable), BorderLayout.CENTER);
-        panel.add(runtimeSummary, BorderLayout.SOUTH);
-        return panel;
-    }
-
-    private JPanel candidatesTab() {
-        JPanel panel = new JPanel(new BorderLayout(6, 6));
-        panel.add(note("candidates.help", "응답 크기 후보 · 최대 bytes 내림차순, p95는 근사치이며 수집된 관측 전체(지우기·프로젝트 전환 이후)의 통계입니다. 첫 큰 응답을 소급 차단하지 않습니다. 호스트·경로는 이 후보의 최근 요청에서 보관한 실제 연결 대상 원문이며(Host 헤더 아님), 원문을 지우면 ‘원문 없음’으로 표시하고 초안을 만들지 않습니다. 두 버튼은 저장하지 않은 초안만 열며 명시적 저장 직전에 원문 출처를 다시 확인합니다. ‘무시’는 후보 표시만 숨기며 열린 차단·정책·사건을 바꾸지 않습니다."), BorderLayout.NORTH);
-        candidateBlock = policyButton("candidates.block", "일반 BLOCK 규칙 초안…", this::candidateRule);
-        candidateLimit = policyButton("candidates.threshold", "이 경로 N MiB 초과 차단…", this::candidateThreshold);
-        candidateIgnore = policyButton("candidates.ignore", "이 후보 무시…", this::ignoreCandidate);
-        candidateTable.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(2, SortOrder.DESCENDING)));
-        candidateTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) updateCandidateActions(); });
-        panel.add(new JScrollPane(candidateTable), BorderLayout.CENTER);
-        JPanel footer = new JPanel(new BorderLayout());
-        footer.add(buttons(candidateBlock, candidateLimit, candidateIgnore), BorderLayout.NORTH);
-        footer.add(candidateSummary, BorderLayout.SOUTH); panel.add(footer, BorderLayout.SOUTH);
-        return panel;
-    }
-
     private JPanel incidentTab() {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         JPanel form = new JPanel(new GridLayout(0, 1, 4, 6));
-        form.add(note("incident.help", "보관된 자동 안전 사건·5xx·크기 통계를 JSON 한 파일로 내보냅니다. 명시적 확인 후 각 사건·상위 경로의 원문 호스트·경로(평문)를 그 사건을 일으킨 요청의 보관 원문에서만 채우며, 원문이 없으면 ‘원문 없음’으로 표시합니다. UTC ISO-8601의 [시작, 끝) 창이며 기간 상한은 없습니다. 보관 시작 전·시계 역행·확산 누락·근사 여부는 번들에 표시되며 완전한 통신이나 대상 장애의 증거가 아닙니다."));
+        form.add(note("incident.help", "보관된 응답 관측·5xx·크기 통계를 JSON 한 파일로 내보냅니다. 명시적 확인 후 각 사건·상위 경로의 원문 호스트·경로(평문)를 그 사건을 일으킨 요청의 보관 원문에서만 채우며, 원문이 없으면 ‘원문 없음’으로 표시합니다. UTC ISO-8601의 [시작, 끝) 창이며 기간 상한은 없습니다. 보관 시작 전·시계 역행·확산 누락·근사 여부는 번들에 표시되며 완전한 통신이나 대상 장애의 증거가 아닙니다."));
         form.add(labeled("시작 UTC (예: 2026-01-01T00:00:00Z)", incidentFrom));
         form.add(labeled("끝 UTC (시작 미포함 아님: [시작, 끝))", incidentTo));
         setIncidentHour();
@@ -406,102 +351,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         incidentFrom.setText(now.minusSeconds(3600).toString()); incidentTo.setText(now.toString());
     }
 
-    private void updateRuntime() {
-        replaceRows(overlayTable, overlayModel, access.humanOverlays().stream().limit(1025).toList(), h -> h.overlay().id());
-        replaceRows(candidateTable, candidateModel, access.humanCandidates(), h -> h.candidate().id());
-        overlayTable.repaint();
-        Map<?,?> watcher = nested(latestStatus, "watchers");
-        setDetail(runtimeSummary, "보존된 자동 보호 상태 " + overlayModel.rows.size() + "개 (경로 예외에 따라 조건부 적용) · 회로 " + count(watcher, "circuits")
-                + " · 회로 재확인 " + count(watcher, "halfOpen") + " · 정책 자동 저장 없음");
-        setDetail(candidateSummary, "후보 " + candidateModel.rows.size() + "개 · p95 근사"
-                + (Boolean.TRUE.equals(watcher.get("candidatesIncomplete")) ? " · 보관 유실/퇴출로 통계 불완전" : " · 보관 창 기준 (전체 통신 아님)"));
-        updateCandidateActions();
-        updateOverlayActions();
-    }
-
-    private void updateCandidateActions() {
-        HumanCandidate row = selected(candidateTable, candidateModel);
-        if (candidateBlock == null) return;
-        boolean ready = available && !closed && row != null && row.source() != null;
-        candidateBlock.setEnabled(ready && row.ruleUrl() != null);
-        candidateLimit.setEnabled(ready && row.limitPath() != null);
-        candidateBlock.setToolTipText(row == null ? null : row.ruleUrl() != null ? "원문 실제 대상 URL로 미저장 BLOCK 초안을 엽니다." : unavailable(row.ruleUnavailable()));
-        candidateLimit.setToolTipText(row == null ? null : row.limitPath() != null ? "정확한 경로의 응답 크기 한도 초안을 엽니다." : unavailable(row.limitUnavailable()));
-        candidateIgnore.setEnabled(available && !closed && row != null);
-    }
-
-    private void releaseOverlays(boolean all) {
-        Snapshot base = beginEdit();
-        HumanOverlay row = selected(overlayTable, overlayModel);
-        if (!all && row == null) throw failure("SELECT_OVERLAY_FIRST");
-        if (!dialogs.confirm(this, all ? "모든 자동 차단을 해제할까요? 정책·운영자 일시중지·사용량은 유지됩니다. 위험 요청을 멈추고 원인을 먼저 확인하세요."
-                : "선택한 자동 차단을 해제할까요? 만료/교체된 항목은 해제하지 않습니다. 다음 감지에서 다시 열릴 수 있습니다.")) return;
-        checkRuntimeVersion(base);
-        boolean changed = all ? access.releaseAllOverlays(base.projectId(), base.revision()) > 0
-                : access.releaseOverlay(row.overlay().id(), base.projectId(), base.revision());
-        refreshNow();
-        message.setText(changed ? "자동 차단을 해제했습니다. 정책을 저장하지 않았습니다." : "항목이 이미 만료·교체됐거나 해제할 자동 차단이 없습니다.");
-    }
-
-    private void updateOverlayActions() {
-        if (overlayException == null) return;
-        HumanOverlay row = selected(overlayTable, overlayModel);
-        GuardUiAccess.OverlayException exception = row == null ? null : row.exception();
-        boolean ready = available && !closed && exception != null && exception.source() != null;
-        overlayException.setEnabled(ready);
-        overlayException.setToolTipText(row == null ? null : ready ? "원문 실제 대상 경로를 " + kindLabel(exception.kind()) + " 예외로 검토합니다."
-                : overlayUnavailable(exception == null ? row.unavailable() : exception.unavailable()));
-    }
-    static String kindLabel(String kind) {
-        return switch (kind == null ? "" : kind) {
-            case "HEAVY" -> "대용량(크기 0)"; case "CIRCUIT" -> "5xx 회로"; case "FANOUT" -> "확산 감지"; default -> "이 종류";
-        };
-    }
-    static String overlayUnavailable(String reason) {
-        return switch (reason == null ? "" : reason) {
-            case "EXCEPTION_TABLE_FULL" -> "예외 표가 가득 찼습니다 · 설정에서 기존 항목을 정리한 뒤 직접 작성하세요";
-            case "NO_SERVICE_SOURCE" -> "전체 용량 제한 등 원인 요청이 없는 항목 · 예외 불가";
-            case "ALREADY_EXCEPTED" -> "이미 예외로 저장된 경로입니다 (이 종류) · 정책을 다시 쓰거나 순서를 바꾸지 않습니다. 변경은 설정의 표에서 하세요";
-            case "ENCODED_OR_AMBIGUOUS_ROUTE" -> "인코딩·별칭 경로는 정확한 예외 불가 · 설정에서 직접 작성하세요";
-            default -> "원문 없음/만료 · 재관측하거나 설정에서 직접 작성하세요";
-        };
-    }
-
-    private void reviewOverlayException() {
-        Snapshot base = beginEdit();
-        HumanOverlay selectedRow = selected(overlayTable, overlayModel);
-        if (selectedRow == null) throw failure("SELECT_OVERLAY_FIRST");
-        checkRuntimeVersion(base);
-        HumanOverlay row = access.humanOverlays().stream().filter(o -> o.overlay().id().equals(selectedRow.overlay().id())).findFirst()
-                .orElseThrow(() -> failure("OVERLAY_EXCEPTION_STALE"));
-        GuardUiAccess.OverlayException exception = row.exception();
-        if (exception == null || exception.source() == null) throw failure("OVERLAY_EXCEPTION_UNAVAILABLE");
-        GuardConfig draft;
-        try { draft = GuardUiAccess.withDetectorException(base.policy(), exception.kind(), exception.scheme(), exception.host(), exception.port(), exception.path()); }
-        catch (IllegalStateException e) { throw failure("OVERLAY_EXCEPTION_UNAVAILABLE"); }
-        String route = exception.scheme() + "://" + exception.host() + ":" + exception.port() + exception.path();
-        JPanel content = new JPanel(new BorderLayout(4, 4));
-        content.add(note("overlays.exceptionReview", "미저장 예외 초안 · " + kindLabel(exception.kind()) + "\n원문 실제 대상 경로 (이 자동 차단을 일으킨 요청): " + route
-                + "\n" + switch (exception.kind()) {
-                    case "HEAVY" -> "경로별 응답 한도 0으로 저장합니다. 실제 대상과 내부 별칭 경로 기준이며 다른 별칭의 양수 한도가 우선합니다. 열린 대용량 자동 차단은 이 요청에 즉시 적용되지 않습니다.";
-                    case "CIRCUIT" -> "정확한 scheme/host/port/path의 모든 메서드·모든 query 변형이 열린 5xx 회로를 통과하며 그 5xx는 회로를 열거나 회복시키지 않습니다.";
-                    default -> "정확한 scheme/host/port/path의 모든 메서드·모든 query 변형을 확산 개수에서 빼고 서비스 차단·전체 자동 일시정지를 통과시킵니다. 적용 중인 기록 누락 부채는 우회하지 못합니다.";
-                }
-                + "\n이 종류의 예외만 저장하며 다른 감지·설정은 바꾸지 않고 꺼진 감지를 켜지 않습니다. 범위·규칙·승인·속도·용량 제한은 그대로입니다. 경로에 비밀이 있으면 정책에 그대로 저장됩니다. 1회성 해제는 별도 버튼입니다."), BorderLayout.CENTER);
-        EditorForm<GuardConfig> form = new EditorForm<>() {
-            @Override public JComponent component() { return content; }
-            @Override public GuardConfig value() { return draft; }
-        };
-        GuardUiAccess.OverlaySource source = exception.source();
-        dialogs.edit(this, "자동 차단 예외 검토 · 명시적 저장", "예외 저장하고 적용", form, () -> {
-            if (!dialogs.confirm(this, kindLabel(exception.kind()) + " 예외를 저장할까요?\n" + route + "\n이 종류의 자동 차단만 약해집니다.", "예외 저장")) return;
-            save(base, form.value(), false, source, false);
-        });
-    }
-
     private void resetIntentBudgets() {
         Snapshot base = beginEdit();
-        if (!dialogs.confirm(this, "현재 프로젝트의 모든 (Run, Intent) 사용량을 초기화할까요? 이미 사용한 요청도 다시 예산을 쓸 수 있습니다. 태그는 클라이언트 주장으로 인증이 아닙니다. 정책 한도와 열린 자동 차단은 그대로입니다.", "사용량 초기화")) return;
+        if (!dialogs.confirm(this, "현재 프로젝트의 모든 (Run, Intent) 사용량을 초기화할까요? 이미 사용한 요청도 다시 예산을 쓸 수 있습니다. 태그는 클라이언트 주장으로 인증이 아닙니다. 명시한 정책과 속도 제한은 그대로입니다.", "사용량 초기화")) return;
         checkRuntimeVersion(base);
         access.resetIntentBudgets(base.projectId(), base.revision()); refreshNow();
         message.setText("태그 예산 사용량을 명시적으로 초기화했습니다. 정책은 저장하지 않았습니다.");
@@ -512,103 +364,6 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (closed || !base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
     }
 
-    private HumanCandidate currentCandidate(Snapshot base) {
-        HumanCandidate row = selected(candidateTable, candidateModel);
-        if (row == null) throw failure("SELECT_CANDIDATE_FIRST");
-        checkRuntimeVersion(base);
-        return access.humanCandidates().stream().filter(c -> c.candidate().id().equals(row.candidate().id())).findFirst()
-                .orElseThrow(() -> failure("CANDIDATE_STALE"));
-    }
-
-    private void ignoreCandidate() {
-        Snapshot base = beginEdit(); HumanCandidate row = currentCandidate(base);
-        if (!dialogs.confirm(this, "이 후보를 메모리 목록에서만 무시할까요? 열린 자동 차단·사건·정책은 바꾸지 않으며 프로젝트 전환/재시작 후 유지하지 않습니다.")) return;
-        checkRuntimeVersion(base);
-        boolean ignored = access.ignoreCandidate(row.candidate().id(), base.projectId(), base.revision());
-        refreshNow(); message.setText(ignored ? "후보를 런타임에서만 무시했습니다. 정책은 저장하지 않았습니다." : "후보가 이미 만료됐습니다.");
-    }
-
-    private void candidateRule() {
-        Snapshot base = beginEdit(); HumanCandidate row = currentCandidate(base);
-        if (row.ruleUrl() == null || row.source() == null) throw failure("CANDIDATE_UNSAFE");
-        if (base.policy().rules().size() >= 256) throw failure("POLICY_ROW_LIMIT");
-        // Seed from the retained ORIGINAL actual-service route (no query); persisted only by an explicit save.
-        Rule draft = new Rule("rule-" + java.util.UUID.randomUUID(), "대용량 경로 차단 (검토 초안)", true, Mode.BLOCK,
-                new GuardConfig.Condition(GuardConfig.Logic.LEAF, GuardConfig.Field.URL, "", GuardConfig.Match.REGEX,
-                        candidatePattern(row.ruleUrl()), true, List.of()));
-        RuleEditor form = new RuleEditor(draft);
-        GuardUiAccess.CandidateSource source = row.source();
-        dialogs.edit(this, "미저장 일반 BLOCK 규칙 초안 · 확인 후 저장 · 원문 URL: " + row.ruleUrl(), "규칙 저장하고 적용", form, () -> {
-            if (!dialogs.confirm(this, "원문 실제 대상 URL로 일반 BLOCK 규칙을 저장할까요?\n" + row.ruleUrl()
-                    + "\n경로는 대소문자를 구분하고 모든 query 변형(?…)에 일치합니다. URL 규칙은 내부 경로 해석(인코딩·dot·matrix 별칭)으로 같은 URL로 해석되는 다른 표기에도 일치할 수 있습니다. 하드 범위 차단이나 EXEMPT가 아닌 일반 BLOCK입니다. 이 값에 비밀이 들어 있으면 정책에 그대로 저장됩니다.", "규칙 저장")) return;
-            List<Rule> rules = new ArrayList<>(base.policy().rules()); rules.add(form.value());
-            save(base, withRules(base.policy(), rules), false, source, false);
-        });
-    }
-    static String candidatePattern(String url) {
-        return "^" + com.google.re2j.Pattern.quote(url) + "(?:\\?(?s:.*))?$";
-    }
-
-    private void candidateThreshold() {
-        Snapshot base = beginEdit(); HumanCandidate row = currentCandidate(base);
-        if (row.limitPath() == null || row.source() == null) throw failure("CANDIDATE_UNSAFE");
-        GuardUiAccess.CandidateSource source = row.source();
-        JTextField mib = textField("candidates.thresholdMiB"); mib.setText("5");
-        JPanel content = new JPanel(new BorderLayout(4, 4));
-        content.add(note("candidates.thresholdNotice", "미저장 경로별 응답 한도 초안 · 대상 (원문): " + row.scheme() + "://" + row.host() + ":" + row.port() + row.limitPath()
-                + "\n정확한 scheme·host·port·path이며 query 변형을 모두 포함합니다. 첫 N MiB 초과 응답은 이미 통과한 뒤 감지하며 다음 요청부터 자동 차단합니다. 양수 한도로 바꿔도 이미 열린 자동 차단은 별도로 해제/만료해야 합니다. 0은 이 경로의 크기 감지 예외이며 이미 열린 대용량 자동 차단도 이 요청에는 즉시 적용하지 않습니다(같은 요청의 다른 별칭에 양수 한도가 있으면 그 한도가 우선). 최대 2048 MiB입니다. 일반 BLOCK 규칙이 아니라 정확한 경로의 watcher 한도를 저장합니다."), BorderLayout.NORTH);
-        content.add(labeled("이 경로 응답 MiB (정확한 바이트로 환산 가능)", mib), BorderLayout.CENTER);
-        EditorForm<Long> form = new EditorForm<>() {
-            @Override public JComponent component() { return content; }
-            @Override public Long value() {
-                try {
-                    String text = mib.getText();
-                    if (text.length() > 32 || !com.google.re2j.Pattern.matches("[0-9]+(?:\\.[0-9]+)?", text)) throw new IllegalArgumentException();
-                    long bytes = new java.math.BigDecimal(text).multiply(java.math.BigDecimal.valueOf(1_048_576)).longValueExact();
-                    if (bytes < 0 || bytes > 2_147_483_648L) throw new IllegalArgumentException();
-                    return bytes;
-                } catch (RuntimeException e) { throw new FormValidationException("0~2048 MiB 범위와 정확한 바이트 단위를 확인하세요."); }
-            }
-        };
-        dialogs.edit(this, "이 경로 응답 크기 한도 · 명시적 저장", "한도 저장하고 적용", form, () -> {
-            long bytes = form.value();
-            String confirmation = bytes == 0
-                    ? "이 경로의 응답 크기 한도 0 bytes(크기 감지 예외)를 저장할까요? 이 요청에는 대용량 자동 차단을 즉시 적용하지 않습니다. 실제 대상과 내부 별칭 경로 기준이며 같은 요청의 다른 별칭에 양수 한도가 있으면 그 한도가 우선합니다. 열린 차단 행은 보존된 조건부 상태로 남을 수 있으며 이 요청이 계속 차단된다는 뜻이 아닙니다."
-                    : "이 경로의 응답 크기 한도 " + bytes + " bytes를 저장할까요? 첫 초과 응답을 예방하지 못하며 이후 요청을 차단합니다. 기존 자동 차단은 별도 해제/만료해야 합니다.";
-            if (!dialogs.confirm(this, confirmation, bytes == 0 ? "크기 예외 저장" : "한도 저장")) return;
-            GuardConfig.Limits old = base.policy().limits();
-            List<GuardConfig.PathByteLimit> paths = new ArrayList<>(old.heavyPathLimits());
-            GuardConfig.PathByteLimit limit = new GuardConfig.PathByteLimit(row.scheme(), row.host(), row.port(), row.limitPath(), bytes);
-            int at = -1;
-            for (int i = 0; i < paths.size(); i++) {
-                var p = paths.get(i);
-                if (p.scheme().equals(limit.scheme()) && sameCanonicalHost(p.host(), limit.host()) && p.port() == limit.port() && p.path().equals(limit.path())) at = i;
-            }
-            if (at >= 0) paths.set(at, limit); else paths.add(limit);
-            GuardConfig.Limits limits = new GuardConfig.Limits(old.globalRps(), old.perHostRps(), old.hostRps(), old.maxConcurrent(), old.maxQueued(), old.queueTimeoutMillis(), old.approvalTimeoutMillis(), old.requestTimeoutMillis(), old.perPathMaxResponseBytes(), old.autoBlockMillis(), old.circuit5xx(), old.fanout(), old.perIntentMaxRequests(), old.healthProbePassthrough(), old.healthProbePaths(), paths, old.circuit5xxExceptions(), old.heavyResponseEnabled(), old.fanoutExceptions());
-            GuardConfig p = base.policy();
-            save(base, new GuardConfig(p.schemaVersion(), p.allowScope(), p.blockScope(), p.rules(), p.defaultMode(), limits, p.guardListenerPorts()), false, source, true);
-        });
-    }
-    private static boolean sameCanonicalHost(String a, String b) {
-        try { return PolicyEngine.canonicalHost(a).equals(PolicyEngine.canonicalHost(b)); } catch (RuntimeException e) { return false; }
-    }
-    private static String draftState(HumanCandidate h) {
-        if (h.source() == null) return "아니오 · " + unavailable(h.ruleUnavailable());
-        if (h.ruleUrl() != null && h.limitPath() != null) return "BLOCK 초안·크기 한도";
-        if (h.ruleUrl() != null) return "BLOCK 초안만 · " + unavailable(h.limitUnavailable());
-        return "아니오 · " + unavailable(h.ruleUnavailable());
-    }
-    static String unavailable(String reason) {
-        if (reason == null) return "";
-        return switch (reason) {
-            case "ORIGINAL_UNAVAILABLE" -> "원문 없음/만료 · 재관측 필요";
-            case "NO_SERVICE_SOURCE" -> "전체 용량 제한 (서비스 없음)";
-            case "ENCODED_OR_AMBIGUOUS_ROUTE" -> "인코딩·별칭 경로는 정확한 크기 한도 불가 · 설정에서 직접 작성";
-            case "NON_ORIGIN_FORM_TARGET" -> "비표준 요청 대상 · 초안 불가";
-            default -> "경로 해석 불가 · 초안 불가";
-        };
-    }
     private static String utc(long millis) { try { return Instant.ofEpochMilli(millis).toString(); } catch (RuntimeException e) { return "—"; } }
 
     private void reviewMigration() {
@@ -916,12 +671,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return base;
     }
 
-    private static boolean enforcing(GuardConfig.Fanout fanout) { return fanout != null && fanout.action() != GuardConfig.FanoutAction.WARN; }
     private void save(Snapshot base, GuardConfig candidate) { save(base, candidate, false); }
-    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed) { save(base, candidate, migrationConfirmed, null, false); }
-
-    /** authority: null (ordinary), a CandidateSource or an OverlaySource; both are revalidated after every confirmation. */
-    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed, Object authority, boolean byteLimit) {
+    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed) {
         requireEdt();
         if (closed) throw failure("CLOSED");
         access.refreshProject();
@@ -939,44 +690,18 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (Boolean.TRUE.equals(migration.get("pending")) && !migrationConfirmed
                 && !dialogs.confirm(this, "v1 변환 대기 중입니다. 이 명시적 저장은 v2 전체 정책으로 저장소를 교체합니다. 원본 내보내기·변환 비교를 먼저 권장합니다. 기존 delete-string 제거는 자동으로 하지 않습니다. 구버전 JAR는 v2를 읽지 못합니다. 계속 저장할까요?", "v2 저장")) return;
         if (candidate.rules().stream().anyMatch(r -> r.enabled() && r.mode() == Mode.EXEMPT && !base.policy().rules().contains(r))
-                && !dialogs.confirm(this, "EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·자동 차단·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
+                && !dialogs.confirm(this, "EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
         if (!candidate.guardListenerPorts().equals(base.policy().guardListenerPorts())) {
             if (!candidate.guardListenerPorts().isEmpty()) throw failure("LISTENER_SELECTION_DEFERRED");
             if (!dialogs.confirm(this, "기존 포트 제한을 해제하고 모든 Proxy 리스너를 보호할까요? 포트별 보호는 추후 지원합니다. 이제 모든 Proxy 요청이 대상 범위·규칙·안전 제어의 검사 대상이며, 전체 통과(보호 OFF)가 아닙니다. 기존 설정을 자동 삭제하지 않고 이 명시적 저장으로만 전환합니다.", "전체 Proxy 보호로 전환")) return;
         }
         if (candidate.limits().healthProbePassthrough() && (!base.policy().limits().healthProbePassthrough()
                 || !candidate.limits().healthProbePaths().equals(base.policy().limits().healthProbePaths()))
-                && !dialogs.confirm(this, "GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지·회로 차단을 통과합니다. 범위·일반 규칙·다른 자동 차단·속도·예산은 유지됩니다.", "GET 통과 저장")) return;
-        if (candidate.limits().circuit5xxExceptions().stream().anyMatch(e -> !base.policy().limits().circuit5xxExceptions().contains(e))
-                && !dialogs.confirm(this, "5xx 회로 예외 경로를 저장할까요? 정확한 scheme/host/port/path의 모든 메서드·모든 query 변형이 열린 회로를 통과하고 그 5xx는 회로를 열거나 회복시키지 않습니다 (5xx 보호만 약해짐). 범위·규칙·승인·일시중지·대용량·확산·속도·예산은 계속 적용됩니다. 예외가 있는 정책은 이 버전 이상의 확장만 읽을 수 있으며 구버전은 정책을 불러오지 못합니다. 회로가 꺼져 있으면 켤 때까지 적용되지 않습니다.", "5xx 예외 저장")) return;
-        GuardConfig.Limits was = base.policy().limits(), next = candidate.limits();
-        if (was.heavyResponseEnabled() && !next.heavyResponseEnabled()
-                && !dialogs.confirm(this, "대용량 응답 자동 차단을 끌까요? 기본·경로별 한도 값은 보존되지만 적용하지 않으며 열린 대용량 자동 차단은 즉시 풀립니다 (진행 중 요청 자리는 유지). 5xx 회로·확산 감지·범위·규칙·승인·속도는 그대로입니다.", "대용량 감지 끄기")) return;
-        if (next.heavyPathLimits().stream().anyMatch(l -> l.maxBytes() == 0 && !was.heavyPathLimits().contains(l))
-                && !dialogs.confirm(this, "경로별 응답 한도 0(이 경로 크기 감지 예외)을 저장할까요? 실제 대상과 내부 별칭 경로 기준이며 그 요청에는 대용량 자동 차단을 즉시 적용하지 않습니다. 같은 요청의 다른 별칭에 양수 한도가 있으면 그 한도가 우선합니다. 다른 자동 차단·범위·규칙·속도는 그대로입니다.", "크기 예외 저장")) return;
-        if (next.fanoutExceptions().stream().anyMatch(e -> !was.fanoutExceptions().contains(e))
-                && !dialogs.confirm(this, "확산 감지 예외 경로를 저장할까요? 정확한 scheme/host/port/path의 모든 메서드·모든 query 변형을 확산 개수에 넣지 않고 서비스 차단·전체 자동 일시정지를 통과시킵니다 (확산 보호만 약해짐). 기록 누락 부채가 적용 중이면 우회하지 못하며 범위·규칙·승인·다른 자동 차단·속도는 그대로입니다. 예외가 있는 정책은 이 버전 이상의 확장만 읽을 수 있습니다.", "확산 예외 저장")) return;
-        if (enforcing(was.fanout()) && !enforcing(next.fanout())
-                && !dialogs.confirm(this, "확산 감지 자동 차단을 " + (next.fanout() == null ? "끌까요" : "‘경고만’으로 바꿀까요") + "? 열린 확산 자동 차단·전체 자동 일시정지는 즉시 풀리고 경로 기록과 누락 부채는 보존됩니다. 운영자 일시중지는 그대로입니다.", "확산 차단 해제")) return;
-        if (was.circuit5xx() != null && next.circuit5xx() == null
-                && !dialogs.confirm(this, "5xx 회로를 끌까요? 열린 회로는 즉시 논리적으로 풀리고 진행 중 요청 자리와 다른 자동 차단·용량 제한은 유지됩니다.", "회로 끄기")) return;
+                && !dialogs.confirm(this, "GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지를 통과합니다. 범위·일반 규칙·다른 속도·예산은 유지됩니다.", "GET 통과 저장")) return;
         access.refreshProject();
         if (!base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
-        // Overlay-derived saves: authoritative source check after EVERY confirmation above, then again at the CAS.
-        if (authority instanceof GuardUiAccess.OverlaySource overlay && !access.overlayExceptionCurrent(overlay)) {
-            refreshNow(); throw failure("OVERLAY_EXCEPTION_STALE");
-        }
-        try {
-            // Candidate-derived saves: the controller re-checks the original source AFTER every confirmation above.
-            if (authority instanceof GuardUiAccess.CandidateSource source) access.updateConfig(candidate, base.projectId(), base.revision(), source, byteLimit);
-            else if (authority instanceof GuardUiAccess.OverlaySource overlay) access.updateConfig(candidate, base.projectId(), base.revision(), overlay);
-            else access.updateConfig(candidate, base.projectId(), base.revision());
-        }
-        catch (IllegalStateException e) {
-            refreshNow();
-            throw failure(authority != null && "CANDIDATE_STALE".equals(e.getMessage()) ? "CANDIDATE_STALE"
-                    : authority != null && "OVERLAY_EXCEPTION_STALE".equals(e.getMessage()) ? "OVERLAY_EXCEPTION_STALE" : "UPDATE_REJECTED");
-        }
+        try { access.updateConfig(candidate, base.projectId(), base.revision()); }
+        catch (IllegalStateException e) { refreshNow(); throw failure("UPDATE_REJECTED"); }
         catch (IllegalArgumentException e) { throw failure("INVALID_POLICY"); }
         refreshNow();
         message.setText(Boolean.TRUE.equals(latestStatus.get("passthrough"))
@@ -1000,7 +725,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!base.matches(access.status())) { refreshNow(); throw failure("MODE_CHANGE_REJECTED"); }
         try { access.pause(next); }
         finally { refreshNow(); } // Failed resume must not leave a misleading toggled control.
-        message.setText(next ? "일시중지했습니다. 모든 Proxy 리스너의 새 요청을 차단합니다 (명시한 상태 확인 GET 제외)." : "보호를 재개했습니다. 대상 범위·자동 차단·속도·예산은 계속 적용됩니다.");
+        message.setText(next ? "일시중지했습니다. 모든 Proxy 리스너의 새 요청을 차단합니다 (명시한 상태 확인 GET 제외)." : "보호를 재개했습니다. 대상 범위·속도·예산은 계속 적용됩니다.");
     }
 
     private void togglePassthrough() {
@@ -1009,9 +734,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (next && !dialogs.confirm(this,
                 "모두 통과 (보호 끔)로 전환할까요?\n\n"
                 + "이 Burp의 모든 Proxy 요청이 허용 대상·차단 규칙·안전 검사·승인·속도 제한 없이 통과합니다. 빈 허용 목록이나 차단 대상도 적용하지 않습니다. 워커가 실행 중이면 범위 밖 요청도 나갈 수 있습니다.\n\n"
-                + "운영자 일시중지·자동 차단·응답 미확인 격리도 전체 통과 중에는 새 요청을 막지 않습니다. ‘보호 다시 켜기’는 이전 운영자 일시중지를 보존합니다. 자동 차단·태그 사용량·미해결 격리도 유지됩니다.\n\n"
+                + "운영자 일시중지도 전체 통과 중에는 새 요청을 막지 않습니다. ‘보호 다시 켜기’는 이전 운영자 일시중지를 보존합니다. 태그 사용량·사용량은 유지됩니다.\n\n"
                 + "전환 전 승인·전송 대기 요청은 자동 승인하지 않고 취소합니다. 필요한 요청만 다시 실행하세요. 이미 전송한 요청은 취소하지 않습니다.\n\n"
-                + "전체 통과 상태에서 새로 시작한 요청·응답 내용을 이 확장에서 수집·기록하지 않고 통과 횟수만 셉니다. 이전에 보호하여 전송한 요청은 실제 응답까지 추적하고 화면 사본·원문 증거를 남길 수 있습니다. Burp 자체 history는 별개입니다.\n\n"
+                + "전체 통과 상태에서 새로 시작한 요청·응답 내용을 이 확장에서 수집·기록하지 않고 통과 횟수를 셉니다. 오인 연결 방지용 숫자 ID만 확장 수명 동안 메모리에 보존하며 내용·증거와 연결하지 않습니다. 이전에 보호하여 전송한 요청은 실제 응답까지 추적하고 화면 사본·원문 증거를 남길 수 있습니다. Burp 자체 history는 별개입니다.\n\n"
                 + "현재 프로젝트의 임시 상태이며 프로젝트 전환·확장 재시작 후에는 유지하지 않습니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 기존 연결이 끝났는지 확인하세요.", "모두 통과")) return;
         if (closed) throw failure("CLOSED");
         access.refreshProject();
@@ -1049,11 +774,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             showApprovalDetail();
             updateOverview(config, after);
             updateSettings(config);
-            updateRuntime();
             if (!sameVersion(after, access.status())) throw failure("PROJECT_UNAVAILABLE");
             version.setText("현재 Burp 프로젝트 · 설정 버전 " + view.revision());
             for (JButton action : policyActions) action.setEnabled(true);
-            updateCandidateActions();
             pause.setEnabled(true);
             passthrough.setEnabled(Boolean.TRUE.equals(after.get("passthrough")) || !Boolean.FALSE.equals(after.get("passthroughAvailable")));
             if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됐습니다. 허가받은 대상을 등록하고 보호 상태를 확인하세요.");
@@ -1062,9 +785,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             setDetail(requestDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
             setDetail(responseDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
             setDetail(trafficDetail, "현재 프로젝트 확인 후 요청을 다시 선택하세요.");
-            trafficModel.setRows(List.of()); overlayModel.setRows(List.of()); candidateModel.setRows(List.of());
+            trafficModel.setRows(List.of());
             migrationBanner.setVisible(false);
-            updateCandidateActions();
             for (JButton action : policyActions) action.setEnabled(false);
             pause.setText("긴급: 새 요청 모두 차단"); pause.setEnabled(!closed);
             passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
@@ -1100,55 +822,22 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         Map<?,?> intents = nested(status, "intents");
         setDetail(diagnosis, "로컬 guardState: " + UiText.guardState(guard) + " (" + guard + ") · 운영자 일시중지 보존: " + yes(status.getOrDefault("operatorPaused", status.get("paused")))
                 + "\n로컬 451은 source=cairn-proxy-guard / local=true인 확장 거절이며 대상 서버의 5xx와 다릅니다. 대상 응답이 없다는 사실만으로 장애를 단정하지 마세요."
-                + "\n응답 감지: 자동 차단 " + count(watcher, "overlays") + "(보존된 조건부 상태 포함) / 회로 " + count(watcher, "circuits")
-                + " / 확산 에피소드 " + count(watcher, "fanoutWarnings") + " · 태그 사용 " + count(intents, "consumed") + " / 거절 " + count(intents, "rejected")
-                + "\n확산 기록 (보관 기록 기준, 누락 시 개수는 하한): 색인 " + count(watcher, "fanoutHistoryIndexed") + " / " + count(watcher, "fanoutHistoryCapacity")
-                + " · 누락 " + count(watcher, "fanoutHistoryOmitted") + "건"
-                + (!off && Boolean.TRUE.equals(watcher.get("fanoutHistoryEnforcing")) ? " · 누락 부채 적용 중" : "")
-                + "\n보호 리스너: " + (config.guardListenerPorts().isEmpty() ? "모든 Proxy 리스너" : config.guardListenerPorts() + " (이전 제한 남음 · 직접 비워 전체 보호 전환 필요 · 모두 LISTENER_UNVERIFIED)"));
-        String alert = Boolean.TRUE.equals(watcher.get("automaticPause")) ? "경고: 확산으로 전체 자동 차단 중입니다. 운영자 일시중지와 별개이며 ‘자동 차단’에서 확인·해제하세요."
-                : count(watcher, "fanoutWarnings") > 0 ? "경고: 경로 확산 감지 에피소드가 있습니다. 요청 발생을 검토하고 ‘자동 차단’ 및 사건을 확인하세요."
-                : count(watcher, "overlays") > 0 || count(watcher, "circuits") > 0 ? "경고: 자동 차단/회로가 열려 있거나 보존된 조건부 상태가 남아 있습니다 (예외 경로의 요청은 이미 통과할 수 있으며 모든 게이트가 꺼졌다는 뜻은 아닙니다). 범위와 규칙을 바꿔도 자동 해제되지 않습니다."
-                : "";
-        // Shown alongside any other warning: incomplete fan-out history must never be hidden.
-        boolean debt = Boolean.TRUE.equals(watcher.get("fanoutHistoryIncomplete"));
-        // Watcher-local configuration is not controller state: OFF bypasses it, so never show it as an active gate then.
-        boolean enforcing = !off && Boolean.TRUE.equals(watcher.get("fanoutHistoryEnforcing"));
-        long remainingSeconds = (count(watcher, "fanoutHistoryRemainingMillis") + 999) / 1_000;
-        String until = count(watcher, "fanoutHistoryIncompleteUntil") > 0
-                ? " (표시용 만료 " + java.time.Instant.ofEpochMilli(count(watcher, "fanoutHistoryIncompleteUntil")) + ", 실제 판정은 단조 시계)" : "";
-        String remaining = remainingSeconds > 0 ? " 남은 시간 약 " + remainingSeconds + "초" + until + "." : "";
-        String history = debt && enforcing
-                ? "경고: 확산 기록 용량 초과 누락 부채가 보호 대상 새 요청에 추가 전역 거절 조건으로 적용 중입니다 (확산 개수는 하한). 범위·수명·자동 차단·회로 같은 앞선 판정이 실제 거절 이유가 될 수 있어 모든 요청이 RESPONSE_WATCHER_CAPACITY를 받는다는 뜻은 아닙니다." + remaining
-                        + " 원래 누락 창이 끝나면 자연히 풀리며 설정 저장이나 자동 차단 수동 해제로 줄거나 초기화되지 않습니다."
-                : debt && off ? "경고: 확산 기록 누락 부채가 보관 중이지만 보호 꺼짐(전체 통과) 상태여서 지금 새 요청을 거절하지 않습니다. 보호를 다시 켜면 확산 BLOCK/PAUSE 설정일 때 남은 시간 동안 다시 적용됩니다." + remaining
-                : debt && watcher.containsKey("fanoutHistoryEnforcing") ? "경고: 확산 기록 누락 부채가 보관 중입니다. 현재 확산 설정(WARN/꺼짐)에서는 거절하지 않습니다. 확산 BLOCK/PAUSE로 바꾸면 남은 시간 동안 RESPONSE_WATCHER_CAPACITY로 거절됩니다." + remaining
-                : debt
-                ? "경고: 확산 기록 용량 초과로 일부 경로가 기록되지 않았습니다 (확산 개수는 하한). 확산 BLOCK/PAUSE 모드에서는 원래 누락 창이 끝날 때까지 추가 전역 거절 조건(RESPONSE_WATCHER_CAPACITY)이 적용될 수 있으며 앞선 판정이 실제 이유일 수 있습니다."
-                : count(watcher, "fanoutHistoryOmitted") > 0 ? "참고: 이 프로젝트 세션에서 확산 기록 누락 " + count(watcher, "fanoutHistoryOmitted") + "건이 있었습니다. 확산 개수와 사건 보고서는 불완전합니다."
-                : "";
-        setDetail(warnings, alert.isEmpty() && history.isEmpty() ? "자동 안전 경고 없음 (보관·감지 범위에 한함)"
-                : alert + (alert.isEmpty() || history.isEmpty() ? "" : "\n") + history);
+                + "\n응답 관측: " + count(watcher, "observations") + " · 태그 사용 " + count(intents, "consumed")
+                + " / 거절 " + count(intents, "rejected"));
+        setDetail(warnings, "자동 차단 기능은 제거되었습니다. 이전 응답·미확인 콜백은 새 요청을 차단하지 않습니다.");
         Object reasons = status.get("reasonCounters");
         setDetail(reasonCounters, "이유별 누적 (로컬 범주): " + Json.write(reasons instanceof Map<?,?> ? reasons : Map.of()));
         if (off) {
             stateTitle.setText("전체 통과 · 보호 꺼짐 · 기록 미수집");
             stateHelp.setText("이 Burp의 모든 새 Proxy 요청을 범위·규칙·안전 검사·승인·속도 제한 없이 통과시킵니다. 전체 통과 누적 "
                     + count(status, "passthroughCount") + "건 (대상 도착 증명 아님). 새 전체 통과 요청·응답 내용은 수집하지 않습니다. 표에는 이전 보호 기록이 남으며 기존 전송의 화면 사본·원문 증거가 추가될 수 있습니다. Burp 자체 history는 별개입니다.\n"
-                    + "기존 승인·전송 대기는 취소되며 이미 전송한 요청은 취소하지 않습니다. 이전 운영자 일시중지·자동 차단·태그 사용량은 보존됩니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 전체 통과 중 시작한 연결이 끝났는지 확인하세요. 상단 ‘보호 다시 켜기’로 새 요청에 보호를 재적용하거나 ‘새 요청 모두 차단’으로 전송을 막을 수 있습니다.");
+                    + "기존 승인·전송 대기는 취소되며 이미 전송한 요청은 취소하지 않습니다. 이전 운영자 일시중지·태그 사용량은 보존됩니다. 다시 보호를 켜기 전에 요청 발생을 멈추고 전체 통과 중 시작한 연결이 끝났는지 확인하세요. 상단 ‘보호 다시 켜기’로 새 요청에 보호를 재적용하거나 ‘새 요청 모두 차단’으로 전송을 막을 수 있습니다.");
         } else if (Set.of("POLICY_INVALID", "POLICY_SAVE_UNCERTAIN", "PROJECT_UNVERIFIED", "SHUTDOWN").contains(guard)) {
             stateTitle.setText("프로젝트 설정 확인 필요 · 새 요청 차단");
             stateHelp.setText("프로젝트 설정을 읽거나 저장한 결과를 확인할 수 없습니다. 요청 발생을 멈추고 Burp 프로젝트를 확인한 뒤 새로고침하세요. 확인 전에는 재개하지 마세요.");
-        } else if (count(gate, "stalled") > 0) {
-            stateTitle.setText("응답 확인 필요 · 해당 호스트 격리");
-            stateHelp.setText(UiText.next("IN_FLIGHT_TIMEOUT"));
         } else if (paused) {
             stateTitle.setText("일시중지 · 보호 리스너의 새 요청 차단");
-            stateHelp.setText("보호할 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). OFF 모드가 아닙니다. 이번 범위는 전체 Proxy 보호입니다. 이전 포트 제한이 남아 있으면 모두 LISTENER_UNVERIFIED로 거절되므로 설정에서 직접 비우고 전체 보호로 전환하세요. ‘보호 재개’는 운영자 일시중지만 해제하고 자동 차단·기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
-        } else if (enforcing) {
-            stateTitle.setText("처리 용량 제한 · 확산 기록 누락 부채로 새 요청 거절 중");
-            stateHelp.setText("확산 기록 용량 초과로 BLOCK/PAUSE 확산 보호를 안전하게 판단할 수 없어 보호 대상 새 요청에 추가 전역 거절 조건이 적용 중입니다 (해당 요청은 RESPONSE_WATCHER_CAPACITY 로컬 451을 받을 수 있으며 범위·회로 같은 앞선 판정이 실제 이유일 수 있음)." + remaining
-                    + " 원래 누락 창이 끝나면 자연히 풀립니다. 요청 발생을 줄이세요. 설정 저장·자동 차단 수동 해제로 이 부채를 줄이거나 초기화하지 않습니다.");
+            stateHelp.setText("보호할 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). OFF 모드가 아닙니다. 이번 범위는 전체 Proxy 보호입니다. 이전 포트 제한이 남아 있으면 모두 LISTENER_UNVERIFIED로 거절되므로 설정에서 직접 비우고 전체 보호로 전환하세요. ‘보호 재개’는 운영자 일시중지만 해제하고 기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
         } else if (allowed == 0) {
             stateTitle.setText("허용 대상 없음 · 모든 요청 차단");
             stateHelp.setText("아직 요청을 보낼 수 없습니다. ‘허용 대상 등록’에서 허가받은 URL을 입력하고 호스트·포트·경로를 확인하세요. 등록하지 않은 대상은 계속 차단합니다.");
@@ -1161,7 +850,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         pause.setText(paused ? "보호 재개" : "새 요청 모두 차단");
         scopeCount.setText("대상 · 허용 " + allowed + "개 / 차단 " + blocked + "개");
         ruleCount.setText("규칙 · " + rules + "개 사용 중");
-        gateCount.setText("보호 추적 · 진행 " + count(gate, "active") + " / 전송 대기 " + count(gate, "queued") + " / 승인 대기 " + approvalModel.rows.size());
+        gateCount.setText("수동 속도 전송 대기 " + count(gate, "queued") + " / 승인 대기 " + approvalModel.rows.size());
         evidenceCount.setText("누적 · 차단 " + count(evidence, "blocked") + " / 전송 해제 " + count(evidence, "forwarded") + " / 보관 " + traffic.size());
         tabs.setTitleAt(4, "승인 대기" + (approvalModel.rows.isEmpty() ? "" : " (" + approvalModel.rows.size() + ")"));
         scopeState.setText(off ? "전체 통과 · 보호 꺼짐: 아래 범위를 검사하지 않습니다. 상단 ‘보호 다시 켜기’ 후 새 요청에 적용합니다."
@@ -1174,25 +863,17 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
 
     private void updateSettings(GuardConfig config) {
         GuardConfig.Limits l = config.limits();
-        String summary = "요청 속도와 동시 실행\n\n전체 초당 요청 수: " + l.globalRps()
-                + "\n기본 호스트당 초당 요청 수: " + l.perHostRps() + "\n최대 동시 요청 수: " + l.maxConcurrent()
-                + "\n\n대기와 기본 동작\n\n전송 대기열 크기: " + l.maxQueued()
-                + "\n전송 대기 제한: " + seconds(l.queueTimeoutMillis()) + "초"
+        String summary = "수동 고정 속도 (0=끔)\n전체 RPS: " + l.globalRps()
+                + "\n기본 호스트 RPS: " + l.perHostRps() + "\n호스트별 RPS (독립, 0=끔): " + l.hostRps()
+                + "\n전송 대기열: " + l.maxQueued() + " / 제한 " + seconds(l.queueTimeoutMillis()) + "초"
                 + "\n승인 대기 제한: " + seconds(l.approvalTimeoutMillis()) + "초"
-                + "\n응답 대기 제한: " + seconds(l.requestTimeoutMillis()) + "초"
-                + "\n일치하는 규칙이 없을 때: " + UiText.mode(config.defaultMode().name())
-                + "\n호스트별 속도 예외: " + l.hostRps().size() + "개"
-                + "\n\n자동 안전 제어\n대용량 응답 자동 차단: " + (l.heavyResponseEnabled() ? "켜짐" : "꺼짐 (아래 한도 값은 보존, 적용 안 함)") + "\n기본 경로 응답 한도: " + l.perPathMaxResponseBytes() + " bytes (0=끔)"
-                + "\n자동 차단 유지: " + seconds(l.autoBlockMillis()) + "초"
-                + "\n5xx 회로 (선택): " + (l.circuit5xx() == null ? "끔 (기본)" : l.circuit5xx().threshold() + "회 / " + seconds(l.circuit5xx().windowMillis()) + "초, 열림 " + seconds(l.circuit5xx().openMillis()) + "초, GET/HEAD 1회 재확인 (최소 30초 간격)")
-                + "\n확산 감지 예외 경로: " + l.fanoutExceptions().size() + "개 (정확한 경로, 모든 메서드·query 포함" + (l.fanout() == null || l.fanout().action() == GuardConfig.FanoutAction.WARN ? ", 자동 차단 없음: 적용 대기" : "") + ")"
-                + "\n5xx 회로 예외 경로: " + l.circuit5xxExceptions().size() + "개 (정확한 경로, 모든 메서드·query 포함" + (l.circuit5xx() == null ? ", 회로 꺼짐: 적용 대기" : "") + ")"
-                + "\n경로 확산: " + (l.fanout() == null ? "끔" : l.fanout().distinctPaths() + "경로 / " + seconds(l.fanout().windowMillis()) + "초, " + l.fanout().action())
-                + "\n(Run, Intent)별 최대 요청: " + l.perIntentMaxRequests() + " (0=끔, 태그는 비신뢰)"
-                + "\n상태 확인 GET 통과: " + (l.healthProbePassthrough() ? "사용 (부작용 주의)" : "끔") + " / 정확한 경로 " + l.healthProbePaths().size() + "개"
-                + "\n경로별 응답 한도: " + l.heavyPathLimits().size() + "개 (첫 초과 응답 예방 불가)"
-                + "\n보호 Proxy 리스너: " + (config.guardListenerPorts().isEmpty() ? "모두" : config.guardListenerPorts() + " (이전 제한 남음 · 포트별 보호 추후 · 직접 비워 전체 보호 전환)")
-                + "\n\n보호 켜짐 상태에서만 범위·규칙·속도 제한을 적용합니다. 전체 통과 상태에서 설정을 저장해도 보호를 자동으로 켜지 않습니다.\n보호 중 응답을 확인하지 못하면 새 요청을 막으며 진행 중 요청의 자리를 임의로 비우지 않습니다.\n\n‘요청 제어 설정 변경’에서 읽기 쉬운 폼으로 수정할 수 있습니다.";
+                + "\n기본 동작: " + UiText.mode(config.defaultMode().name())
+                + "\n(Run, Intent) 요청 예산: " + l.perIntentMaxRequests() + " (0=끔; 개요에서 명시적 초기화)"
+                + "\n상태 확인 GET의 운영자 일시중지 통과: " + l.healthProbePassthrough()
+                + "\n보호 Proxy 리스너: " + (config.guardListenerPorts().isEmpty() ? "모두" : config.guardListenerPorts())
+                + "\n\nINACTIVE legacy: 동시 요청·응답 시간 제한·대용량·5xx 회로·확산·감지 예외 설정은 호환용으로만 보존되며 실행되지 않습니다."
+                + "\n이전 요청의 응답이나 완료 콜백을 기다리지 않습니다. 실제 native 동시 실행 수는 제한하지 않습니다."
+                + "\n설정 폼의 ‘모든 속도 제한 끄기’는 호스트별 값도 0으로 채우는 미저장 초안 작업입니다. 전체/기본 호스트 0만으로 양수 호스트별 값을 지우지 않습니다.";
         setDetail(settingsSummary, summary);
     }
 
@@ -1223,7 +904,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private void filterTraffic() {
         if (closed || loading) return;
         String project = (String) projectFilter.getSelectedItem();
-        String outcome = switch (outcomeFilter.getSelectedIndex()) { case 1 -> "BLOCKED"; case 2 -> "FORWARDED"; case 3 -> "PENDING"; case 4 -> "exempt"; case 5 -> "probe_allowed"; case 6 -> "half_open"; default -> ""; };
+        String outcome = switch (outcomeFilter.getSelectedIndex()) { case 1 -> "BLOCKED"; case 2 -> "FORWARDED"; case 3 -> "PENDING"; case 4 -> "exempt"; case 5 -> "probe_allowed"; default -> ""; };
         List<TrafficEntry> displayed = new ArrayList<>();
         for (TrafficEntry entry : traffic) {
             String status = entry.statusCode() == null ? "" : entry.statusCode().toString();
@@ -1321,7 +1002,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 .append("\nHTTP 상태: ").append(entry.statusCode() == null ? "없음" : entry.statusCode())
                 .append("\n정책 버전: ").append(entry.revision())
                 .append("\n보호 상태: ").append(UiText.guardState(entry.guardState())).append(" / ").append(entry.guardState())
-                .append("\n결과: ").append(entry.outcome()).append("\n자동 차단 ID: ").append(entry.overlayId())
+                .append("\n결과: ").append(entry.outcome()).append("\n이전 형식 자동 차단 ID (현재 비활성): ").append(entry.overlayId())
                 .append("\n실제 응답 본문 bytes: ").append(entry.responseBytes())
                 .append("\n검사 경고: ").append(UiText.warnings(entry.inspectionWarnings(), true))
                 .append("\n헤더/본문 규칙은 검사 가능할 때만 평가합니다. 검사 불가를 평가 완료로 간주하지 않으며 불완전 조건으로 EXEMPT를 부여하지 않습니다.")
@@ -1348,8 +1029,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             case "RULE_BLOCK", "RULE_MATCH", "EXEMPT" -> 2;
             case "ASK" -> 4;
             case "DEFAULT_BLOCK", "QUEUE_TIMEOUT", "QUEUE_FULL", "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "LISTENER_UNVERIFIED" -> 5;
-            case "CIRCUIT_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED", "WATCHER_CAPACITY" -> 6;
-            case "PAUSED", "IN_FLIGHT_TIMEOUT", "POLICY_CHANGED", "PROJECT_CHANGED" -> 0;
+            case "PAUSED", "POLICY_CHANGED", "PROJECT_CHANGED" -> 0;
             default -> -1;
         };
     }
@@ -1395,7 +1075,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                     : "검토할 요청을 표에서 선택하세요. 메서드·주소·이유와 원문 요청을 확인한 뒤 결정하세요.");
         } else {
             setDetail(approvalDetail, ("승인 기한 (UTC): " + pending.expiresAt() + " · " + (current ? "검토 가능" : "현재 승인할 수 없음")
-                    + "\n승인은 이 요청에 한 번만 적용됩니다. 최종 안전 검사와 속도·동시성 제한은 유지됩니다.\n\n"
+                    + "\n승인은 이 요청에 한 번만 적용됩니다. 최종 안전 검사와 수동 속도 제한은 유지됩니다.\n\n"
                     + (entry == null ? UiText.error("APPROVAL_EVIDENCE_MISSING") : metadata(entry, access.rawCaptureInfo(entry.id())) + "\n\n" + screenContent(entry.id(), true))
                     + "\n\n승인 ID: " + pending.id() + "\n증거 ID: " + pending.evidenceId() + "\n만료 (UTC): " + pending.expiresAt()));
         }
@@ -1575,7 +1255,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
     private static JTable table(String name, AbstractTableModel model, boolean multi) {
         JTable table = named(new JTable(model), name); table.setAutoCreateRowSorter(true);
-        if (Set.of("traffic.table", "overlays.table", "candidates.table").contains(name)) table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        if (name.equals("traffic.table")) table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setSelectionMode(multi ? ListSelectionModel.MULTIPLE_INTERVAL_SELECTION : ListSelectionModel.SINGLE_SELECTION);
         DefaultTableCellRenderer plain = new DefaultTableCellRenderer(); plain.putClientProperty("html.disable", Boolean.TRUE);
         table.setDefaultRenderer(String.class, plain); table.setFillsViewportHeight(true); table.getTableHeader().setReorderingAllowed(false);
@@ -1585,8 +1265,6 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         int[] widths = name.startsWith("scope.") ? new int[]{80, 220, 180, 90, 420}
                 : name.equals("rules.table") ? new int[]{80, 250, 220, 520}
                 : name.equals("approval.table") ? new int[]{90, 430, 280, 110}
-                : name.equals("overlays.table") ? new int[]{150, 220, 300, 210, 210, 140, 320}
-                : name.equals("candidates.table") ? new int[]{220, 340, 150, 170, 100, 100, 220, 220}
                 : new int[]{60, 190, 100, 460, 160, 90, 340, 180, 180, 180, 260};
         for (int col = 0; col < table.getColumnCount(); col++) table.getColumnModel().getColumn(col).setPreferredWidth(col < widths.length ? widths[col] : 180);
         return table;
@@ -1677,8 +1355,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         protectionState.setText("확장 종료 · 보호 상태 확인 불가");
         setDetail(requestDetail, ""); setDetail(responseDetail, ""); setDetail(trafficDetail, "");
         trafficModel.setRows(List.of()); traffic = List.of();
-        overlayModel.setRows(List.of()); candidateModel.setRows(List.of()); migration = Map.of();
-        updateCandidateActions();
+        migration = Map.of();
         dialogs.closeEditors();
         version.setText("확장 종료 · 설정 변경과 승인 불가");
     }

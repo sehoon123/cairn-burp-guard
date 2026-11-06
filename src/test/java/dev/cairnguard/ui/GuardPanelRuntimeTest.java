@@ -35,7 +35,7 @@ class GuardPanelRuntimeTest {
     @Test void actualApprovalAndRateQueueStatesAreVisibleFilterableAndHumanDecidable() throws Exception {
         GuardConfig config = new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "/.*")), List.of(),
                 List.of(new Rule("ask", "승인 연습", true, Mode.ASK, Condition.leaf(Field.PATH, Match.EXACT, "/ask"))), Mode.ALLOW,
-                new GuardConfig.Limits(1000, 1000, Map.of(), 1, 10, 30_000, 30_000, 60_000));
+                new GuardConfig.Limits(1, 0, Map.of(), 1, 10, 30_000, 30_000, 60_000));
         GuardController controller = new GuardController(new ProjectAccess() {
             private String document = Json.write(config);
             @Override public Ref current() { return new Ref("synthetic-project", "Synthetic"); }
@@ -70,11 +70,10 @@ class GuardPanelRuntimeTest {
             });
             assertFalse(askResult.get(5, TimeUnit.SECONDS).allowed());
             assertEquals("DENIED", controller.traffic().stream().filter(e -> e.id().equals(ask.evidenceId())).findFirst().orElseThrow().reason());
-            held.permit().close(); held = null;
+            held = null;
             GuardController.Admission admitted = queuedResult.get(5, TimeUnit.SECONDS);
-            assertTrue(admitted.allowed()); admitted.permit().close();
+            assertTrue(admitted.allowed());
         } finally {
-            if (held != null) held.permit().close();
             if (panel.get() != null) edt(() -> { panel.get().close(); return null; });
             controller.close(); workers.close();
         }

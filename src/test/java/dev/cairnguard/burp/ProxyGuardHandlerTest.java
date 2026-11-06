@@ -35,6 +35,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.*;
 
 /** Synthetic in-process adapter tests. No real Burp, target traffic, auth API or sockets involved. */
+@SuppressWarnings("try") // Explicit shutdown precedes late-response and waiter checks.
 class ProxyGuardHandlerTest {
     @Test void allowedNativeRequestAndResponseAndAnnotationsAreTheSameObjects() throws Exception {
         GuardController controller = controller(); Actions actions = new Actions();
@@ -42,13 +43,13 @@ class ProxyGuardHandlerTest {
             HttpRequestToBeSent request = request(1);
             RequestToBeSentAction sent = handler.handleHttpRequestToBeSent(request);
             assertEquals(RequestAction.CONTINUE, sent.action()); assertSame(request, sent.request()); assertSame(request.annotations(), sent.annotations());
-            assertEquals(1, handler.inFlightCount()); assertEquals(1, gate(controller).get("active"));
+            assertEquals(1, handler.inFlightCount());
             assertEquals("FORWARDED", controller.traffic().getFirst().disposition());
             assertNull(actions.local);
             HttpResponseReceived response = response(1, "{\"ok\":true,\"token\":\"SYNTHETIC-RESPONSE-SECRET\"}");
             ResponseReceivedAction continued = handler.handleHttpResponseReceived(response);
             assertSame(response, continued.response()); assertSame(response.annotations(), continued.annotations());
-            assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
+            assertEquals(0, handler.inFlightCount());
             String exported = controller.exportJson(controller.traffic());
             assertTrue(exported.contains("Bearer SYNTHETIC-SECRET")); assertTrue(exported.contains("SYNTHETIC-RESPONSE-SECRET"), "evidence keeps originals");
             assertTrue(mockingDetails(request).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
@@ -66,7 +67,7 @@ class ProxyGuardHandlerTest {
             assertSame(response, handler.handleHttpResponseReceived(response).response());
             verify(request, never()).body(); verify(request, never()).url(); verify(request, never()).headers();
             verify(response, never()).body(); verify(response, never()).headers();
-            assertTrue(controller.traffic().isEmpty()); assertEquals(0, gate(controller).get("active"));
+            assertTrue(controller.traffic().isEmpty());
         }
     }
     @Test void defaultDenySpoofsLocal451WithFixedJsonAndNoRawUrlOrSecret() throws Exception {
@@ -80,9 +81,9 @@ class ProxyGuardHandlerTest {
             assertEquals(controller.traffic().getFirst().id(), local.path("evidenceId").asText());
             assertFalse(actions.local.contains("example.test")); assertFalse(actions.local.contains("SYNTHETIC"));
             assertEquals("BLOCKED", controller.traffic().getFirst().disposition()); assertEquals(451, controller.traffic().getFirst().statusCode());
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+             assertEquals(0, handler.inFlightCount());
             handler.handleHttpResponseReceived(response(1, "{}"));
-            assertEquals(0, gate(controller).get("active"));
+
         }
     }
     @Test void optionalBodyCopyErrorOmitsBodyWithWarningButPreservesNativeContinuation() throws Exception {
@@ -132,7 +133,7 @@ class ProxyGuardHandlerTest {
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions, 1, 1)) {
             HttpRequestToBeSent first = request(1); Future<RequestToBeSentAction> pending = worker.submit(() -> handler.handleHttpRequestToBeSent(first));
             await(() -> controller.approvals().size() == 1);
-            assertEquals(0, gate(controller).get("active")); verify(first.body()).getBytes();
+             verify(first.body()).getBytes();
             HttpRequestToBeSent second = request(2);
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(second).action());
             local(actions, "CALLBACK_CAPACITY"); verify(second, never()).body();
@@ -151,7 +152,7 @@ class ProxyGuardHandlerTest {
             Future<RequestToBeSentAction> b = workers.submit(() -> handler.handleHttpRequestToBeSent(second));
             await(() -> controller.approvals().size() == 2);
             verify(first.body()).getBytes(); verify(second.body()).getBytes();
-            assertEquals(0, gate(controller).get("active"));
+
             controller.pause(true);
             assertEquals(RequestAction.SPOOF_RESPONSE, a.get(3, TimeUnit.SECONDS).action());
             assertEquals(RequestAction.SPOOF_RESPONSE, b.get(3, TimeUnit.SECONDS).action());
@@ -174,7 +175,7 @@ class ProxyGuardHandlerTest {
             handler.handleHttpResponseReceived(response(1, "{}")); handler.handleHttpResponseReceived(response(2, "{}"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
-    @Test void continuationFactoryFailureClosesOnlyTheConclusivelyUnsentPermit() throws Exception {
+    @Test void continuationFactoryFailureNeverCommitsOrAssociatesResponseEvidence() throws Exception {
         GuardController controller = controller();
         Actions actions = new Actions() {
             @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request, Annotations annotations) { throw new IllegalStateException("SYNTHETIC-FACTORY-SECRET"); }
@@ -182,7 +183,7 @@ class ProxyGuardHandlerTest {
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
             local(actions, "CONTINUATION_FAILED"); assertFalse(actions.local.contains("SYNTHETIC"));
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+             assertEquals(0, handler.inFlightCount());
             assertEquals("BLOCKED", controller.traffic().getFirst().disposition());
         }
     }
@@ -191,7 +192,7 @@ class ProxyGuardHandlerTest {
         Actions actions = new Actions() { @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request, Annotations annotations) { return null; } };
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
-            verify(controller, never()).commitDetailed(any()); assertEquals(0, gate(controller).get("active"));
+            verify(controller, never()).commitDetailed(any());
         }
     }
     @Test void nativeActionIsConstructedBeforeFinalCommitAndPolicyChangeDuringFactoryBlocks() throws Exception {
@@ -204,10 +205,10 @@ class ProxyGuardHandlerTest {
         };
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
-            local(actions, "PAUSED"); assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
+            local(actions, "PAUSED"); assertEquals(0, handler.inFlightCount());
         }
     }
-    @Test void projectChangeInsideFactoryBlocksWithoutLeakingPermit() throws Exception {
+    @Test void projectChangeInsideFactoryBlocksWithoutAssociatingOldEvidence() throws Exception {
         MemoryProject project = new MemoryProject(config(Mode.ALLOW, 5, 60_000)); GuardController controller = new GuardController(project);
         Actions actions = new Actions() {
             @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request, Annotations annotations) {
@@ -217,86 +218,100 @@ class ProxyGuardHandlerTest {
         };
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
-            local(actions, "PROJECT_CHANGED"); assertEquals(0, gate(controller).get("active"));
+            local(actions, "PROJECT_CHANGED");
         }
     }
-    @Test void duplicateOutstandingMessageIdDropsOnlyTheUnsentDuplicate() throws Exception {
-        GuardController controller = controller(); Actions actions = new Actions();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
-            assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(request(1)).action());
-            assertEquals(1, actions.drops); assertNull(actions.local);
-            assertEquals(1, handler.inFlightCount()); assertEquals(1, gate(controller).get("active"));
-            assertEquals("BLOCKED", controller.traffic().getFirst().disposition());
-            handler.handleHttpResponseReceived(response(1, "{}")); assertEquals(0, gate(controller).get("active"));
+    @Test void duplicateOutstandingIdAllowsBothButNeverPairsEitherResponse() {
+        var controller=controller(); var actions=new Actions();
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            var first=request(1); var second=request(1);
+            assertSame(first,handler.handleHttpRequestToBeSent(first).request());
+            assertSame(second,handler.handleHttpRequestToBeSent(second).request());
+            assertEquals(0,handler.inFlightCount()); assertEquals(2,controller.traffic().size());
+            var requests=List.copyOf(controller.traffic());
+            handler.handleHttpResponseReceived(response(1,"ambiguous-full-synthetic-[REDACTED]"));
+            for(var row:requests) assertNull(controller.rawResponse(row.id()));
+            var unpaired=controller.traffic().getFirst();
+            assertEquals("unpaired_response",unpaired.outcome()); assertFalse(unpaired.requestCapture().present());
+            assertTrue(controller.rawResponse(unpaired.id()).contains("ambiguous-full-synthetic-[REDACTED]"));
         }
     }
-    @Test void duplicateMessageIdDuringApprovalWaitDropsWithoutCaptureOrAnotherPending() throws Exception {
-        GuardController controller = new GuardController(new MemoryProject(config(Mode.ASK, 5, 60_000))); Actions actions = new Actions();
-        ExecutorService worker = Executors.newSingleThreadExecutor();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            Future<RequestToBeSentAction> pending = worker.submit(() -> handler.handleHttpRequestToBeSent(request(1)));
-            await(() -> controller.approvals().size() == 1);
-            HttpRequestToBeSent duplicate = request(1);
-            assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(duplicate).action());
-            verify(duplicate, never()).body(); assertEquals(1, controller.approvals().size()); assertNull(actions.local);
-            controller.decideApproval(controller.approvals().getFirst().id(), false);
-            assertEquals(RequestAction.SPOOF_RESPONSE, pending.get(3, TimeUnit.SECONDS).action());
-            assertEquals(0, gate(controller).get("active"));
-        } finally { worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
-    }
-    @Test void duplicateCannotSpoofAnOlderCompletionEvenIfItWouldFailCapture() {
-        GuardController controller = controller(); Actions actions = new Actions();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            handler.handleHttpRequestToBeSent(request(1));
-            HttpRequestToBeSent duplicate = request(1); when(duplicate.headers()).thenThrow(new IllegalStateException("SYNTHETIC-SECRET"));
-            assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(duplicate).action());
-            verify(duplicate, never()).headers(); assertNull(actions.local); assertEquals(1, gate(controller).get("active"));
-            handler.handleHttpResponseReceived(response(1, "{}")); assertEquals(0, gate(controller).get("active"));
+    @Test void duplicateIdDuringApprovalDoesNotBypassOrDenyExplicitAsk() throws Exception {
+        var controller=new GuardController(new MemoryProject(config(Mode.ASK,5,60_000)));
+        try(var handler=new ProxyGuardHandler(controller,new Actions());var workers=Executors.newVirtualThreadPerTaskExecutor()) {
+            var one=workers.submit(()->handler.handleHttpRequestToBeSent(request(1)));
+            await(()->controller.approvals().size()==1);
+            var two=workers.submit(()->handler.handleHttpRequestToBeSent(request(1)));
+            await(()->controller.approvals().size()==2);
+            for(var pending:controller.approvals()) controller.decideApproval(pending.id(),true);
+            assertEquals(RequestAction.CONTINUE,one.get(3,TimeUnit.SECONDS).action());
+            assertEquals(RequestAction.CONTINUE,two.get(3,TimeUnit.SECONDS).action());
+            assertEquals(0,handler.inFlightCount());
         }
     }
-    @Test void unavailableMessageIdDropsInsteadOfCreatingAnUncorrelatableLocalResponse() {
-        GuardController controller = spy(controller()); Actions actions = new Actions();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            HttpRequestToBeSent request = request(1); when(request.messageId()).thenThrow(new IllegalStateException("SYNTHETIC-SECRET"));
-            assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(request).action());
-            verify(controller).prepareRejected("CAPTURE_FAILED"); verify(request, never()).body(); assertNull(actions.local);
-            assertEquals(0, handler.inFlightCount());
+    @Test void deniedDuplicateCannotTurnItsLocalResponseIntoAnOlderUpstreamPair() {
+        var controller=controller(); var actions=new Actions();
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            handler.handleHttpRequestToBeSent(request(1)); var old=controller.traffic().getFirst().id();
+            var duplicate=request(1); when(duplicate.httpService().host()).thenReturn("outside.test");
+            assertEquals(RequestAction.SPOOF_RESPONSE,handler.handleHttpRequestToBeSent(duplicate).action());
+            handler.handleHttpResponseReceived(response(1,"local-or-upstream-unknown"));
+            assertNull(controller.rawResponse(old));
         }
     }
-    @Test void missingResponsesNeverRecycleAndLateActualResponseClearsStalledPermitEvenAfterClose() throws Exception {
-        GuardController controller = new GuardController(new MemoryProject(config(Mode.ALLOW, 5, 1))); Actions actions = new Actions();
-        ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions);
-        assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
-        Thread.sleep(5);
-        assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(2)).action());
-        local(actions, "IN_FLIGHT_TIMEOUT"); assertEquals(1, gate(controller).get("active")); assertEquals(1, handler.inFlightCount());
-        handler.close(); handler.close();
-        assertEquals(1, gate(controller).get("active")); assertEquals(1, handler.inFlightCount());
-        handler.handleHttpResponseReceived(response(1, "{}"));
-        assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+    @Test void unreadableIdDoesNotDenyButCannotInventResponseProvenance() {
+        var controller=controller(); var actions=new Actions();
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            var request=request(1); when(request.messageId()).thenThrow(new IllegalStateException("SYNTHETIC"));
+            assertSame(request,handler.handleHttpRequestToBeSent(request).request());
+            handler.handleHttpResponseReceived(response(1,"unknown"));
+            assertNull(controller.rawResponse(controller.traffic().getFirst().id()));
+            assertEquals(0,handler.inFlightCount()); assertNull(actions.local);
+        }
     }
-    @Test void responseMismatchAndDuplicatesNeverReleaseOtherPermits() {
+    @Test void missingCallbackPastOldTimeoutAndHundredFlightCliffAllowsLaterPathsAndHosts() throws Exception {
+        var base=config(Mode.ALLOW,1,1);
+        var scopes=new java.util.ArrayList<>(base.allowScope()); scopes.add(new GuardConfig.ScopeEntry(true,"other.test","https",443,""));
+        var policy=new GuardConfig(2,scopes,List.of(),List.of(),Mode.ALLOW,base.limits());
+        var controller=new GuardController(new MemoryProject(policy)); var actions=new Actions();
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            var first=request(1); assertSame(first,handler.handleHttpRequestToBeSent(first).request());
+            var old=controller.traffic().getFirst().id(); Thread.sleep(5);
+            for(int id=2;id<=127;id++) {
+                var next=request(id); when(next.path()).thenReturn(id%3==0?"/safe":"/later/"+id);
+                if(id%2==0) when(next.httpService().host()).thenReturn("other.test");
+                assertSame(next,handler.handleHttpRequestToBeSent(next).request(),"request "+id);
+            }
+            assertEquals(127,handler.inFlightCount()); assertEquals(127,controller.traffic().size());
+            assertNull(controller.rawResponse(old)); assertNull(actions.local);
+            var late=response(1,"late-full-original"); assertSame(late,handler.handleHttpResponseReceived(late).response());
+            assertTrue(controller.rawResponse(old).contains("late-full-original"));
+            handler.close(); handler.handleHttpResponseReceived(response(2,"after-close")); assertTrue(controller.traffic().isEmpty());
+        }
+    }
+    @Test void responseMismatchAndDuplicatesNeverPairOtherProtectedRequests() {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             handler.handleHttpRequestToBeSent(request(1)); handler.handleHttpRequestToBeSent(request(2));
-            handler.handleHttpResponseReceived(response(99, "{}")); assertEquals(2, gate(controller).get("active"));
+            handler.handleHttpResponseReceived(response(99, "{}"));
             HttpResponseReceived repeater = response(1, "{}"); when(repeater.toolSource()).thenReturn(source(ToolType.REPEATER));
-            handler.handleHttpResponseReceived(repeater); assertEquals(2, gate(controller).get("active"));
+            handler.handleHttpResponseReceived(repeater);
             handler.handleHttpResponseReceived(response(1, "{}")); handler.handleHttpResponseReceived(response(1, "{}"));
-            assertEquals(1, gate(controller).get("active")); assertEquals(1, handler.inFlightCount());
-            handler.handleHttpResponseReceived(response(2, "{}")); assertEquals(0, gate(controller).get("active"));
+             assertEquals(1, handler.inFlightCount());
+            handler.handleHttpResponseReceived(response(2, "{}"));
         }
     }
-    @Test void trueNativeCorrelationIsBoundedToOneHundred() {
-        GuardController controller = new GuardController(new MemoryProject(config(Mode.ALLOW, 100, 60_000))); Actions actions = new Actions();
-        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
-            for (int i = 0; i < 100; i++) assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(i)).action());
-            assertEquals(100, handler.inFlightCount()); assertEquals(100, gate(controller).get("active"));
-            assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(100)).action());
-            assertEquals(100, handler.inFlightCount()); assertEquals(100, gate(controller).get("active"));
-            for (int i = 0; i < 100; i++) handler.handleHttpResponseReceived(response(i, "{}"));
-            assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
+    @Test void matchingNormal500AndRepeatedFailuresNeverDenyTheNextOriginal() {
+        var controller=controller(); var actions=new Actions();
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            for(int id=1;id<=125;id++) {
+                var request=request(id); assertSame(request,handler.handleHttpRequestToBeSent(request).request());
+                var response=response(id,"synthetic-full-500"); when(response.statusCode()).thenReturn((short)500);
+                assertSame(response,handler.handleHttpResponseReceived(response).response());
+                assertEquals(500,controller.traffic().getFirst().statusCode());
+            }
+            var next=request(126); assertSame(next,handler.handleHttpRequestToBeSent(next).request());
+            assertNull(actions.local); assertEquals("PROTECTED",controller.status().get("guardState"));
         }
     }
     @Test void spoofFactoryFailureDropsAndBothDenialFactoriesFailCategorically() {
@@ -352,13 +367,13 @@ class ProxyGuardHandlerTest {
             Future<RequestToBeSentAction> pending = worker.submit(() -> handler.handleHttpRequestToBeSent(second));
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             handler.handleHttpResponseReceived(response(1, "{\"token\":\"SYNTH-RESPONSE-ORIGINAL\"}"));
-            assertEquals(0, gate(controller).get("active"), "the actual completion closes its permit");
+
             TrafficEntry row = controller.traffic().stream().filter(e -> e.statusCode() != null && e.statusCode() == 200).findFirst().orElseThrow();
             assertFalse(row.responseCapture().bodyOmitted());
             assertTrue(controller.rawResponse(row.id()).contains("SYNTH-RESPONSE-ORIGINAL"));
             assertTrue(controller.exportJson(controller.traffic()).contains("SYNTH-RESPONSE-ORIGINAL"));
             release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(3, TimeUnit.SECONDS).action());
-            handler.handleHttpResponseReceived(response(2, "{}")); assertEquals(0, gate(controller).get("active"));
+            handler.handleHttpResponseReceived(response(2, "{}"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
     @Test void oversizedResponseUsesExplicitOmissionNotZeroSentinelAndContinuesOriginal() {
@@ -368,7 +383,7 @@ class ProxyGuardHandlerTest {
             ByteArray body = mock(ByteArray.class); when(body.length()).thenReturn(Integer.MAX_VALUE); when(response.body()).thenReturn(body);
             assertSame(response, handler.handleHttpResponseReceived(response).response()); // mocked getBytes() supplies nothing
             TrafficEntry row = controller.traffic().getFirst(); assertTrue(row.responseCapture().bodyOmitted()); assertTrue(row.truncated());
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+             assertEquals(0, handler.inFlightCount());
         }
     }
     @Test void responseCaptureFailureIsCategoricalOmissionAndManyHeadersAreRetainedWhole() {
@@ -386,10 +401,10 @@ class ProxyGuardHandlerTest {
             assertFalse(controller.traffic().getFirst().responseCapture().bodyOmitted());
             String exported = controller.exportJson(controller.traffic());
             assertFalse(exported.contains("SYNTHETIC-RESPONSE-SECRET"), "native exception text is never captured");
-            assertTrue(exported.contains("SYNTHETIC-HEADER-SECRET")); assertEquals(0, gate(controller).get("active"));
+            assertTrue(exported.contains("SYNTHETIC-HEADER-SECRET"));
         }
     }
-    @Test void responseContinuationFailureStillClosesActualCompletionWithoutExceptionContent() {
+    @Test void responseContinuationFailureKeepsObservedEvidenceWithoutExceptionContent() {
         GuardController controller = controller();
         Actions actions = new Actions() {
             @Override public ResponseReceivedAction continueResponse(HttpResponseReceived response, Annotations annotations) { throw new IllegalStateException("SYNTHETIC-SECRET"); }
@@ -398,7 +413,8 @@ class ProxyGuardHandlerTest {
             handler.handleHttpRequestToBeSent(request(1));
             IllegalStateException error = assertThrows(IllegalStateException.class, () -> handler.handleHttpResponseReceived(response(1, "{}")));
             assertEquals("NATIVE_RESPONSE_CONTINUATION_UNAVAILABLE", error.getMessage()); assertNull(error.getCause());
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+             assertEquals(0, handler.inFlightCount());
+            assertTrue(controller.rawResponse(controller.traffic().getFirst().id()).contains("{}"));
         }
     }
     @Test void closeWakesApprovalWaitAndRejectsNewRequestsWithoutBodyRead() throws Exception {
@@ -410,11 +426,14 @@ class ProxyGuardHandlerTest {
             assertEquals(RequestAction.SPOOF_RESPONSE, pending.get(3, TimeUnit.SECONDS).action()); assertTrue(controller.approvals().isEmpty());
             HttpRequestToBeSent second = request(2);
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(second).action());
-            verify(second, never()).body(); local(actions, "SHUTDOWN"); assertEquals(0, gate(controller).get("active"));
+            verify(second, never()).body(); local(actions, "SHUTDOWN");
         } finally { handler.close(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
-    @Test void closeWakesRateWaitButDoesNotRecycleAlreadyReleasedNativeRequest() throws Exception {
-        GuardController controller = new GuardController(new MemoryProject(config(Mode.ALLOW, 1, 60_000))); Actions actions = new Actions();
+    @Test void closeWakesPacingWaitAndDisposesOnlyEvidenceMetadata() throws Exception {
+        var base=config(Mode.ALLOW,1,60_000); var l=base.limits();
+        var paced=new GuardConfig(base.schemaVersion(),base.allowScope(),base.blockScope(),base.rules(),base.defaultMode(),
+                new GuardConfig.Limits(1,0,Map.of(),l.maxConcurrent(),l.maxQueued(),l.queueTimeoutMillis(),l.approvalTimeoutMillis(),l.requestTimeoutMillis()));
+        GuardController controller = new GuardController(new MemoryProject(paced)); Actions actions = new Actions();
         ExecutorService worker = Executors.newSingleThreadExecutor(); ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions, 2, 1);
         try {
             handler.handleHttpRequestToBeSent(request(1)); HttpRequestToBeSent second = request(2);
@@ -422,13 +441,13 @@ class ProxyGuardHandlerTest {
             await(() -> ((Number) gate(controller).get("queued")).intValue() == 1);
             verify(second.body()).getBytes(); handler.close();
             assertEquals(RequestAction.SPOOF_RESPONSE, pending.get(3, TimeUnit.SECONDS).action());
-            assertEquals(1, gate(controller).get("active")); assertEquals(1, handler.inFlightCount());
-            handler.handleHttpResponseReceived(response(1, "{}")); assertEquals(0, gate(controller).get("active"));
+             assertEquals(0, handler.inFlightCount());
+            handler.handleHttpResponseReceived(response(1, "{}"));
         } finally { handler.close(); worker.shutdownNow(); assertTrue(worker.awaitTermination(3, TimeUnit.SECONDS)); }
     }
     @Test void unknownControllerCategoriesAndEvidenceIdNeverEchoArbitraryContent() throws Exception {
         GuardController controller = spy(controller()); Actions actions = new Actions();
-        doReturn(new GuardController.Admission(false, "SYNTHETIC-REASON-SECRET", null)).when(controller).authorize(any());
+        doReturn(new GuardController.Admission(false, "SYNTHETIC-REASON-SECRET")).when(controller).authorize(any());
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(1)).action());
             local(actions, "ADAPTER_ERROR"); assertFalse(actions.local.contains("SYNTHETIC"));
@@ -443,6 +462,18 @@ class ProxyGuardHandlerTest {
             assertEquals("unavailable", local(actions, "RULE_BLOCK").path("evidenceId").asText()); assertFalse(actions.local.contains("SYNTHETIC"));
         }
     }
+    @Test void clearCannotEraseUsedIdFencingOrResurrectAnOldResponse() {
+        var controller=controller();
+        try(var handler=new ProxyGuardHandler(controller,new Actions())) {
+            handler.handleHttpRequestToBeSent(request(1)); var old=controller.traffic().getFirst().id();
+            controller.clearEvidence(); handler.handleHttpResponseReceived(response(1,"cleared-old"));
+            assertTrue(controller.traffic().isEmpty()); assertNull(controller.rawResponse(old));
+            handler.handleHttpRequestToBeSent(request(1)); var reused=controller.traffic().getFirst().id();
+            handler.handleHttpResponseReceived(response(1,"duplicate-old-or-new-unknown"));
+            assertNull(controller.rawResponse(reused));
+        }
+    }
+
     private static JsonNode local(Actions actions, String reason) throws Exception {
         String wire = actions.local; assertNotNull(wire); assertTrue(wire.startsWith("HTTP/1.1 451 "));
         JsonNode json = Json.MAPPER.readTree(wire.substring(wire.indexOf("\r\n\r\n") + 4));

@@ -479,5 +479,36 @@ class RawTrafficStoreTest {
         assertOneDecision("us-ascii ascii", List.of(new Header("Content-Type", "text/plain; charset=us-ascii")), "ok".getBytes(StandardCharsets.US_ASCII), true);
         assertOneDecision("us-ascii non-ascii", List.of(new Header("Content-Type", "text/plain; charset=us-ascii")), eAcute, false);
         assertOneDecision("complete capture with no Content-Type is a true absence", List.of(new Header("X-Other", "1")), eAcute, true);
+    }    @Test void unpairedProtectedResponseRetainsEveryByteButNoInventedRequestInAnyExport() throws Exception {
+        var store=new EvidenceStore(); var source=store.begin("p","p",empty(),ALLOW,1);
+        byte[] body=("synthetic-plaintext-[REDACTED]-"+"x".repeat(2*1024*1024)).getBytes(StandardCharsets.UTF_8);
+        var original=body.clone(); var headers=List.of(new Header("Content-Type","text/plain"),new Header("Set-Cookie","synthetic-secret=unmasked"));
+        store.unpairedResponse(source,500,headers,body,body.length,true,true); body[0]=0;
+        var row=store.snapshot().getFirst(); var id=row.id();
+        assertEquals("unpaired_response",row.outcome()); assertEquals("",row.method()); assertEquals("",row.url());
+        assertFalse(row.requestCapture().present()); assertNull(store.rawRequest(id));
+        assertEquals(false,store.rawCaptureInfo(id).get("requestAvailable"));
+        assertEquals(true,store.rawCaptureInfo(id).get("responseAvailable"));
+        assertNull(store.rawResponse(source)); assertEquals(1,count(store,"begun"));
+        assertEquals(0,count(store,"forwarded")); assertEquals(0,count(store,"blocked"));
+        assertEquals(0,count(store,"upstreamResponses")); assertEquals(1,count(store,"unpairedResponses"));
+        var parser=new com.fasterxml.jackson.databind.ObjectMapper();
+        var json=parser.readTree(store.humanEvidence(List.of(id)).json(Map.of()));
+        assertTrue(json.at("/entries/0/original/request").isNull());
+        assertEquals("RESPONSE_CORRELATION_UNAVAILABLE",json.at("/entries/0/original/requestUnavailable").asText());
+        assertArrayEquals(original,java.util.Base64.getDecoder().decode(json.at("/entries/0/original/response/body/base64").asText()));
+        var har=parser.readTree(store.humanEvidence(List.of(id)).har(Map.of()));
+        assertEquals("",har.at("/log/entries/0/request/method").asText());
+        assertEquals("RESPONSE_CORRELATION_UNAVAILABLE",har.at("/log/entries/0/request/_unavailable").asText());
+        assertArrayEquals(original,java.util.Base64.getDecoder().decode(har.at("/log/entries/0/response/content/text").asText()));
+        for(String output:List.of(store.exportJson(store.snapshot()),store.exportHar(store.snapshot()),store.rawResponse(id))) {
+            assertTrue(output.contains("synthetic-secret=unmasked")); assertTrue(output.contains("synthetic-plaintext-[REDACTED]-"));
+        }
+        store.clear(); store.unpairedResponse(source,200,headers,original,original.length,true,true);
+        assertTrue(store.snapshot().isEmpty());
+        store.begin("other","other",empty(),ALLOW,1);
+        store.unpairedResponse(source,200,headers,original,original.length,true,true);
+        assertEquals(1,store.snapshot().size());
     }
+
 }

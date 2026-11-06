@@ -64,7 +64,7 @@ class GuardPanelTest {
         open();
         edt(() -> {
             JTabbedPane tabs = get("tabs", JTabbedPane.class);
-            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정", "자동 차단", "대용량 후보", "사건 내보내기"),
+            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정", "사건 내보내기"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
             assertTrue(get("dashboard.state", JLabel.class).getText().contains("모든 요청 차단"));
             assertTrue(get("dashboard.guidance", JTextArea.class).getText().contains("허용 대상 등록"));
@@ -273,12 +273,12 @@ class GuardPanelTest {
         dialogs.editScript = (form, save) -> {
             assertInstanceOf(SettingsEditor.class, form);
             get("settings.globalRps", JSpinner.class).setValue(2);
-            get("settings.requestTimeoutSeconds", JSpinner.class).setValue(new java.math.BigDecimal("1.001"));
+            get("settings.queueTimeoutSeconds", JSpinner.class).setValue(new java.math.BigDecimal("1.001"));
             get("settings.defaultMode", JComboBox.class).setSelectedItem(Mode.ASK);
             save.run();
         };
         edt(() -> { click("settings.edit"); return null; });
-        assertEquals(2, access.policy.limits().globalRps()); assertEquals(1001, access.policy.limits().requestTimeoutMillis());
+        assertEquals(2, access.policy.limits().globalRps()); assertEquals(1001, access.policy.limits().queueTimeoutMillis());
         assertEquals(Mode.ASK, access.policy.defaultMode()); assertEquals(original.allowScope(), access.policy.allowScope());
         assertEquals(original.rules(), access.policy.rules()); assertEquals(1, access.updates);
         assertTrue(edt(() -> get("settings.summary", JTextArea.class).getText().contains("1.001초")));
@@ -302,7 +302,7 @@ class GuardPanelTest {
             get("settings.globalRps", JSpinner.class).setValue(2); access.revision++; panel.refreshNow(); save.run();
         };
         edt(() -> { click("settings.edit"); return null; });
-        assertEquals(0, access.updateAttempts); assertEquals(5, access.policy.limits().globalRps());
+        assertEquals(0, access.updateAttempts); assertEquals(0, access.policy.limits().globalRps());
         assertEquals(List.of(UiText.error("STALE_POLICY")), dialogs.errors);
     }
 
@@ -372,7 +372,7 @@ class GuardPanelTest {
                 valid.replace("\"schemaVersion\" : 2", "\"schemaVersion\" : 2, \"schemaVersion\" : 2")));
         for (String port : List.of("null", "443.5")) invalid.add(valid.replace("\"port\" : 443", "\"port\" : " + port));
         invalid.add(valid.replace("\"port\" : 443,", ""));
-        for (String rate : List.of("null", "2.5")) invalid.add(valid.replace("\"globalRps\" : 5", "\"globalRps\" : " + rate));
+        for (String rate : List.of("null", "2.5")) invalid.add(valid.replace("\"globalRps\" : 0", "\"globalRps\" : " + rate));
         for (String text : invalid) {
             assertNotEquals(valid, text);
             dialogs.editScript = (form, save) -> { get("advanced.policyJson", JTextArea.class).setText(text); save.run(); };
@@ -519,10 +519,10 @@ class GuardPanelTest {
         edt(() -> { assertEquals(saved, new RuleEditor(saved).value()); return null; });
     }
 
-    @Test void overviewReportsStalledGateWithoutRecyclingPermits() throws Exception {
+    @Test void overviewNeverReportsRetiredNativeStallAsCurrentEnforcement() throws Exception {
         access.policy = policyWithAllow(); access.stalled = 1; open();
-        assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("응답 확인 필요")));
-        assertTrue(edt(() -> get("dashboard.guidance", JTextArea.class).getText().contains("자리를 강제로 비우지")));
+        assertFalse(edt(() -> get("dashboard.state", JLabel.class).getText().contains("응답 확인 필요")));
+        assertFalse(edt(() -> get("dashboard.guidance", JTextArea.class).getText().contains("격리")));
         assertNull(edt(() -> find(panel, "dashboard.reset")));
     }
 

@@ -25,6 +25,67 @@ activation, use a live project, change desktop/provider/credentials or publish a
 candidate. Stop at licensing/EULA/user-input blockers and report them. Never copy
 license/activation/profile/auth state from an existing installation.
 
+## Current removal-aware procedure
+
+**Current candidate: native UNVERIFIED.** The automatic-blocking removal supersedes
+all retired detector/permit instructions below. This section is the entry point for
+new candidate checks, not a PASS log or permission to operate Burp. The authorization,
+disposable-profile, loopback-only, synthetic-data and licensing restrictions above
+still apply. Do not modify live projects, auth, profiles or other people's listeners.
+
+1. Freeze the exact source and hash-verified JAR, independently reproduce the JAR,
+   record product/JVM/protocol and results per case. Fresh unit, adapter, owned
+   socket, Python/template and authenticated Swing results are separate from native
+   callback delivery and target arrival; old hashes/results cannot validate new bytes.
+2. A human loads only this exact JAR in the authorized disposable instance. Keep
+   `guardListenerPorts=[]` (all listeners); H remains deferred. Check current manual
+   scope/rules/traffic/approval/settings UI, not removed overlay/candidate tabs.
+3. On minimal exact owned services, check empty allowlist, actual-service scope,
+   BLOCK/ASK, one-time approval, manual pause, exact configured query/body-free GET
+   health exception, policy/project/final-send/shutdown protections and byte-preserving
+   allowed requests/responses. An EXEMPT bypasses ordinary BLOCK/ASK, not scope,
+   manual pause, authored pacing/intent or lifecycle checks. Optional unavailable
+   inspection is reported honestly, not a blanket denial or successful inspection.
+4. Check RPS defaults 0/0 (off), independent positive global/host/override pacing,
+   and the all-rates-off unsaved draft including all overrides; only explicit Save
+   with project/revision CAS applies it. There is **no native concurrency ceiling**
+   and no completion-dependent permit, timeout quarantine or correlation admission
+   limit. Do not claim a missing callback is repaired or that handoff proves arrival.
+5. With authored rates off, a prior 500, large response, fanout, held/missing/late
+   callback or reused ID must not automatically deny the next otherwise allowed
+   request. No circuit/half-open/automatic pause/overlay exception or release controls
+   exist. Legacy settings round-trip as inactive data. Observe fixture arrivals and
+   typed local denial metadata separately; upstream failures alone are not guard blocks.
+   Missing callbacks may not be controllable in Burp: label such cases UNVERIFIED,
+   not simulated native completion or an inferred recovery.
+6. Confirm separately confirmed runtime-only OFF skips new scope/rules/inspection/
+   approvals/pacing/intent and content capture, cancels old waits without approval,
+   preserves manual pause/intent and old protected evidence association, and resets
+   on project change/unavailability/restart. ID reuse never denies allowed callbacks.
+   OFF keeps no traffic association; content-free used-ID tombstones (including OFF)
+   fence evidence pairing only. Never guess unknown/OFF/mixed/cleared/old-project
+   response provenance or infer target delivery from the OFF count.
+7. Inspect complete unmasked originals and explicitly consented owner-only atomic
+   JSON/HAR/incident exports using synthetic secrets. No collection/retention/export
+   quota exists; accepted risks are plaintext credential exposure, unbounded heap/OOM,
+   UI latency and intentionally uncontrolled native concurrency. Clear/project/unload
+   raw lifecycle still applies. Capture has no authority to stall future allowed work.
+
+Record each case as observed PASS/FAIL/UNVERIFIED on exact bytes; do not transfer
+archival helper fixture-unit success into native acceptance. No native run was
+performed by the reviewfix1 documentation correction.
+
+## Historical checklist and helper — not current candidate instructions
+
+**Everything below is archival pre-removal procedure/context, including prospective
+0.2.0 cases, A–G/OFF phases and `scripts/native_burp_smoke.py` recipes.** Retired
+heavy/circuit/fanout, automatic pause/overlays/candidates, permits/quarantine/native
+concurrency and ID-collision denial expectations do NOT apply to the current JAR.
+The retained helper is not a removal-aware native acceptance runner. Any masking,
+collection-limit or legacy UI expectation below is also superseded. Preserve these
+historical procedures/results as historical; do not execute them as a current gate.
+Use the current section above; historical native reports remain unchanged.
+
 ## Preconditions and recording
 
 1. Freeze intended source/lock/legal files, run clean Java/Python and isolated Swing

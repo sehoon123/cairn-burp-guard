@@ -41,6 +41,7 @@ public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<S
     public record Fanout(long windowMillis, int distinctPaths, FanoutAction action) {}
     public record ProbePath(String scheme, String host, int port, String path) {}
     public record PathByteLimit(String scheme, String host, int port, String path, long maxBytes) {}
+    /** Rates: 0=off. maxConcurrent/requestTimeout and detector fields are inactive round-trip data only. */
     public record Limits(int globalRps, int perHostRps, Map<String,Integer> hostRps, int maxConcurrent,
                          int maxQueued, long queueTimeoutMillis, long approvalTimeoutMillis,
                          long requestTimeoutMillis, long perPathMaxResponseBytes, long autoBlockMillis,
@@ -56,7 +57,7 @@ public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<S
             fanoutExceptions = List.copyOf(fanoutExceptions);
         }
         /**
-         * Compatibility shape (17 fields): large-response master ON and no fan-out exceptions. Production
+         * Compatibility shape (17 fields): legacy large-response flag true and no fan-out exceptions. Production
          * copiers MUST use the full 19-field constructor so authored detector settings are never dropped.
          */
         public Limits(int globalRps, int perHostRps, Map<String,Integer> hostRps, int maxConcurrent,
@@ -98,7 +99,7 @@ public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<S
         return new GuardConfig(2, List.of(), List.of(), List.of(
                 new Rule("delete-method", "Block DELETE method", true, Mode.BLOCK,
                         Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"))), Mode.ALLOW,
-                new Limits(5, 5, Map.of(), 5, 100, 30_000, 30_000, 60_000,
+                new Limits(0, 0, Map.of(), 5, 100, 30_000, 30_000, 60_000,
                         5L * 1_048_576, 600_000, null, // 5xx circuit is OPTIONAL and OFF by default
                         new Fanout(60_000, 100, FanoutAction.WARN), 0, false, List.of(), List.of(), List.of(), true, List.of()));
     }

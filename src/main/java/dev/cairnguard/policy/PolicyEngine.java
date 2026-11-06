@@ -389,7 +389,7 @@ public final class PolicyEngine {
     private static void bytes(long bytes) { require(bytes >= 0 && bytes <= 2_147_483_648L, "INVALID_LIMITS"); }
     private static void window(long millis) { require(millis >= 1_000 && millis <= 3_600_000, "INVALID_LIMITS"); }
     private static void openTime(long millis) { require(millis >= 1_000 && millis <= 86_400_000, "INVALID_LIMITS"); }
-    private static void rate(int rate) { require(rate >= 1 && rate <= 1_000, "INVALID_LIMITS"); }
+    private static void rate(int rate) { require(rate >= 0 && rate <= 1_000, "INVALID_LIMITS"); }
     private static void timeout(long timeout) { require(timeout >= 1 && timeout <= 600_000, "INVALID_LIMITS"); }
     private static void require(boolean valid, String category) { if (!valid) throw invalid(category); }
     private static IllegalArgumentException invalid(String category) { return new IllegalArgumentException(category); }

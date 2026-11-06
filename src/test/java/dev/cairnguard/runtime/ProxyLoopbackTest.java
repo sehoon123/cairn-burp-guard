@@ -182,7 +182,6 @@ class ProxyLoopbackTest {
             assertArrayEquals(originalBody, request.body());
             assertEquals(originalHeaders, request.headers());
             assertEquals("FORWARDED", h.row(reply).disposition());
-            assertEquals(0, h.gate("active"));
             assertEquals(1, h.evidence("upstreamResponses"));
             String exported = h.controller.exportJson(h.controller.traffic());
             assertTrue(exported.contains(SECRET));
@@ -198,7 +197,6 @@ class ProxyLoopbackTest {
             await(() -> h.controller.approvals().size() == 1);
             assertEquals(0, h.socketOpens.get());
             assertEquals(0, h.upstream.hits.get());
-            assertEquals(0, h.gate("active"));
             String id = h.controller.approvals().getFirst().id();
             assertTrue(h.controller.decideApproval(id, false));
             assertLocalBlock(h, get(result), "DENIED");
@@ -232,7 +230,6 @@ class ProxyLoopbackTest {
             assertLocalBlock(h, reply, "POLICY_CHANGED");
             assertEquals(0, h.socketOpens.get());
             assertEquals(0, h.upstream.hits.get());
-            assertEquals(0, h.gate("active"), "confirmed pre-dispatch rejection releases its own permit");
         }
     }
 
@@ -240,7 +237,7 @@ class ProxyLoopbackTest {
 
     @ParameterizedTest @EnumSource(WaitingChange.class)
     void queuedStaleRequestAddsZeroHitsWhileAlreadyRunningRequestKeepsPermit(WaitingChange change) throws Exception {
-        try (Harness h = new Harness(Mode.ALLOW, limits(1_000, 1_000, 1, 10_000))) {
+        try (Harness h = new Harness(Mode.ALLOW, limits(1, 0, 1, 10_000))) {
             h.upstream.holdResponses();
             Wire first = h.wire("GET", "/first", "application/json", "", List.of());
             Future<Reply> running = h.callers.submit(() -> h.forward(first));
@@ -257,16 +254,28 @@ class ProxyLoopbackTest {
             assertEquals(451, denied.status());
             assertEquals(1, h.upstream.hits.get(), "only the earlier, already-started request reached upstream");
             assertEquals(1, h.socketOpens.get());
-            assertEquals(1, h.gate("active"));
             assertFalse(running.isDone(), "controller state change does not manufacture a real completion");
             h.upstream.releaseResponses();
             assertTrue(get(running).forwarded());
-            assertEquals(0, h.gate("active"));
             assertEquals(List.of("/first"), h.upstream.captures.stream().map(Capture::target).toList());
         }
     }
 
-    @Test void sixWorkersShareFiveRpsAndTwoActualUnansweredUpstreamOperations() throws Exception {
+    @Test void heldOwnedResponseBeyondLegacyTimeoutDoesNotDenyLaterRequests() throws Exception {
+        try(var h=new Harness(Mode.ALLOW,limits(0,0,1,10))) {
+            h.upstream.holdResponses();
+            var first=h.callers.submit(()->h.forward(h.wire("GET","/hold-first","application/json","",List.of())));
+            await(()->h.upstream.hits.get()==1); Thread.sleep(25);
+            var later=h.callers.submit(()->h.forward(h.wire("GET","/safe","application/json","",List.of())));
+            await(()->h.upstream.hits.get()==2);
+            assertFalse(first.isDone()); assertFalse(later.isDone()); assertEquals(0,h.gate("queued"));
+            h.upstream.releaseResponses();
+            assertTrue(get(first).forwarded()); assertTrue(get(later).forwarded()); assertEquals(2,h.upstream.hits.get());
+            assertEquals(2,h.evidence("forwarded")); assertEquals(2,h.evidence("upstreamResponses")); h.upstream.assertHealthy();
+        }
+    }
+
+    @Test void sixWorkersShareFiveRpsWithoutANativeConcurrencyAdmissionGate() throws Exception {
         try (Harness h = new Harness(Mode.ALLOW, limits(5, 5, 2, 10_000))) {
             h.upstream.holdResponses();
             CountDownLatch ready = new CountDownLatch(6);
@@ -285,10 +294,9 @@ class ProxyLoopbackTest {
             }
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             start.countDown();
-            await(() -> h.upstream.hits.get() == 2 && h.gate("queued") == 4);
-            assertEquals(2, h.upstream.active.get(), "two real owned handlers are still awaiting permission to respond");
-            assertEquals(2, h.gate("active"));
-            assertEquals(2, h.gate("admitted"), "rate slots alone do not recycle in-flight ownership");
+            await(() -> h.upstream.hits.get() == 6);
+            assertEquals(6, h.upstream.active.get(), "authored pacing does not impose legacy native concurrency 2");
+            assertEquals(6, h.gate("admitted"));
             assertTrue(results.stream().noneMatch(Future::isDone));
             h.upstream.releaseResponses();
             List<Reply> replies = new ArrayList<>();
@@ -296,40 +304,16 @@ class ProxyLoopbackTest {
             assertEquals(12, replies.size());
             assertTrue(replies.stream().allMatch(r -> r.forwarded() && r.status() == 200));
             assertEquals(12, h.upstream.hits.get());
-            assertEquals(2, h.upstream.maxActive.get(), "no third unfinished owned operation while two permits are in flight");
+            assertTrue(h.upstream.maxActive.get() >= 6);
             List<Long> admissions = h.admissionTimes.stream().sorted().toList();
             assertEquals(12, admissions.size());
             for (int i = 1; i < admissions.size(); i++)
-                assertTrue(admissions.get(i) - admissions.get(i - 1) >= 200_000_000L,
-                        "5 RPS minimum gap asserted at gate admission, NOT socket/server arrival timing");
-            assertEquals(0, h.gate("active"));
+                assertTrue(admissions.get(i) - admissions.get(i - 1) >= 180_000_000L,
+                        "synthetic caller handoff samples allow scheduling jitter; exact gate cadence is tested in RateGateTest");
             assertEquals(0, h.gate("queued"));
             assertEquals(12, h.evidence("forwarded"));
             assertEquals(12, h.evidence("upstreamResponses"));
             h.upstream.assertHealthy();
-        }
-    }
-
-    @Test void lostResponseBudgetQuarantinesWithoutReusingPermitAndLateRealReplyRestoresAdmission() throws Exception {
-        try (Harness h = new Harness(Mode.ALLOW, limits(1_000, 1_000, 2, 1_000))) {
-            h.upstream.holdResponses();
-            Future<Reply> first = h.callers.submit(() -> h.forward(h.wire("GET", "/first", "application/json", "", List.of())));
-            await(() -> h.upstream.hits.get() == 1);
-            await(() -> h.gate("stalled") == 1);
-            Reply denied = h.forward(h.wire("GET", "/new", "application/json", "", List.of()));
-            assertLocalBlock(h, denied, "IN_FLIGHT_TIMEOUT");
-            assertEquals(1, h.gate("active"));
-            assertEquals(1, h.upstream.active.get());
-            assertEquals(1, h.upstream.hits.get());
-            assertEquals(1, h.socketOpens.get());
-            assertFalse(first.isDone());
-            h.upstream.releaseResponses();
-            assertTrue(get(first).forwarded());
-            assertEquals(0, h.gate("active"));
-            assertEquals(0, h.gate("stalled"));
-            Reply fresh = h.forward(h.wire("GET", "/fresh", "application/json", "", List.of()));
-            assertTrue(fresh.forwarded());
-            assertEquals(2, h.upstream.hits.get());
         }
     }
 
@@ -399,7 +383,6 @@ class ProxyLoopbackTest {
         final AtomicInteger socketOpens = new AtomicInteger();
         final List<Long> admissionTimes = new CopyOnWriteArrayList<>();
         final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
-        final Map<String, RateGate.Permit> inFlight = new ConcurrentHashMap<>();
         final AtomicInteger ids = new AtomicInteger();
 
         Harness(Mode mode, Limits limits) throws IOException {
@@ -440,9 +423,7 @@ class ProxyLoopbackTest {
             Prepared p = controller.prepare(request.inspection());
             Admission admission = controller.authorize(p);
             if (!admission.allowed()) return local(p, admission.reason());
-            RateGate.Permit permit = admission.permit();
-            inFlight.put(p.evidenceId(), permit);
-            admissionTimes.add(permit.admittedAtNanos());
+            admissionTimes.add(System.nanoTime());
             boolean committed = false;
             try {
                 // Independent safety pin: transport ALWAYS connects to our own numeric address/port,
@@ -458,13 +439,9 @@ class ProxyLoopbackTest {
                 // Extra conservative test-only rendezvous: both full response read and our owned
                 // handler cleanup have completed before this completion owner releases its permit.
                 upstream.awaitFinished(request.id());
-                permit.close();
-                inFlight.remove(p.evidenceId(), permit);
                 return reply;
             } finally {
                 if (!committed) {
-                    permit.close(); // Conclusively no socket dispatch has begun.
-                    inFlight.remove(p.evidenceId(), permit);
                 }
                 // An exception AFTER commit/possible dispatch intentionally does NOT recycle it.
             }
@@ -548,9 +525,6 @@ class ProxyLoopbackTest {
                 callers.shutdownNow();
                 assertTrue(callers.awaitTermination(5, TimeUnit.SECONDS), "forwarding harness workers terminated");
                 if (upstream.handlers.isTerminated() && upstream.active.get() == 0) {
-                    inFlight.values().forEach(RateGate.Permit::close); // Only after all owned transport quiesces.
-                    inFlight.clear();
-                    assertEquals(0, gate("active"));
                 }
             }
         }

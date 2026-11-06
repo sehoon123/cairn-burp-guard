@@ -43,10 +43,7 @@ class WatcherRoutingInteropTest {
         assertEquals(endpoint(watcher, target, List.of(target)).pathKeys().getFirst(), endpoint.pathKeys().getFirst());
         assertEquals(views.size(), endpoint.pathKeys().size());
         assertTrue(endpoint.pathKeys().stream().allMatch(k -> k.matches("[0-9a-f]{64}")));
-        watcher.observe(watcher.commit(endpoint, false, ""), 200, 2);
-        for (String view : views) {
-            assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", watcher.check(endpoint(watcher, view, List.of(view)), false).reason());
-        }
+        watcher.observe(endpoint, 200, 2);
         assertEquals(target, watcher.candidates().getFirst().path(), "the original untouched first view");
         assertEquals("owned.test", watcher.candidates().getFirst().host());
         assertEquals(target.startsWith("/") && !target.contains("?") ? "https://owned.test" + target : "", watcher.candidates().getFirst().policyUrl());
@@ -61,34 +58,10 @@ class WatcherRoutingInteropTest {
         List<String> views = PolicyEngine.routingPaths(request(target));
         assertEquals(target, views.getFirst());
         var endpoint = endpoint(watcher, target, views);
-        watcher.observe(watcher.commit(endpoint, false, ""), 503, 2);
-        assertEquals("HEAVY_ENDPOINT_AUTO_BLOCKED", watcher.check(endpoint, false).reason());
+        watcher.observe(endpoint, 503, 2);
         assertEquals(target, endpoint.path(), "raw controls and lone surrogates stay original");
         assertEquals("owned.test", endpoint.host());
         assertEquals("", endpoint.policyUrl(), "an unfaithful ordinary URL is never drafted");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"/expected-error", "/expected-error?x=1", "/expected-error?x=%zz"})
-    void nativeTargetExactRouteGetsCircuitExceptionThroughTheControllerRoutingViews(String target) throws Exception {
-        Limits on = new Limits(100, 100, Map.of(), 100, 100, 1000, 1000, 1000, 0, 60_000,
-                new GuardConfig.Circuit5xx(60_000, 1, 60_000, 1), null, 0, false, List.of(), List.of(),
-                List.of(new ProbePath("https", "owned.test", 443, "/expected-error")));
-        ResponseWatcher watcher = new ResponseWatcher(on, () -> 0, () -> 1_000_000);
-        watcher.observe(watcher.commit(endpoint(watcher, "/x", PolicyEngine.routingPaths(request("/x"))), false, ""), 503, 0);
-        assertTrue(watcher.check(endpoint(watcher, target, PolicyEngine.routingPaths(request(target))), false).allowed(), target);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"/c/%2c", "/expected-error%2f", "/expected-error;v", "/./expected-error", "expected-error",
-            "*", "http://owned.test/expected-error", "/expected-%65rror"})
-    void encodedAliasOrNonOriginTargetsNeverGetTheExceptionAndKeepTheirTraffic(String target) throws Exception {
-        Limits on = new Limits(100, 100, Map.of(), 100, 100, 1000, 1000, 1000, 0, 60_000,
-                new GuardConfig.Circuit5xx(60_000, 1, 60_000, 1), null, 0, false, List.of(), List.of(),
-                List.of(new ProbePath("https", "owned.test", 443, "/expected-error"), new ProbePath("https", "owned.test", 443, "/c/,")));
-        ResponseWatcher watcher = new ResponseWatcher(on, () -> 0, () -> 1_000_000);
-        watcher.observe(watcher.commit(endpoint(watcher, "/x", PolicyEngine.routingPaths(request("/x"))), false, ""), 503, 0);
-        assertEquals("CIRCUIT_OPEN", watcher.check(endpoint(watcher, target, PolicyEngine.routingPaths(request(target))), false).reason(), target);
     }
 
     @Test void hashingIsLosslessForLoneSurrogatesAndLiteralQuestionMark() {
@@ -141,7 +114,7 @@ class WatcherRoutingInteropTest {
         };
         try (GuardController controller = new GuardController(projects,
                 new ResponseWatcher(limits, () -> 0, () -> 1_000_000), new IntentBudget(),
-                new RateGate(limits), new ListenerRegistry(), () -> 0, 4096)) {
+                new RateGate(limits), new ListenerRegistry())) {
             assertTrue(controller.prepare(request("/health")).healthProbe());
             for (String target : List.of("health", "@h/health", "x/health", "https://owned.test/health", "", "/x/../health")) {
                 assertFalse(controller.prepare(request(target)).healthProbe(), target);

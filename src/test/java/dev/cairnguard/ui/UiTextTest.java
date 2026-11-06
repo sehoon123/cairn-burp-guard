@@ -80,13 +80,11 @@ class UiTextTest {
                 UiText.warnings(java.util.List.of("BODY_INSPECTION_UNAVAILABLE_SYNTH-A"), true));
         assertFalse(UiText.warnings(java.util.List.of("BODY_INSPECTION_UNAVAILABLE_CAPTURE_INCOMPLETE"), false).contains("["), "known compact labels stay compact");
     }
-    @Test void inFlightTimeoutExplainsSameHostQuarantineThresholdAndNonCircuitNature() {
-        String reason = UiText.reason("IN_FLIGHT_TIMEOUT"), next = UiText.next("IN_FLIGHT_TIMEOUT");
-        assertTrue(reason.contains("같은 호스트") && reason.contains("응답 대기 제한") && reason.contains("60초"), reason);
-        assertTrue(reason.contains("5xx 회로") && reason.contains("아닙니다"), reason);
-        assertFalse(reason.contains("IN_FLIGHT_TIMEOUT"));
-        for (String fact : new String[]{"진단되지 않았", "다른 호스트", "실제 남은 슬롯", "동시", "늘려도", "실제 완료", "모두 통과", "새 내용은 수집하지", "소유"})
-            assertTrue(next.contains(fact), fact + " :: " + next);
-        assertFalse(next.contains("장애입니다"), next);
+    @Test void retiredTimeoutHasHistoricalLabelsNotCurrentQuarantineOrOffRecoveryAdvice() {
+        for(String text:java.util.List.of(UiText.reason("IN_FLIGHT_TIMEOUT"),UiText.next("IN_FLIGHT_TIMEOUT"))) {
+            assertTrue(text.contains("이전 버전") && text.contains("제거"),text);
+            assertFalse(text.contains("모두 통과")); assertFalse(text.contains("60초"));
+        }
+        assertTrue(UiText.outcome("unpaired_response").contains("요청 연결 불가"));
     }
 }

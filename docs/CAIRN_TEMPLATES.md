@@ -1,5 +1,15 @@
 # CAIRN 소스 무수정 Native Pi — 허가된 웹 테스트 MVP
 
+> Current guard source removes automatic blocking. Missing callbacks, prior5xx,
+> response size and fan-out do not stop later policy-allowed requests. Human-authored
+> pacing remains optional (all rate axes accept0=off; new profiles default0/0), as do
+> explicit intent budgets. The fixture defaults to no pacing; select a positive rate
+> deliberately for a pacing experiment. Worker/concurrency/finite-plan limits below
+> belong to the separate external template workflow, not native Guard flight limits.
+> Older heavy/circuit/fan-out/native-concurrency smoke phases are historical and are
+> not acceptance procedures for this source. No template/runtime/control expansion.
+
+
 **개정: 2026-11-03 / active-web v2.** main `templates/native-pi-ko`는 **사람이 명시적으로 승인한 웹 테스트 계획·한정 발견(discovery)·비파괴 확인(validation)·한국어 보고**를 지원한다. 이전의 대상 예산0 오프라인 전용 프로필은 별도 `native-pi-ko-offline`으로 보존했다. 실제 웹 확인을 요청한 Goal을 오프라인 보고서 작성만으로 완료했다고 바꾸지 않는다.
 
 이 작업에서 실행한 것은 템플릿/계약/읽기 전용 loader 검증뿐이다. **실제 대상 요청, Pi/model/dispatcher 실행, Burp 통합, 실제 보고서 생성 E2E는 미수행**이다. 능동 기능을 지시하는 프롬프트와 그 기능의 실제 실행 검증은 다른 주장이다.

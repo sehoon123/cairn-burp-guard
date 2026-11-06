@@ -48,7 +48,6 @@ class GuardControllerTest {
     private static final ProjectAccess.Ref B = new ProjectAccess.Ref("project-b", "Synthetic project B");
     private final MemoryProjects projects = new MemoryProjects();
     private final List<GuardController> controllers = new ArrayList<>();
-    private final List<RateGate.Permit> permits = Collections.synchronizedList(new ArrayList<>());
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private GuardController controller;
 
@@ -58,7 +57,6 @@ class GuardControllerTest {
         try { assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS), "synthetic workers terminated"); }
         finally {
             // No dispatch occurs in this suite; these are explicit confirmed-unsent/simulated completions.
-            permits.forEach(RateGate.Permit::close);
         }
     }
 
@@ -71,7 +69,6 @@ class GuardControllerTest {
         assertEquals(false, controller.status().get("paused"));
         blocked(controller.prepare(request("GET", "/safe", "")), "SCOPE_NOT_ALLOWED");
         assertEquals(0, projects.saves.get());
-        assertEquals(0, gate("active"));
         assertTrue(controller.approvals().isEmpty());
     }
 
@@ -180,7 +177,7 @@ class GuardControllerTest {
         assertNull(projects.documents.get(B.id()));
         assertEquals("POLICY_APPLIED", controller.status().get("note"));
         blocked(before, "POLICY_CHANGED");
-        assertEquals(2, gate("maxConcurrent"));
+        assertFalse(((Map<?,?>)controller.status().get("gate")).containsKey("maxConcurrent"));
     }
 
     @Test void invalidSaveIsAtomicAndNeverCallsProjectPersistence() {
@@ -188,7 +185,7 @@ class GuardControllerTest {
         GuardConfig original = controller.config();
         String stored = projects.documents.get(A.id());
         long baseline = revision();
-        GuardConfig invalid = policy(Mode.ALLOW, new Limits(0, 5, Map.of(), 1, 2, 1_000, 1_000, 1_000));
+        GuardConfig invalid = policy(Mode.ALLOW, new Limits(-1, 5, Map.of(), 1, 2, 1_000, 1_000, 1_000));
         assertThrows(IllegalArgumentException.class, () -> apply(invalid));
         assertEquals(original, controller.config());
         assertEquals(stored, projects.documents.get(A.id()));
@@ -280,7 +277,6 @@ class GuardControllerTest {
         assertThrows(IllegalStateException.class, () -> apply(policy(Mode.ALLOW, ordinaryLimits())));
         denied(get(result), "POLICY_CHANGED");
         assertTrue(controller.approvals().isEmpty());
-        assertEquals(0, gate("active"));
         assertEquals(true, controller.status().get("paused"));
         assertThrows(IllegalStateException.class, () -> controller.pause(false));
         assertFalse(controller.status().toString().contains(SECRET));
@@ -297,15 +293,11 @@ class GuardControllerTest {
         projects.saveThenFail = true;
         assertThrows(IllegalStateException.class, () -> apply(policy(Mode.BLOCK, ordinaryLimits())));
         denied(get(waiting), "PAUSED");
-        assertEquals(1, gate("active"));
         assertEquals(1, evidence("forwarded"));
         assertFalse(controller.current(first));
         controller.refreshProject();
         assertEquals(Mode.BLOCK, controller.config().defaultMode());
-        assertEquals(1, gate("active"));
         controller.response(first.evidenceId(), 200, List.of(), new byte[0]);
-        running.permit().close();
-        assertEquals(0, gate("active"));
     }
 
     @Test void projectSwitchDuringSaveDoesNotPublishOrUseOldProjectPolicy() {
@@ -393,7 +385,6 @@ class GuardControllerTest {
         assertTrue(admission.allowed());
         assertEquals("QUEUED", row(p).disposition());
         assertNull(row(p).statusCode());
-        assertEquals(1, gate("active"));
         assertTrue(controller.commit(p));
         assertEquals("FORWARDED", row(p).disposition());
         assertEquals("NATIVE_RELEASED", row(p).reason());
@@ -401,9 +392,6 @@ class GuardControllerTest {
         controller.response(p.evidenceId(), 403, List.of(new Header("Content-Type", "application/json")), bytes("{\"ok\":false}"));
         assertEquals(403, row(p).statusCode());
         assertEquals("FORWARDED", row(p).disposition(), "target error is not a local block");
-        assertEquals(1, gate("active"), "evidence capture cannot claim native completion ownership");
-        admission.permit().close(); // Simulated real completion owner, not a timer or evidence method.
-        assertEquals(0, gate("active"));
         assertEquals(1, evidence("forwarded"));
         assertEquals(1, evidence("upstreamResponses"));
         assertEquals(0, evidence("localResponses"));
@@ -419,7 +407,6 @@ class GuardControllerTest {
         assertEquals(p.evidenceId(), pending.evidenceId());
         assertEquals(A.id(), pending.projectId());
         assertEquals("AWAITING_APPROVAL", row(p).disposition());
-        assertEquals(0, gate("active"));
         assertEquals(0, gate("queued"));
         assertFalse(p.toString().contains(SECRET));
         assertFalse(pending.toString().contains(SECRET));
@@ -431,9 +418,7 @@ class GuardControllerTest {
         assertFalse(controller.decideApproval(pending.id(), true));
         assertTrue(controller.approvals().isEmpty());
         assertEquals("QUEUED", row(p).disposition());
-        assertEquals(1, gate("active"));
         assertTrue(controller.commit(p));
-        admission.permit().close();
     }
 
     @Test void deniedAskCannotBeReapprovedAndNeverAcquiresPermit() throws Exception {
@@ -474,7 +459,6 @@ class GuardControllerTest {
         denied(get(result), change == Change.CLOSE ? "SHUTDOWN" : "POLICY_CHANGED");
         assertFalse(controller.decideApproval(id, true));
         assertTrue(controller.approvals().isEmpty());
-        assertEquals(0, gate("active"));
         assertEquals(0, evidence("forwarded"));
     }
 
@@ -492,14 +476,11 @@ class GuardControllerTest {
         change(change);
         denied(get(result), queuedChangeReason(change));
         assertEquals(0, gate("queued"));
-        assertEquals(1, gate("active"), "a state change does not complete the first send");
         if (change == Change.PROJECT || change == Change.REFRESH_PROJECT || change == Change.CLOSE)
             assertTrue(controller.traffic().isEmpty(), "originals are released with the boundary");
         else assertEquals("BLOCKED", row(waiting).disposition());
         assertEquals(1, evidence("forwarded"));
         controller.response(first.evidenceId(), 200, List.of(), new byte[0]);
-        running.permit().close();
-        assertEquals(0, gate("active"));
     }
 
     @ParameterizedTest @EnumSource(Change.class)
@@ -518,8 +499,6 @@ class GuardControllerTest {
         assertFalse(controller.decideApproval(id, true));
         change(change);
         denied(get(result), queuedChangeReason(change));
-        assertEquals(1, gate("active"));
-        running.permit().close();
         assertEquals(1, evidence("forwarded"));
     }
 
@@ -543,10 +522,6 @@ class GuardControllerTest {
             }, row(p).reason());
         }
         assertEquals(0, evidence("forwarded"));
-        assertEquals(1, gate("active"), "commit has no completion ownership");
-        admission.permit().close(); // No dispatch began: the caller can conclusively release.
-        admission.permit().close();
-        assertEquals(0, gate("active"));
     }
 
     @Test void pauseResumeDoesNotRevivePreparedRequestOrPreviouslyCancelledApproval() throws Exception {
@@ -580,12 +555,11 @@ class GuardControllerTest {
         assertTrue(get(result));
         assertTrue(controller.approvals().isEmpty());
         assertEquals(0, gate("queued"));
-        assertEquals(ask ? 0 : 1, gate("active"));
         assertEquals("CANCELLED", row(p).reason());
     }
 
     @Test void queueCapacityAndTimeoutAreLocalDenialsNotExtraSends() throws Exception {
-        open(policy(Mode.ALLOW, limits(1, 1, 1_000, 5_000, 10_000)));
+        open(policy(Mode.ALLOW, limits(1, 1, 100, 5_000, 10_000)));
         Prepared first = controller.prepare(request("GET", "/first", ""));
         Admission running = authorize(first);
         assertTrue(controller.commit(first));
@@ -595,33 +569,9 @@ class GuardControllerTest {
         Prepared overflow = controller.prepare(request("GET", "/overflow", ""));
         blocked(overflow, "QUEUE_FULL");
         denied(get(result), "QUEUE_TIMEOUT");
-        assertEquals(1, gate("active"));
         assertEquals(1, gate("admitted"));
         assertEquals(2, evidence("blocked"));
         assertEquals(1, evidence("forwarded"));
-        running.permit().close();
-    }
-
-    @Test void inFlightTimeoutQuarantinesWithoutImplicitReleaseAndLateCompletionClearsIt() throws Exception {
-        open(policy(Mode.ALLOW, limits(1, 10, 5_000, 5_000, 1_000)));
-        Prepared first = controller.prepare(request("GET", "/first", ""));
-        Admission running = authorize(first);
-        assertTrue(controller.commit(first));
-        Prepared waiting = controller.prepare(request("GET", "/waiting", ""));
-        Future<Admission> result = workers.submit(() -> authorize(waiting));
-        denied(get(result), "IN_FLIGHT_TIMEOUT");
-        assertEquals(1, gate("active"));
-        assertEquals(1, gate("stalled"));
-        controller.pause(true);
-        apply(policy(Mode.ALLOW, limits(1, 10, 5_000, 5_000, 60_000)));
-        controller.pause(false);
-        blocked(controller.prepare(request("GET", "/new", "")), "IN_FLIGHT_TIMEOUT");
-        assertEquals(1, gate("active"));
-        controller.response(first.evidenceId(), 200, List.of(), new byte[0]);
-        assertEquals(1, gate("active"), "even capture of a response does not close a caller-owned permit");
-        running.permit().close(); // Synthetic late real completion.
-        assertEquals(0, gate("stalled"));
-        assertTrue(authorize(controller.prepare(request("GET", "/fresh", ""))).allowed());
     }
 
     @Test void closeIsIdempotentDeniesFreshWorkAndNeverReleasesExistingPermit() {
@@ -632,7 +582,6 @@ class GuardControllerTest {
         controller.close();
         controller.close();
         assertEquals(true, controller.status().get("closed"));
-        assertEquals(1, gate("active"));
         blocked(controller.prepare(request("GET", "/new", "")), "SHUTDOWN");
         int loads = projects.loads.get();
         controller.refreshProject();
@@ -640,8 +589,6 @@ class GuardControllerTest {
         IllegalStateException failure = assertThrows(IllegalStateException.class, () -> apply(controller.config()));
         assertEquals("SHUTDOWN", failure.getMessage());
         controller.response(p.evidenceId(), 200, List.of(), new byte[0]);
-        admission.permit().close();
-        assertEquals(0, gate("active"));
     }
 
     @ParameterizedTest @ValueSource(strings = {"scope", "method"})
@@ -671,7 +618,6 @@ class GuardControllerTest {
         Admission admission = authorize(remote);
         assertTrue(controller.commit(remote));
         controller.response(remote.evidenceId(), 451, List.of(new Header("Content-Type", "application/json")), bytes("{\"origin\":\"fixture\"}"));
-        admission.permit().close();
         assertEquals("BLOCKED", row(local).disposition());
         assertEquals("FORWARDED", row(remote).disposition());
         assertEquals(451, row(local).statusCode());
@@ -717,7 +663,6 @@ class GuardControllerTest {
         byte[] response = bytes("{\"token\":\"" + SECRET + "\"}");
         byte[] originalResponse = response.clone();
         controller.response(p.evidenceId(), 200, responseHeaders, response);
-        admission.permit().close();
         assertEquals(headers, request.headers());
         assertArrayEquals(originalBody, request.body());
         assertArrayEquals(originalBody, body);
@@ -744,12 +689,10 @@ class GuardControllerTest {
         controller.clearEvidence();
         assertTrue(controller.traffic().isEmpty());
         assertEquals(revision, revision());
-        assertEquals(1, gate("active"));
         assertEquals(1, evidence("forwarded"));
         assertEquals(0, evidence("retainedEntries"));
         controller.response(p.evidenceId(), 200, List.of(), new byte[0]);
-        admission.permit().close();
-        assertEquals(1, evidence("orphanResponses"));
+        assertEquals(0, evidence("orphanResponses"));
     }
 
     @Test void passthroughIsExplicitRuntimeOnlyCountOnlyAndDoesNotChangeSavedPolicy() {
@@ -767,7 +710,6 @@ class GuardControllerTest {
         assertTrue(controller.commitPassthrough(token));
         assertEquals(1L, controller.status().get("passthroughCount"));
         assertTrue(controller.traffic().isEmpty());
-        assertEquals(0, gate("active"));
         assertEquals(before, controller.config());
         assertEquals(0, projects.saves.get());
         controller.passthrough(true, A.id(), revision());
@@ -947,7 +889,6 @@ class GuardControllerTest {
     }
     private Admission authorize(Prepared p) {
         Admission admission = controller.authorize(p);
-        if (admission.permit() != null) permits.add(admission.permit());
         return admission;
     }
     private Admission approve(Prepared p) throws Exception {
@@ -973,7 +914,6 @@ class GuardControllerTest {
     private static void denied(Admission admission, String reason) {
         assertFalse(admission.allowed());
         assertEquals(reason, admission.reason());
-        assertNull(admission.permit());
     }
     private TrafficEntry row(Prepared p) {
         return controller.traffic().stream().filter(e -> e.id().equals(p.evidenceId())).findFirst().orElseThrow();
@@ -988,7 +928,7 @@ class GuardControllerTest {
     }
     private static Limits ordinaryLimits() { return limits(3, 20, 5_000, 5_000, 10_000); }
     private static Limits limits(int concurrent, int queued, long queueTimeout, long approvalTimeout, long requestTimeout) {
-        return new Limits(1_000, 1_000, Map.of(), concurrent, queued, queueTimeout, approvalTimeout, requestTimeout);
+        return new Limits(concurrent == 1 ? 1 : 1000, 1000, Map.of(), concurrent, queued, queueTimeout, approvalTimeout, requestTimeout);
     }
     private static byte[] bytes(String text) { return text.getBytes(StandardCharsets.UTF_8); }
     private static <T> T get(Future<T> future) throws Exception { return future.get(6, TimeUnit.SECONDS); }

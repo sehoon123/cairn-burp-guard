@@ -43,7 +43,7 @@ public final class EvidenceStore {
             "UNSUPPORTED_ENCODING", "UNSUPPORTED_WEBSOCKET", "QUEUE_TIMEOUT", "APPROVAL_TIMEOUT", "REQUEST_TIMEOUT",
             "CAPACITY_EXHAUSTED", "QUEUE_FULL", "SHUTDOWN", "PROJECT_CHANGED", "POLICY_CHANGED", "REVISION_CHANGED",
             "APPROVED", "DENIED", "REJECTED", "FORWARDED_NATIVE", "NATIVE_RELEASED", "LOCAL_BLOCK", "LOCAL_BLOCKED",
-            "RESPONSE_CAPTURED", "QUARANTINED", "CANCELLED", "OUTCOME_RECORDED", "UNSPECIFIED",
+            "RESPONSE_CAPTURED", "RESPONSE_CORRELATION_UNAVAILABLE", "QUARANTINED", "CANCELLED", "OUTCOME_RECORDED", "UNSPECIFIED",
             "INVALID_CONFIG", "INVALID_REQUEST", "INVALID_METHOD", "INVALID_URI", "UNSUPPORTED_SCHEME", "AUTHORITY_MISMATCH",
             "INVALID_AUTHORITY", "INVALID_HOST", "INVALID_HEADERS", "REQUEST_TOO_LARGE", "WEBSOCKET_UNSUPPORTED",
             "UNSUPPORTED_CONTENT_ENCODING", "UNSUPPORTED_TRANSFER_ENCODING", "AMBIGUOUS_PATH", "INVALID_TEXT_ENCODING",
@@ -52,7 +52,6 @@ public final class EvidenceStore {
             "EXEMPT", "RULE_EXEMPT", "PROBE_ALLOWED", "HALF_OPEN", "HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN",
             "FANOUT_SUSPECTED", "INTENT_BUDGET_EXCEEDED", "INTENT_INVALID", "INTENT_CAPACITY", "WATCHER_CAPACITY",
             "LISTENER_UNVERIFIED", "CAPTURE_INCOMPLETE", "INTENT_BUDGET_CAPACITY", "INVALID_INTENT_TAG", "RESPONSE_WATCHER_CAPACITY");
-
 
     private final byte[] exportKey = new byte[32];
     private final LinkedHashMap<String, Stored> entries = new LinkedHashMap<>();
@@ -67,6 +66,7 @@ public final class EvidenceStore {
     private long responses;
     private long localResponses;
     private long upstreamResponses;
+    private long unpairedResponses;
     private long truncations;
     private long clears;
     private long clearedEntries;
@@ -121,6 +121,23 @@ public final class EvidenceStore {
         return id;
     }
 
+    /** Response-only evidence: a retained protected source proves the epoch, never a request pairing. */
+    public synchronized void unpairedResponse(String protectedSource, int statusCode, List<Header> headers, byte[] body,
+                                             long actualBytes, boolean headersComplete, boolean bodyComplete) {
+        var source = entries.get(protectedSource);
+        if (source == null) return;
+        String id = UUID.randomUUID().toString();
+        var origin = source.entry;
+        rawUi.beginUnpaired(origin.projectId(), origin.projectName(), id);
+        var entry = new TrafficEntry(id, origin.projectId(), origin.projectName(), Instant.now().toString(),
+                "", "", "UNAVAILABLE", "UNPAIRED_RESPONSE", "RESPONSE_CORRELATION_UNAVAILABLE", null, List.of(),
+                -1, false, TrafficEntry.Message.EMPTY, TrafficEntry.Message.EMPTY, false, "", "-", "-",
+                "unpaired_response", "", "", actualBytes, List.of("RESPONSE_CORRELATION_UNAVAILABLE"));
+        var stored = new Stored(seal(entry));
+        entries.put(id, stored);
+        response(id, statusCode, headers, body, headersComplete, bodyComplete);
+    }
+
     public synchronized void outcome(String id, String disposition, String reason, Integer statusCode) {
         outcomeCallbacks++;
         Stored stored = find(id);
@@ -171,7 +188,8 @@ public final class EvidenceStore {
             responses++;
             stored.countedResponse = true;
             stored.responseLocal = old.disposition().equals("BLOCKED");
-            if (stored.responseLocal) localResponses++; else upstreamResponses++;
+            if ("unpaired_response".equals(old.outcome())) unpairedResponses++;
+            else if (stored.responseLocal) localResponses++; else upstreamResponses++;
         }
         update(stored);
     }
@@ -296,6 +314,7 @@ public final class EvidenceStore {
         result.put("responses", responses);
         result.put("localResponses", localResponses);
         result.put("upstreamResponses", upstreamResponses);
+        result.put("unpairedResponses", unpairedResponses);
         result.put("evictions", 0L); // compatibility: there is no quota-based eviction
         result.put("truncations", truncations);
         result.put("retainedEntries", (long) entries.size());
@@ -346,6 +365,7 @@ public final class EvidenceStore {
             request.put("httpVersion", "HTTP/1.1");
             request.put("cookies", List.of());
             request.put("headers", headerMaps(e.requestCapture().headers()));
+            if (!e.requestCapture().present()) request.put("_unavailable", "RESPONSE_CORRELATION_UNAVAILABLE");
             request.put("queryString", urlProblem == null ? queryMaps(e.url()) : List.of());
             request.put("headersSize", -1);
             request.put("bodySize", -1);
@@ -529,7 +549,7 @@ public final class EvidenceStore {
         result.put("hits", e.hits());
         result.put("revision", e.revision());
         result.put("bookmarked", e.bookmarked());
-        result.put("request", e.request());
+        result.put("request", e.requestCapture().present() ? e.request() : "[Request unavailable: response correlation unavailable]");
         result.put("response", e.response());
         result.put("requestCapture", e.requestCapture());
         result.put("responseCapture", e.responseCapture());
@@ -665,18 +685,23 @@ public final class EvidenceStore {
                         request.put("_service", Map.of("scheme", c.route.scheme(), "host", c.route.host(), "port", c.route.port()));
                     }
                     if (urlProblem != null) request.put("_urlUnavailable", urlProblem);
-                    request.put("headers", headerMaps(raw.request().headers));
-                    request.put("_headersComplete", raw.request().headersComplete);
-                    byte[] body = raw.request().body();
-                    if (body.length > 0) {
-                        String text = RawTrafficStore.declaredText(raw.request(), body);
-                        Map<String, Object> post = new LinkedHashMap<>();
-                        post.put("mimeType", mime(raw.request().headers));
-                        if (text != null) post.put("text", text);
-                        else { post.put("text", ""); post.put("_bodyBase64", Base64.getEncoder().encodeToString(body)); post.put("_encoding", "base64"); }
-                        request.put("postData", post);
+                    if (raw.request() == null) {
+                        request.put("headers", List.of());
+                        request.put("_unavailable", "RESPONSE_CORRELATION_UNAVAILABLE");
+                    } else {
+                        request.put("headers", headerMaps(raw.request().headers));
+                        request.put("_headersComplete", raw.request().headersComplete);
+                        byte[] body = raw.request().body();
+                        if (body.length > 0) {
+                            String text = RawTrafficStore.declaredText(raw.request(), body);
+                            Map<String, Object> post = new LinkedHashMap<>();
+                            post.put("mimeType", mime(raw.request().headers));
+                            if (text != null) post.put("text", text);
+                            else { post.put("text", ""); post.put("_bodyBase64", Base64.getEncoder().encodeToString(body)); post.put("_encoding", "base64"); }
+                            request.put("postData", post);
+                        }
+                        request.put("_body", bodyFacts(raw.request()));
                     }
-                    request.put("_body", bodyFacts(raw.request()));
                 }
                 request.put("httpVersion", "HTTP/1.1");
                 request.put("_httpVersionUnknown", true);
@@ -743,7 +768,8 @@ public final class EvidenceStore {
             o.put("runId", c.run);
             o.put("service", c.route == null ? null : Map.of("scheme", c.route.scheme(), "host", c.route.host(), "port", c.route.port()));
             o.put("rawTarget", c.route == null ? null : c.route.rawTarget());
-            o.put("request", part(raw.request()));
+            o.put("request", raw.request() == null ? null : part(raw.request()));
+            if (raw.request() == null) o.put("requestUnavailable", "RESPONSE_CORRELATION_UNAVAILABLE");
             o.put("response", raw.response() == null ? null : part(raw.response()));
             if (raw.response() == null) o.put("responseUnavailable", "NOT_OBSERVED_OR_NOT_RETAINED");
             return o;

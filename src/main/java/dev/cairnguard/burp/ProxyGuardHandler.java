@@ -13,7 +13,6 @@ import dev.cairnguard.runtime.GuardController;
 import dev.cairnguard.runtime.GuardController.Admission;
 import dev.cairnguard.runtime.GuardController.Prepared;
 import dev.cairnguard.runtime.GuardController.PassthroughToken;
-import dev.cairnguard.runtime.RateGate;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,15 +26,19 @@ import javax.swing.SwingUtilities;
 public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     static final int MAX_CALLBACKS = 128;
     static final int MAX_INSPECTIONS = 8;
-    static final int MAX_IN_FLIGHT = 100;
-    private record Flight(String evidenceId, RateGate.Permit permit) {}
+    private record Flight(String evidenceId) {}
     private final GuardController controller;
     private final NativeActions actions;
     private final Semaphore callbacks;
     private final Semaphore inspections;
     private final Object releaseLock = new Object();
     private final Map<Integer, Flight> inFlight = new HashMap<>();
-    private final Set<Integer> preparing = new HashSet<>(); // At most MAX_CALLBACKS; no native/raw data.
+    // Protected-only evidence epoch provenance; never retain an OFF association or infer a pairing.
+    private final Map<Integer, Flight> protectedIds = new HashMap<>();
+    // Evidence integrity only, including OFF IDs. No admission authority, contents, quota or persistence.
+    private final Set<Integer> usedIds = new HashSet<>();
+    private final Set<Integer> ambiguousIds = new HashSet<>();
+    private boolean identityUnavailable;
     private volatile boolean closed;
 
     public ProxyGuardHandler(GuardController controller) { this(controller, NativeActions.montoya()); }
@@ -59,30 +62,34 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
         Integer messageId = null;
         boolean slot = false;
         boolean released = false;
-        boolean ownsId = false;
-        boolean collision = false;
         boolean passthroughAttempt = false;
         try {
             ToolType tool = Objects.requireNonNull(request.toolSource().toolType());
             annotations = request.annotations();
             if (tool != ToolType.PROXY) return Objects.requireNonNull(actions.continueRequest(request, annotations));
-            messageId = request.messageId();
-            synchronized (releaseLock) { collision = inFlight.containsKey(messageId) || preparing.contains(messageId); }
-            if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
+            try { messageId = request.messageId(); }
+            catch (RuntimeException | LinkageError unavailable) {
+                synchronized (releaseLock) { identityUnavailable = true; inFlight.clear(); protectedIds.clear(); }
+            }
+            synchronized (releaseLock) {
+                if (messageId != null && !usedIds.add(messageId)) {
+                    ambiguousIds.add(messageId);
+                    inFlight.remove(messageId);
+                }
+            }
             if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
-            GuardController.NativeMode mode = controller.nativeMode(messageId);
+            GuardController.NativeMode mode = messageId == null ? controller.nativeMode() : controller.nativeMode(messageId);
             if (mode.rejection() != null)
                 return block(rejected(mode.rejection()), mode.rejection(), annotations, false);
             PassthroughToken token = mode.token();
             if (token != null) {
                 passthroughAttempt = true;
                 // Deliberately before capture, EDT checks, slots, approvals and rate admission.
-                // No raw/native data, correlation entry or permit is retained for OFF traffic.
+                // No OFF traffic/evidence association or contents; only content-free used-ID fencing.
                 RequestToBeSentAction continuation = Objects.requireNonNull(actions.continueRequest(request, annotations));
                 synchronized (releaseLock) {
                     if (closed) return block(rejected("SHUTDOWN"), "SHUTDOWN", annotations, false);
-                    collision = inFlight.containsKey(messageId) || preparing.contains(messageId);
-                    if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
+                    if (messageId != null) protectedIds.remove(messageId);
                     if (!controller.commitPassthrough(token))
                         return block(rejected("FINAL_CHECK_REJECTED"), "FINAL_CHECK_REJECTED", annotations, false);
                     return continuation;
@@ -92,31 +99,21 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
                 return block(rejected("CALLBACK_ON_EDT"), "CALLBACK_ON_EDT", annotations, false);
             slot = callbacks.tryAcquire();
             if (!slot) return block(rejected("CALLBACK_CAPACITY"), "CALLBACK_CAPACITY", annotations, false);
-            synchronized (releaseLock) {
-                collision = inFlight.containsKey(messageId) || !preparing.add(messageId);
-                ownsId = !collision;
-            }
-            if (collision) return block(rejected("MESSAGE_ID_COLLISION"), "MESSAGE_ID_COLLISION", annotations, true);
             // This helper's frame (including RequestData and all body copies) ends BEFORE authorize waits.
             prepared = prepare(request);
             admission = Objects.requireNonNull(controller.authorize(prepared));
             if (!admission.allowed()) return block(prepared, admission.reason(), annotations, false);
-            if (admission.permit() == null) throw new IllegalStateException("ADAPTER_ERROR");
             // Factories can fail or reenter UI. Build the original-object continuation BEFORE final commit.
             RequestToBeSentAction continuation = Objects.requireNonNull(actions.continueRequest(request, annotations));
-            flight = new Flight(prepared.evidenceId(), admission.permit());
+            flight = new Flight(prepared.evidenceId());
             synchronized (releaseLock) {
                 if (closed) return block(prepared, "SHUTDOWN", annotations, false);
-                if (inFlight.containsKey(messageId)) {
-                    collision = true;
-                    // A local spoof with an ambiguous ID could look like the older native completion.
-                    // Drop this conclusively unsent duplicate instead; never replace the older permit.
-                    return block(prepared, "MESSAGE_ID_COLLISION", annotations, true);
-                }
-                if (inFlight.size() >= MAX_IN_FLIGHT) return block(prepared, "CORRELATION_CAPACITY", annotations, false);
-                inFlight.put(messageId, flight);
                 GuardController.CommitResult committed = Objects.requireNonNull(controller.commitDetailed(prepared));
                 if (!committed.allowed()) return block(prepared, committed.reason(), annotations, false);
+                if (messageId != null && !identityUnavailable && !ambiguousIds.contains(messageId)) {
+                    inFlight.put(messageId, flight);
+                    protectedIds.put(messageId, flight);
+                }
                 released = true;
                 return continuation;
             }
@@ -124,15 +121,10 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
             // No exception message/cause, raw URL/header/body or operator pattern crosses this boundary.
             String reason = prepared == null && !passthroughAttempt ? "CAPTURE_FAILED" : "CONTINUATION_FAILED";
             if (prepared == null) prepared = rejected(reason);
-            return block(prepared, reason, annotations, collision || messageId == null);
+            return block(prepared, reason, annotations, messageId == null);
         } finally {
             synchronized (releaseLock) {
-                if (ownsId) preparing.remove(messageId);
                 if (!released && messageId != null && flight != null) inFlight.remove(messageId, flight);
-            }
-            if (!released && admission != null && admission.permit() != null) {
-                // No native continuation has been returned: dispatch is conclusively not begun.
-                admission.permit().close();
             }
             if (slot) callbacks.release();
         }
@@ -190,14 +182,21 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
 
     @Override public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
-        // Permit lifetime follows an actual matching Proxy response, independent of capture/factory success.
+        // An exact never-reused Proxy ID associates evidence only; never releases native ownership.
         try {
-            if (response.toolSource().toolType() == ToolType.PROXY) {
+            if (!closed && response.toolSource().toolType() == ToolType.PROXY) {
                 Flight flight;
-                synchronized (releaseLock) { flight = inFlight.remove(response.messageId()); }
+                Flight protectedSource;
+                synchronized (releaseLock) {
+                    int id = response.messageId();
+                    flight = identityUnavailable || ambiguousIds.contains(id) ? null : inFlight.remove(id);
+                    protectedSource = identityUnavailable ? null : protectedIds.get(id);
+                    if (flight == null) { usedIds.add(id); ambiguousIds.add(id); }
+                }
                 if (flight != null) {
-                    flight.permit().close();
-                    captureResponse(flight.evidenceId(), response);
+                    captureResponse(flight.evidenceId(), response, false);
+                } else if (protectedSource != null) {
+                    captureResponse(protectedSource.evidenceId(), response, true);
                 }
             }
         } catch (RuntimeException | LinkageError ignored) { /* Categorical omission; no native mutation or raw logging. */ }
@@ -205,12 +204,14 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
         catch (RuntimeException | LinkageError e) { throw new IllegalStateException("NATIVE_RESPONSE_CONTINUATION_UNAVAILABLE"); }
     }
 
-    private void captureResponse(String evidenceId, HttpResponseReceived response) {
+    private void captureResponse(String evidenceId, HttpResponseReceived response, boolean unpaired) {
         // Scalars come from the native body length, never Content-Length. Response copies need no policy
         // inspection slot. Untracked OFF/unselected responses never get here.
         NativeCapture.Observation observed = NativeCapture.observe(response);
         NativeCapture.Response copy = NativeCapture.response(response, observed);
-        controller.response(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
+        if (unpaired) controller.unpairedResponse(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
+                copy.headersComplete(), copy.bodyComplete());
+        else controller.response(evidenceId, copy.status(), copy.headers(), copy.body(), copy.actualBytes(),
                 copy.headersComplete(), copy.bodyComplete());
     }
 
@@ -230,10 +231,11 @@ public final class ProxyGuardHandler implements HttpHandler, AutoCloseable {
     }
     int inFlightCount() { synchronized (releaseLock) { return inFlight.size(); } }
 
-    /** Shutdown wakes all waits. It NEVER guesses completion or recycles outstanding native permits. */
+    /** Shutdown wakes waits; observation metadata never owns native work. */
     @Override public void close() {
         synchronized (releaseLock) {
             closed = true;
+            inFlight.clear(); protectedIds.clear(); usedIds.clear(); ambiguousIds.clear();
             controller.close();
         }
     }

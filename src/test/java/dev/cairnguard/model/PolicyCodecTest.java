@@ -55,6 +55,20 @@ class PolicyCodecTest {
         parent(root, pointer).set(pointer.substring(pointer.lastIndexOf('/') + 1), Json.MAPPER.valueToTree(value));
     }
 
+    @Test void disabledRatesAndSavedPositiveRatesRoundTripWithoutAControlSwitchOrLegacyLoss() {
+        var base=savedOn();
+        assertEquals(0,GuardConfig.defaults().limits().globalRps()); assertEquals(0,GuardConfig.defaults().limits().perHostRps());
+        for(int rate:List.of(0,1,1000)) {
+            var node=(ObjectNode)Json.MAPPER.valueToTree(base);
+            var limits=(ObjectNode)node.get("limits"); limits.put("globalRps",rate); limits.put("perHostRps",rate);
+            limits.set("hostRps",Json.MAPPER.valueToTree(Map.of("Example.TEST.",rate)));
+            var config=decode(node).config(); new PolicyEngine().validate(config);
+            assertEquals(config,PolicyCodec.decode(PolicyCodec.encode(config)).config());
+            assertEquals(Map.of("Example.TEST.",rate),config.limits().hostRps());
+            assertEquals(base.limits().circuit5xx(),config.limits().circuit5xx());
+        }
+    }
+
     @Test void blankStartsNewProfileButLegacyMigrationIsOffDefaultAndReadOnly() {
         for (String blank : new String[]{null, "", " \n\t"}) {
             PolicyCodec.Decoded decoded = PolicyCodec.decode(blank);

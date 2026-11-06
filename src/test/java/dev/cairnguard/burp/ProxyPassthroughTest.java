@@ -53,7 +53,7 @@ class ProxyPassthroughTest {
             verify(request, never()).method(); verify(request, never()).path(); verify(request, never()).httpService();
             verifyNoInteractions(request.annotations());
             assertTrue(controller.traffic().isEmpty()); assertTrue(controller.approvals().isEmpty());
-            assertEquals(0, gate(controller).get("active")); assertEquals(0, handler.inFlightCount());
+             assertEquals(0, handler.inFlightCount());
             assertEquals(1L, controller.status().get("passthroughCount")); assertNull(actions.local);
             off(controller, false); // The outstanding OFF response must remain untracked after restoring protection.
             var response = response(1, "{\"token\":\"SYNTHETIC-OFF-SECRET\"}");
@@ -87,7 +87,7 @@ class ProxyPassthroughTest {
             assertEquals(RequestAction.SPOOF_RESPONSE, waiting.get(5, TimeUnit.SECONDS).action());
             assertEquals(1L, controller.status().get("passthroughCount"));
             assertTrue(controller.traffic().stream().noneMatch(e -> e.disposition().equals("FORWARDED")));
-            assertEquals(0, gate(controller).get("active"));
+
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }
     }
 
@@ -106,22 +106,22 @@ class ProxyPassthroughTest {
             assertEquals("BLOCKED", controller.traffic().getFirst().disposition());
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(2)).action());
             assertEquals(1, controller.traffic().size()); assertEquals(1L, controller.status().get("passthroughCount"));
-            assertEquals(0, gate(controller).get("active"));
+
         } finally { worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }
     }
 
-    @Test void offKeepsPreviousProtectedPermitUntilItsRealResponseAndNeverTracksNewOffResponses() {
+    @Test void offKeepsPreviousProtectedResponseAssociationAndNeverTracksNewOffResponses() {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
             off(controller, true);
-            assertEquals(1, handler.inFlightCount()); assertEquals(1, gate(controller).get("active"));
+            assertEquals(1, handler.inFlightCount());
             for (int id = 2; id < 150; id++) assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(id)).action());
-            assertEquals(1, handler.inFlightCount()); assertEquals(1, gate(controller).get("active"));
+            assertEquals(1, handler.inFlightCount());
             var untracked = response(2, "{}"); handler.handleHttpResponseReceived(untracked);
-            verify(untracked, never()).body(); assertEquals(1, gate(controller).get("active"));
+            verify(untracked, never()).body();
             handler.handleHttpResponseReceived(response(1, "{\"token\":\"SYNTHETIC-OLD-SECRET\"}"));
-            assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
+            assertEquals(0, handler.inFlightCount());
             assertEquals(1, controller.traffic().size());
             assertTrue(controller.exportJson(controller.traffic()).contains("SYNTHETIC-OLD-SECRET"));
             off(controller, false);
@@ -156,21 +156,37 @@ class ProxyPassthroughTest {
             var request = request(1);
             assertNotEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request).action());
             verify(request, never()).body(); assertEquals(0L, controller.status().get("passthroughCount"));
-            assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
+            assertEquals(0, handler.inFlightCount());
             assertFalse(actions.local.contains("SYNTHETIC"));
         }
     }
 
-    @Test void duplicateOfOldProtectedIdIsStillDroppedWithoutSpoofingItsCompletionWhileOff() {
+    @Test void offReusedProtectedIdPassesWithoutCapturingOrMispairingEitherResponse() {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
             off(controller, true);
-            assertEquals(RequestAction.DROP, handler.handleHttpRequestToBeSent(request(1)).action());
-            assertEquals(1, gate(controller).get("active")); assertEquals(1, handler.inFlightCount());
-            assertEquals(0L, controller.status().get("passthroughCount"));
-            handler.handleHttpResponseReceived(response(1, "{}"));
-            assertEquals(0, gate(controller).get("active"));
+            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
+            assertEquals(0, handler.inFlightCount());
+            assertEquals(1L, controller.status().get("passthroughCount"));
+            handler.handleHttpResponseReceived(response(1, "OFF-unknown"));
+            assertEquals(1,controller.traffic().size());
+            assertNull(controller.rawResponse(controller.traffic().getFirst().id()));
+        }
+    }
+
+    @Test void offIdReusedAfterOnIsAmbiguousButFreshProtectedIdStillPairs() {
+        var controller=controller();
+        try(var handler=new ProxyGuardHandler(controller,new Actions())) {
+            off(controller,true); handler.handleHttpRequestToBeSent(request(1));
+            assertTrue(controller.traffic().isEmpty()); off(controller,false);
+            assertEquals(RequestAction.CONTINUE,handler.handleHttpRequestToBeSent(request(1)).action());
+            var reused=controller.traffic().getFirst().id();
+            handler.handleHttpResponseReceived(response(1,"late-off-or-new-unknown"));
+            assertNull(controller.rawResponse(reused));
+            handler.handleHttpRequestToBeSent(request(2)); var fresh=controller.traffic().getFirst().id();
+            handler.handleHttpResponseReceived(response(2,"fresh-protected-original"));
+            assertTrue(controller.rawResponse(fresh).contains("fresh-protected-original"));
         }
     }
 
@@ -196,7 +212,7 @@ class ProxyPassthroughTest {
             assertTrue(actions.local.contains("\"reason\":\"PROJECT_CHANGED\""));
             assertFalse(controller.exportJson(controller.traffic()).contains("example.test"));
             assertEquals(0L, controller.status().get("passthroughCount"));
-            assertEquals(0, gate(controller).get("active"));
+
             assertEquals(false, controller.status().get("passthrough"));
             assertEquals(true, controller.status().get("passthroughEnded")); assertTrue(revision(controller) > baseline);
             backing.ref = original; unavailable.set(false); // No UI tick: returning to A must not revive OFF.

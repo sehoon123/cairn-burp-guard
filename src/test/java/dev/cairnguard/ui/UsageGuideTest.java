@@ -19,7 +19,7 @@ class UsageGuideTest {
         assertThrows(IllegalStateException.class, UsageGuide::create);
         edt(() -> {
             JTabbedPane tabs = assertInstanceOf(JTabbedPane.class, UsageGuide.create());
-            assertEquals(List.of("대상 등록", "규칙 만들기", "속도·결과 읽기", "자동 안전·태그·내보내기"),
+            assertEquals(List.of("대상 등록", "규칙 만들기", "속도·결과 읽기", "수동 제어·태그·내보내기"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
             List<JTextArea> pages = new ArrayList<>(); collect(tabs, pages);
             assertEquals(4, pages.size());
@@ -34,14 +34,24 @@ class UsageGuideTest {
             assertTrue(pages.get(1).getText().contains("{\"action\":\"review\"}"));
             assertTrue(pages.get(2).getText().contains("자동 재전송"));
             assertTrue(pages.getLast().getText().contains("JSON/HAR/사건"));
-            assertTrue(pages.getLast().getText().contains("감지 종류 선택") && pages.getLast().getText().contains("예외 검토"));
-            assertTrue(pages.getLast().getText().contains("5xx 회로(기본 꺼짐)"));
             String safety = pages.getLast().getText();
-            assertFalse(safety.contains("만료/수동 해제까지 유지됩니다"), "superseded retention wording");
-            assertFalse(safety.contains("끄거나 ‘경고만’으로 바꾸면 그 종류의 열린 자동 차단만 즉시 풀리고 기록·진행 중 요청 자리는 남습니다") && safety.contains("기존 차단은 만료"));
-            assertTrue(safety.contains("즉시"), "OFF/WARN release only that kind's open blocks at once");
-            assertTrue(safety.contains("누락 부채") && safety.contains("운영자 일시중지"), "history/debt/operator pause remain");
+            assertTrue(safety.contains("자동 차단 기능은 제거"));
+            assertTrue(safety.contains("비활성 호환 데이터") && safety.contains("운영자 일시중지"));
             assertTrue(pages.getFirst().getText().contains("/c/%2e/main.do"));
+            return null;
+        });
+    }
+
+    @Test void guideDescribesOptionalPacingAndRemovedAutomaticControlsWithoutNativeCeilingClaims() throws Exception {
+        edt(() -> {
+            List<JTextArea> pages = new ArrayList<>(); collect(UsageGuide.create(), pages);
+            String text = pages.stream().map(JTextArea::getText).collect(java.util.stream.Collectors.joining("\n"));
+            for (String required : List.of("0=끔", "기본값 0/0", "호스트 예외", "모든 속도 끄기", "초안", "저장", "버전", "native 동시성 상한은 없습니다", "자동 차단 기능은 제거", "비활성 호환 데이터")) {
+                assertTrue(text.contains(required), required);
+            }
+            for (String retired : List.of("1/1/1", "5/5/5", "동시 요청 1은", "동시성 자리를", "감지 종류 선택", "자동 차단 탭", "대용량 후보 탭", "예외 검토", "미완료 native 자리", "일시중지·회로를 통과")) {
+                assertFalse(text.contains(retired), retired);
+            }
             return null;
         });
     }

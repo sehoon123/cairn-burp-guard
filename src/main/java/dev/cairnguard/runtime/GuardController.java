@@ -17,26 +17,20 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.HexFormat;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.LongSupplier;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /** Human UI policy + callback pipeline. No outbound HTTP, authentication actions or automatic saves. */
 public final class GuardController implements GuardUiAccess, AutoCloseable {
     private record State(ProjectAccess.Ref project, GuardConfig config, long revision) {}
-    private record Tracked(ResponseWatcher.Ticket ticket, long epoch, long started, long timeout, boolean expired) {}
-    private static final int MAX_TICKETS = 4_096;
-    private static final Set<String> RUNTIME_REASONS = Set.of("HEAVY_ENDPOINT_AUTO_BLOCKED", "CIRCUIT_OPEN",
-            "FANOUT_SUSPECTED", "RESPONSE_WATCHER_CAPACITY", "INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED",
+    private static final Set<String> RUNTIME_REASONS = Set.of("INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED",
             "INTENT_BUDGET_CAPACITY", "LISTENER_UNVERIFIED");
 
     /**
@@ -87,7 +81,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             return "Prepared[evidenceId=" + evidenceId + ", revision=" + revision + ", decision=" + decision + "]";
         }
     }
-    public record Admission(boolean allowed, String reason, RateGate.Permit permit) {}
+    public record Admission(boolean allowed, String reason) {}
     public record CommitResult(boolean allowed, String reason) {}
     public record Denial(String guardState, long policyRevision, String overlayId) {}
     public enum BypassKind { OFF, UNSELECTED_LISTENER }
@@ -124,9 +118,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     private final ResponseWatcher watcher;
     private final IntentBudget intents;
     private final ListenerRegistry listeners;
-    private final LongSupplier nanoTime;
-    private final int ticketCapacity;
-    private final Map<String, Tracked> tickets = new LinkedHashMap<>();
+    private final Map<String, ResponseWatcher.Endpoint> observations = new LinkedHashMap<>();
     private final byte[] attributionKey = new byte[32];
     private final AtomicReference<State> state = new AtomicReference<>(new State(
             new ProjectAccess.Ref("unavailable", "Current Burp project"), GuardConfig.defaults(), 0));
@@ -149,19 +141,16 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
 
     public GuardController(ProjectAccess projects) {
         this(projects, new ResponseWatcher(GuardConfig.defaults().limits()), new IntentBudget(),
-                new RateGate(GuardConfig.defaults().limits()), new ListenerRegistry(), System::nanoTime, MAX_TICKETS);
+                new RateGate(GuardConfig.defaults().limits()), new ListenerRegistry());
     }
-    /** Package-local bounded, real-dependency fake-clock/capacity seam. */
+    /** Package-local real-dependency test seam; no callback-lifetime capacity. */
     GuardController(ProjectAccess projects, ResponseWatcher watcher, IntentBudget intents, RateGate gate,
-                    ListenerRegistry listeners, LongSupplier nanoTime, int ticketCapacity) {
-        if (ticketCapacity < 1 || ticketCapacity > MAX_TICKETS) throw new IllegalArgumentException("INVALID_TICKET_CAPACITY");
+                    ListenerRegistry listeners) {
         this.projects = Objects.requireNonNull(projects);
         this.watcher = Objects.requireNonNull(watcher);
         this.intents = Objects.requireNonNull(intents);
         this.gate = Objects.requireNonNull(gate);
         this.listeners = Objects.requireNonNull(listeners);
-        this.nanoTime = Objects.requireNonNull(nanoTime);
-        this.ticketCapacity = ticketCapacity;
         new SecureRandom().nextBytes(attributionKey);
         refreshProject();
     }
@@ -195,8 +184,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                     endpoint = watcher.endpoint(request, PolicyEngine.routingPaths(request));
                     evidence.bindRawSource(id, endpoint.source());
                 } catch (RuntimeException ignored) {
-                    projected = Decision.blocked("RESPONSE_WATCHER_CAPACITY");
-                    host = "blocked.invalid";
+                    // Optional observational identity is unavailable; policy is unchanged.
                 }
             }
             RequestAttribution attribution = request.headersComplete() ? RequestAttribution.parse(request.headers())
@@ -228,9 +216,9 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         synchronized (mutation) {
             reconcileProjectFailure();
             // Legacy caller-created BLOCK projections remain usable for categorical denial only.
-            // They can neither acquire a permit nor mutate another entry by supplying its ID.
+            // They can neither authorize admission nor mutate another entry by supplying its ID.
             if (!owned(p)) return new Admission(false, p != null && p.decision() != null && p.decision().mode() == Mode.BLOCK
-                    ? category(p.decision().reason()) : "FINAL_CHECK_REJECTED", null);
+                    ? category(p.decision().reason()) : "FINAL_CHECK_REJECTED");
             if (p.authorizing || p.authorized || p.terminal)
                 return rejectLocked(p, p.rejectedReason != null ? p.rejectedReason : "FINAL_CHECK_REJECTED", null, "");
             p.authorizing = true;
@@ -249,21 +237,12 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                 if (failed != null) return rejectLocked(p, failed, p.denied, "");
                 evidence.outcome(p.evidenceId(), "QUEUED", "QUEUED", null);
             }
-            RateGate.Permit permit = gate.acquire(p.rateHost(), () -> current(p));
-            boolean transferred = false;
-            try {
-                synchronized (mutation) {
-                    String failed = precheck(p);
-                    if (failed != null) return rejectLocked(p, failed, p.denied, "");
-                    Admission admission = new Admission(true, "APPROVED", permit);
-                    p.authorized = true;
-                    transferred = true;
-                    return admission;
-                }
-            } finally {
-                // Before ownership reaches the adapter this is conclusively UNSENT. Exceptions
-                // must not leak a permit; an actually released native flight is never recycled here.
-                if (!transferred) permit.close();
+            gate.acquire(p.rateHost(), () -> current(p));
+            synchronized (mutation) {
+                String failed = precheck(p);
+                if (failed != null) return rejectLocked(p, failed, p.denied, "");
+                p.authorized = true;
+                return new Admission(true, "APPROVED");
             }
         } catch (RateGate.Rejected e) {
             // A predicate cancellation must report the actual current lifecycle/project reason,
@@ -344,32 +323,17 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             if (!p.authorized || p.terminal) return commitRejected(p, "FINAL_CHECK_REJECTED", null, "");
             String failed = precheck(p);
             if (failed != null) return commitRejected(p, failed, p.denied, "");
-            reapTickets();
-            if (tickets.size() >= ticketCapacity)
-                return commitRejected(p, "RESPONSE_WATCHER_CAPACITY", null, "");
-            ResponseWatcher.Ticket ticket;
-            try { ticket = watcher.commit(p.endpoint(), p.healthProbe(), p.evidenceId()); }
-            catch (ResponseWatcher.Rejected e) {
-                return commitRejected(p, e.reason(), new Denial(e.guardState().name(), state.get().revision(), e.overlayId()), e.overlayId());
-            }
-            // Watcher goes FIRST: a final fanout/half-open rejection consumes no intent budget.
-            // Both operations and all resets/config changes are under this same mutation lock.
             String budgetReason;
             try { budgetReason = intents.commit(p.attribution(), state.get().config().limits().perIntentMaxRequests()); }
-            catch (RuntimeException e) { watcher.cancel(ticket); return commitRejected(p, "ADAPTER_ERROR", null, ""); }
-            if (budgetReason != null) {
-                watcher.cancel(ticket); // conclusively unsent; does NOT refund half-open cadence/native permits.
-                return commitRejected(p, budgetReason, null, "");
-            }
-            tickets.put(p.evidenceId(), new Tracked(ticket, runtimeEpoch, nanoTime.getAsLong(),
-                    TimeUnit.MILLISECONDS.toNanos(state.get().config().limits().requestTimeoutMillis()), false));
+            catch (RuntimeException e) { return commitRejected(p, "ADAPTER_ERROR", null, ""); }
+            if (budgetReason != null) return commitRejected(p, budgetReason, null, "");
+            if (p.endpoint() != null) observations.put(p.evidenceId(), p.endpoint());
             p.terminal = true;
-            String outcome = p.healthProbe() ? "probe_allowed" : ticket.halfOpen() ? "half_open"
-                    : p.decision().mode() == Mode.EXEMPT ? "exempt" : "forwarded";
+            String outcome = p.healthProbe() ? "probe_allowed" : p.decision().mode() == Mode.EXEMPT ? "exempt" : "forwarded";
             // Evidence failure cannot turn an already consumed, valid final handoff into a local
             // rejection (or refund a possibly used quota). It has no native-completion ownership.
             try {
-                evidence.context(p.evidenceId(), outcome, ticket.halfOpen() ? "CIRCUIT_OPEN" : "PROTECTED", "");
+                evidence.context(p.evidenceId(), outcome, "PROTECTED", "");
                 evidence.outcome(p.evidenceId(), "FORWARDED", "NATIVE_RELEASED", null);
             } catch (RuntimeException ignored) { /* Do not log raw/native errors or alter admission. */ }
             return new CommitResult(true, "NATIVE_RELEASED");
@@ -390,8 +354,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         reconcileProjectFailure();
         reason = category(reason);
         if (owned(p)) {
-            // Preserve the precise watcher overlay from final commit when the adapter records the
-            // same local denial a second time. Never infer lifecycle from the explanatory note.
+            // Keep the final typed denial stable when the adapter records it again.
             if (denied != null) p.denied = denied;
             else if (p.denied == null || !reason.equals(p.rejectedReason)) p.denied = denialFor(reason, overlay);
             p.rejectedReason = reason;
@@ -399,7 +362,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             evidence.context(p.evidenceId(), "blocked", p.denied.guardState(), p.denied.overlayId());
             evidence.outcome(p.evidenceId(), "BLOCKED", reason, 451);
         }
-        return new Admission(false, reason, null);
+        return new Admission(false, reason);
     }
     public Denial denial(Prepared p, String reason) {
         synchronized (mutation) {
@@ -414,12 +377,9 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
                     : resumeRequired ? GuardState.PROJECT_UNVERIFIED : GuardState.PAUSED_BY_OPERATOR;
             case "INVALID_CONFIG" -> GuardState.POLICY_INVALID;
             case "PROJECT_CHANGED", "POLICY_CHANGED" -> GuardState.PROJECT_UNVERIFIED;
-            case "CIRCUIT_OPEN" -> GuardState.CIRCUIT_OPEN;
-            case "HEAVY_ENDPOINT_AUTO_BLOCKED", "FANOUT_SUSPECTED" -> GuardState.OVERLAY_BLOCK;
             case "INVALID_INTENT_TAG", "INTENT_BUDGET_EXCEEDED", "INTENT_BUDGET_CAPACITY" -> GuardState.INTENT_BUDGET;
             case "LISTENER_UNVERIFIED" -> GuardState.LISTENER_UNVERIFIED;
-            case "IN_FLIGHT_TIMEOUT" -> GuardState.IN_FLIGHT_STALLED;
-            case "RESPONSE_WATCHER_CAPACITY", "HOST_CAPACITY", "QUEUE_FULL", "APPROVAL_CAPACITY", "CALLBACK_CAPACITY",
+            case "HOST_CAPACITY", "QUEUE_FULL", "APPROVAL_CAPACITY", "CALLBACK_CAPACITY",
                     "INSPECTION_CAPACITY", "CORRELATION_CAPACITY" -> GuardState.CAPACITY;
             default -> GuardState.PROTECTED;
         };
@@ -431,11 +391,6 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         String failed = failure(p.projectId(), p.revision(), p.healthProbe());
         if (failed != null) return failed;
         if (p.decision().mode() == Mode.BLOCK) return p.decision().reason();
-        ResponseWatcher.Gate check = watcher.check(p.endpoint(), p.healthProbe());
-        if (!check.allowed()) {
-            p.denied = new Denial(check.guardState().name(), state.get().revision(), check.overlayId());
-            return check.reason();
-        }
         return intents.check(p.attribution(), state.get().config().limits().perIntentMaxRequests());
     }
     public boolean current(Prepared p) {
@@ -443,6 +398,15 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         return owned(p) && failure(p.projectId(), p.revision(), p.healthProbe()) == null;
     }
     private boolean owned(Prepared p) { return p != null && p.owner == identity; }
+
+    /** Records only a response whose protected provenance still resolves in the current evidence epoch. */
+    public void unpairedResponse(String protectedSource, int status, List<RequestData.Header> headers, byte[] body,
+                                 long actualBytes, boolean headersComplete, boolean bodyComplete) {
+        synchronized (mutation) {
+            if (!evidenceReadable()) return;
+            evidence.unpairedResponse(protectedSource, status, headers, body, actualBytes, headersComplete, bodyComplete);
+        }
+    }
 
     public void response(String id, int status, List<RequestData.Header> headers, byte[] body) {
         response(id, status, headers, body, body == null ? -1 : body.length, true, true);
@@ -457,11 +421,11 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             if (closed) return;
             if (!closed && !liveProject(state.get().project().id())) reconcileProjectFailure();
             reconcileProjectFailure();
-            reapTickets();
+            if (evidence.entry(id) == null) return;
             evidence.responseBytes(id, actualResponseBytes);
             evidence.response(id, status, headers, body, headersComplete, bodyComplete);
-            Tracked tracked = tickets.remove(id);
-            if (tracked != null && tracked.epoch == runtimeEpoch) watcher.observe(tracked.ticket, status, actualResponseBytes);
+            ResponseWatcher.Endpoint endpoint = observations.remove(id);
+            if (endpoint != null) watcher.observe(endpoint, status, actualResponseBytes);
         }
     }
     public void localResponse(String id, byte[] body) {
@@ -469,23 +433,6 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             if (closed) return;
             evidence.response(id, 451, List.of(new RequestData.Header("Content-Type", "application/json"),
                     new RequestData.Header("X-Cairn-Guard", "blocked")), body);
-        }
-    }
-    private void reapTickets() {
-        long now = nanoTime.getAsLong();
-        Iterator<Map.Entry<String, Tracked>> iterator = tickets.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<String, Tracked> entry = iterator.next();
-            Tracked tracked = entry.getValue();
-            if (tracked.epoch != runtimeEpoch) {
-                iterator.remove();
-                watcher.cancel(tracked.ticket);
-            } else if (!tracked.expired && now - tracked.started >= tracked.timeout) {
-                // Logical failure is not physical completion. Keep this bounded ticket
-                // until the real response (or epoch reset), so slow heavy/5xx scalars are observed.
-                watcher.abandon(tracked.ticket);
-                entry.setValue(new Tracked(tracked.ticket, tracked.epoch, tracked.started, tracked.timeout, true));
-            }
         }
     }
     private String failure(String projectId, long revision, boolean health) {
@@ -577,10 +524,10 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             passthrough = false;
         }
     }
-    /** mutation lock only. Releases every retained original and logical state; never touches native permits. */
+    /** mutation lock only. Releases every retained original and logical state; does not infer native completion. */
     private void resetEpoch() {
         runtimeEpoch++;
-        tickets.clear();
+        observations.clear();
         watcher.reset();
         intents.reset();
         listeners.reset();
@@ -629,7 +576,6 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         synchronized (mutation) {
             if (!closed && !reloadRequired && !liveProject(state.get().project().id())) reconcileProjectFailure();
             reconcileProjectFailure();
-            reapTickets();
             State s = state.get();
             Map<String, Object> result = new LinkedHashMap<>();
             Map<String, Object> watching = watcher.snapshot();
@@ -639,13 +585,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             if (guard == GuardState.PROTECTED && !passthrough) {
                 if (operatorPaused) guard = GuardState.PAUSED_BY_OPERATOR;
                 else if (resumeRequired) guard = GuardState.PROJECT_UNVERIFIED;
-                else if (((Number) gating.get("stalled")).longValue() > 0) guard = GuardState.IN_FLIGHT_STALLED;
-                else if (Boolean.TRUE.equals(watching.get("capacityBlocked"))) guard = GuardState.CAPACITY;
-                else if (Boolean.TRUE.equals(watching.get("automaticPause"))) guard = GuardState.OVERLAY_BLOCK;
-                // After a global PAUSE overlay (which the watcher gate reports first), before per-host states.
-                else if (Boolean.TRUE.equals(watching.get("fanoutHistoryEnforcing"))) guard = GuardState.CAPACITY;
-                else if (((Number) watching.get("circuits")).longValue() > 0) guard = GuardState.CIRCUIT_OPEN;
-                else if (((Number) watching.get("overlays")).longValue() > 0) guard = GuardState.OVERLAY_BLOCK;
+
             }
             result.put("projectId", s.project().id());
             // The verified current project's name; never stale metadata from an unverified/old project.
@@ -673,8 +613,6 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             result.put("watchers", watching);
             result.put("intents", intents.snapshot());
             result.put("listeners", listeners.snapshot());
-            result.put("watcherTickets", tickets.values().stream().filter(t -> !t.expired).count());
-            result.put("watcherLateTickets", tickets.values().stream().filter(t -> t.expired).count());
             result.put("approvalCount", approvals.snapshot().size());
             return Map.copyOf(result);
         }
@@ -700,26 +638,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         synchronized (mutation) { evidenceReadable(); return evidence.exportHar(rows); }
     }
     @Override public void clearEvidence() {
-        synchronized (mutation) { evidence.clear(); watcher.clearEvidence(); }
-    }
-    @Override public List<ResponseWatcher.Overlay> overlays() {
-        synchronized (mutation) { verifyReadProject(); return watcher.overlays(); }
-    }
-    @Override public List<ResponseWatcher.Candidate> heavyCandidates() {
-        synchronized (mutation) { verifyReadProject(); return watcher.candidates(); }
-    }
-    private void verifyReadProject() {
-        reconcileProjectFailure();
-        if (!closed && !reloadRequired && !liveProject(state.get().project().id())) reconcileProjectFailure();
-    }
-    @Override public boolean releaseOverlay(String id, String projectId, long revision) {
-        synchronized (mutation) { checkCas(projectId, revision, "STALE_PROTECTION_STATE", true); return watcher.release(id); }
-    }
-    @Override public int releaseAllOverlays(String projectId, long revision) {
-        synchronized (mutation) { checkCas(projectId, revision, "STALE_PROTECTION_STATE", true); return watcher.releaseAll(); }
-    }
-    @Override public boolean ignoreCandidate(String id, String projectId, long revision) {
-        synchronized (mutation) { checkCas(projectId, revision, "STALE_PROTECTION_STATE", true); return watcher.ignoreCandidate(id); }
+        synchronized (mutation) { evidence.clear(); observations.clear(); watcher.clearEvidence(); }
     }
     @Override public void resetIntentBudgets(String projectId, long revision) {
         synchronized (mutation) { checkCas(projectId, revision, "STALE_PROTECTION_STATE", true); intents.reset(); }
@@ -745,192 +664,10 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
     @Override public String rawRequest(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawRequest(id) : null; } }
     @Override public String rawResponse(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawResponse(id) : null; } }
     @Override public String rawUrl(String id) { synchronized (mutation) { return rawProjectCurrent() ? evidence.rawUrl(id) : null; } }
-    /** Opaque, instance-issued candidate draft authority. Holds identities and a keyed seal, never raw traffic. */
-    private static final class CandidateSource implements GuardUiAccess.CandidateSource {
-        private final Object owner;
-        private final String projectId;
-        private final long runtimeEpoch;
-        private final long rawGeneration;
-        private final String candidateId;
-        private final String source;
-        private final String seal;
-        private CandidateSource(Object owner, String projectId, long runtimeEpoch, long rawGeneration,
-                                String candidateId, String source, String seal) {
-            this.owner = owner; this.projectId = projectId; this.runtimeEpoch = runtimeEpoch; this.rawGeneration = rawGeneration;
-            this.candidateId = candidateId; this.source = source; this.seal = seal;
-        }
-        @Override public String toString() { return "CandidateSource[opaque]"; }
-    }
-
-    @Override public List<HumanCandidate> humanCandidates() {
-        synchronized (mutation) {
-            verifyReadProject();
-            boolean current = rawProjectCurrent();
-            List<HumanCandidate> out = new java.util.ArrayList<>();
-            for (ResponseWatcher.SourcedCandidate sc : watcher.sourcedCandidates()) {
-                EvidenceStore.HumanRoute route = current ? evidence.humanRoute(sc.source()) : null;
-                if (route == null) {
-                    out.add(new HumanCandidate(sc.candidate(), "", "", 0, "", null, "ORIGINAL_UNAVAILABLE", null,
-                            "ORIGINAL_UNAVAILABLE", null));
-                    continue;
-                }
-                String path = pathPart(route.rawTarget());
-                String ruleUrl = null, ruleUnavailable = null;
-                try {
-                    if (!path.startsWith("/")) ruleUnavailable = "NON_ORIGIN_FORM_TARGET";
-                    else ruleUrl = serviceUrl(route) + path;
-                } catch (RuntimeException e) { ruleUnavailable = "INVALID_ROUTE"; }
-                String limitPath = null, limitUnavailable = null;
-                if (route.exactPath() == null) limitUnavailable = "ENCODED_OR_AMBIGUOUS_ROUTE";
-                else if (!strictByteRoute(route)) limitUnavailable = "INVALID_ROUTE";
-                else limitPath = route.exactPath();
-                CandidateSource token = new CandidateSource(identity, state.get().project().id(), runtimeEpoch,
-                        evidence.rawGeneration(), sc.candidate().id(), sc.source(), seal(route));
-                out.add(new HumanCandidate(sc.candidate(), route.scheme(), route.host(), route.port(), path, ruleUrl,
-                        ruleUnavailable, limitPath, limitUnavailable, token));
-            }
-            return List.copyOf(out);
-        }
-    }
-    @Override public List<HumanOverlay> humanOverlays() {
-        synchronized (mutation) {
-            verifyReadProject();
-            boolean current = rawProjectCurrent();
-            List<HumanOverlay> out = new java.util.ArrayList<>();
-            for (ResponseWatcher.SourcedOverlay so : watcher.sourcedOverlays()) {
-                if (so.source() == null) { out.add(new HumanOverlay(so.overlay(), "", "", "NO_SERVICE_SOURCE")); continue; }
-                EvidenceStore.HumanRoute route = current ? evidence.humanRoute(so.source()) : null;
-                if (route == null) out.add(new HumanOverlay(so.overlay(), "", "", "ORIGINAL_UNAVAILABLE"));
-                else out.add(new HumanOverlay(so.overlay(), route.host(), so.pathScoped() ? pathPart(route.rawTarget()) : "", null,
-                        overlayException(so, route)));
-            }
-            return List.copyOf(out);
-        }
-    }
-    /** Opaque overlay-exception authority: identities plus a keyed route seal, never raw traffic. */
-    private static final class OverlaySourceToken implements GuardUiAccess.OverlaySource {
-        private final Object owner;
-        private final String projectId;
-        private final long runtimeEpoch;
-        private final long rawGeneration;
-        private final String overlayId;
-        private final String kind;
-        private final String source;
-        private final String seal;
-        private OverlaySourceToken(Object owner, String projectId, long runtimeEpoch, long rawGeneration,
-                                   String overlayId, String kind, String source, String seal) {
-            this.owner = owner; this.projectId = projectId; this.runtimeEpoch = runtimeEpoch; this.rawGeneration = rawGeneration;
-            this.overlayId = overlayId; this.kind = kind; this.source = source; this.seal = seal;
-        }
-        @Override public String toString() { return "OverlaySource[opaque]"; }
-    }
-    private static String detectorKind(String reason) {
-        return switch (reason) {
-            case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "HEAVY";
-            case "CIRCUIT_OPEN" -> "CIRCUIT";
-            case "FANOUT_SUSPECTED" -> "FANOUT";
-            default -> null;
-        };
-    }
-    private OverlayException overlayException(ResponseWatcher.SourcedOverlay so, EvidenceStore.HumanRoute route) {
-        String kind = detectorKind(so.overlay().reason());
-        if (kind == null) return new OverlayException("NONE", "", "", 0, "", "NO_SERVICE_SOURCE", null);
-        if (route.exactPath() == null || !strictByteRoute(route))
-            return new OverlayException(kind, route.scheme(), route.host(), route.port(), pathPart(route.rawTarget()), "ENCODED_OR_AMBIGUOUS_ROUTE", null);
-        if (GuardUiAccess.detectorExceptionPresent(state.get().config(), kind, route.scheme(), route.host(), route.port(), route.exactPath()))
-            return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), "ALREADY_EXCEPTED", null);
-        try {
-            GuardUiAccess.withDetectorException(state.get().config(), kind, route.scheme(), route.host(), route.port(), route.exactPath());
-        } catch (IllegalStateException e) {
-            return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), "EXCEPTION_TABLE_FULL", null);
-        }
-        return new OverlayException(kind, route.scheme(), route.host(), route.port(), route.exactPath(), null,
-                new OverlaySourceToken(identity, state.get().project().id(), runtimeEpoch, evidence.rawGeneration(),
-                        so.overlay().id(), kind, so.source(), seal(route)));
-    }
-    /** Current overlay of the same id, kind and source whose retained original still has the sealed exact route. */
-    private EvidenceStore.HumanRoute currentOverlayRoute(GuardUiAccess.OverlaySource opaque) {
-        if (!(opaque instanceof OverlaySourceToken token) || token.owner != identity || closed || !rawProjectCurrent()
-                || !token.projectId.equals(state.get().project().id()) || token.runtimeEpoch != runtimeEpoch
-                || token.rawGeneration != evidence.rawGeneration()) return null;
-        boolean present = watcher.sourcedOverlays().stream().anyMatch(o -> o.overlay().id().equals(token.overlayId)
-                && token.source.equals(o.source()) && token.kind.equals(detectorKind(o.overlay().reason())));
-        EvidenceStore.HumanRoute route = present ? evidence.humanRoute(token.source) : null;
-        return route != null && route.exactPath() != null && seal(route).equals(token.seal) ? route : null;
-    }
-    @Override public boolean overlayExceptionCurrent(GuardUiAccess.OverlaySource source) {
-        synchronized (mutation) { return currentOverlayRoute(source) != null; }
-    }
-    @Override public void updateConfig(GuardConfig config, String expectedProjectId, long expectedRevision,
-                                       GuardUiAccess.OverlaySource source) {
-        synchronized (mutation) {
-            EvidenceStore.HumanRoute route = currentOverlayRoute(source);
-            if (route == null) throw new IllegalStateException("OVERLAY_EXCEPTION_STALE");
-            GuardConfig expected;
-            try {
-                expected = PolicyCodec.toV2(GuardUiAccess.withDetectorException(state.get().config(), ((OverlaySourceToken) source).kind,
-                        route.scheme(), route.host(), route.port(), route.exactPath()));
-            } catch (IllegalStateException e) { throw new IllegalStateException("OVERLAY_EXCEPTION_STALE"); }
-            // Exactly the selected detector's route exception relative to the CURRENT policy; nothing else.
-            if (!expected.equals(PolicyCodec.toV2(config))) throw new IllegalStateException("OVERLAY_EXCEPTION_STALE");
-            updateConfig(config, expectedProjectId, expectedRevision);
-        }
-    }
-    @Override public void updateConfig(GuardConfig config, String expectedProjectId, long expectedRevision,
-                                       GuardUiAccess.CandidateSource opaque, boolean byteLimit) {
-        synchronized (mutation) {
-            // Authoritative final source check, after every human confirmation and adjacent to the CAS save.
-            if (!(opaque instanceof CandidateSource token) || token.owner != identity || closed || !rawProjectCurrent()
-                    || !token.projectId.equals(state.get().project().id()) || token.runtimeEpoch != runtimeEpoch
-                    || token.rawGeneration != evidence.rawGeneration()) throw new IllegalStateException("CANDIDATE_STALE");
-            boolean present = watcher.sourcedCandidates().stream()
-                    .anyMatch(c -> c.candidate().id().equals(token.candidateId) && token.source.equals(c.source()));
-            EvidenceStore.HumanRoute route = present ? evidence.humanRoute(token.source) : null;
-            if (route == null || !seal(route).equals(token.seal)) throw new IllegalStateException("CANDIDATE_STALE");
-            if (byteLimit) {
-                String host;
-                try { host = PolicyEngine.canonicalHost(route.host()); } catch (RuntimeException e) { throw new IllegalStateException("CANDIDATE_STALE"); }
-                boolean matches = route.exactPath() != null && config.limits().heavyPathLimits().stream().anyMatch(l ->
-                        l.scheme().equals(route.scheme()) && l.port() == route.port() && l.path().equals(route.exactPath())
-                                && sameHost(l.host(), host));
-                if (!matches) throw new IllegalStateException("CANDIDATE_STALE");
-            }
-            updateConfig(config, expectedProjectId, expectedRevision);
-        }
-    }
-    private static boolean sameHost(String a, String canonical) {
-        try { return PolicyEngine.canonicalHost(a).equals(canonical); } catch (RuntimeException e) { return false; }
-    }
     private static String pathPart(String rawTarget) {
         int question = rawTarget.indexOf('?');
         return question < 0 ? rawTarget : rawTarget.substring(0, question);
     }
-    private static String serviceUrl(EvidenceStore.HumanRoute route) {
-        String host = PolicyEngine.canonicalHost(route.host());
-        if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
-        boolean defaultPort = route.scheme().equals("https") ? route.port() == 443 : route.port() == 80;
-        return route.scheme() + "://" + host + (defaultPort ? "" : ":" + route.port());
-    }
-    private static boolean strictByteRoute(EvidenceStore.HumanRoute route) {
-        try {
-            GuardConfig.Limits d = GuardConfig.defaults().limits();
-            new PolicyEngine().validate(new GuardConfig(2, List.of(), List.of(), List.of(), Mode.BLOCK,
-                    new GuardConfig.Limits(d.globalRps(), d.perHostRps(), d.hostRps(), d.maxConcurrent(), d.maxQueued(),
-                            d.queueTimeoutMillis(), d.approvalTimeoutMillis(), d.requestTimeoutMillis(), d.perPathMaxResponseBytes(),
-                            d.autoBlockMillis(), null, null, 0, false, List.of(),
-                            List.of(new GuardConfig.PathByteLimit(route.scheme(), route.host(), route.port(), route.exactPath(), 0)), List.of(), true, List.of())));
-            return true;
-        } catch (RuntimeException e) { return false; }
-    }
-    private String seal(EvidenceStore.HumanRoute route) {
-        String value = route.scheme() + "\n" + route.host() + "\n" + route.port() + "\n"
-                + route.rawTarget() + "\n" + route.exactPath() + "\n" + route.evidenceId();
-        // hashLabel is ASCII-only: encode every UTF-16 code unit losslessly first.
-        StringBuilder exact = new StringBuilder(value.length() * 4);
-        for (int i = 0; i < value.length(); i++) exact.append(HexFormat.of().toHexDigits(value.charAt(i)));
-        return hashLabel("candidate-route", exact.toString());
-    }
-
     /** Explicitly consented HUMAN export snapshot: validated under the lock; serialization/disk happen outside. */
     private static final class HumanExport implements GuardUiAccess.HumanExport {
         private final Object owner;
@@ -1068,7 +805,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
         State s = state.get();
         state.set(new State(s.project(), s.config(), s.revision() + 1));
         approvals.cancelAll("POLICY_CHANGED");
-        gate.update(s.config().limits()); // Wake waits, NEVER recycle outstanding native permits.
+        gate.update(s.config().limits()); // Wake waits, no native work is tracked.
         listeners.reset();
     }
     @Override public void close() {
@@ -1078,7 +815,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             lifecycle = GuardState.SHUTDOWN;
             passthrough = false;
             note = "SHUTDOWN";
-            resetEpoch(); // terminal logical cleanup of originals/tickets/watcher; physical permits stay adapter-owned
+            resetEpoch(); // terminal logical cleanup of originals/tickets/watcher; no native ownership is inferred
             approvals.close();
             gate.close();
         }

@@ -96,7 +96,7 @@ public final class RuleEditor implements EditorForm<Rule> {
         JPanel footer = new JPanel(new BorderLayout(4, 4));
         footer.setName("rule.footer");
         JTextArea priority = ConditionEditor.information("rule.priorityHint", "규칙 우선순위 안내");
-        priority.setText("EXEMPT 예외 > 차단 > 승인 요청 > 허용 순서로 적용됩니다. ‘기록만’은 다른 동작을 덮어쓰지 않습니다. EXEMPT도 실제 대상 범위·유효성·운영자 일시중지·자동 차단·속도·태그 예산을 우회하지 못합니다.");
+        priority.setText("EXEMPT 예외 > 차단 > 승인 요청 > 허용 순서로 적용됩니다. ‘기록만’은 다른 동작을 덮어쓰지 않습니다. EXEMPT도 실제 대상 범위·유효성·운영자 일시중지·명시 속도·태그 예산·수명 검사를 우회하지 못합니다.");
         JPanel warnings = new JPanel(new java.awt.GridLayout(0, 1));
         warnings.add(priority); warnings.add(exemption);
         footer.add(warnings, BorderLayout.NORTH);
@@ -191,7 +191,7 @@ public final class RuleEditor implements EditorForm<Rule> {
         QUERY_PURGE("쿼리 operation=purge 차단", "특정 쿼리 작업 차단", Mode.BLOCK,
                 "일치: ?operation=purge → 차단. 불일치: ?operation=view, ?other=purge. 이름과 값을 구분해 비교합니다."),
         HEALTH_EXEMPT("GET /health 일반 규칙 예외 (주의)", "GET 상태 확인 일반 규칙 예외", Mode.EXEMPT,
-                "일치: GET /health → 일반 BLOCK·ASK 무시. 불일치: POST /health, GET /health/admin. 범위·일시중지·자동 차단·속도·예산은 유지됩니다. GET도 부작용이 있을 수 있습니다. 자동 적용하지 않습니다.");
+                "일치: GET /health → 일반 BLOCK·ASK 무시. 불일치: POST /health, GET /health/admin. 범위·운영자 일시중지·명시 속도·태그 예산·수명 검사는 유지됩니다. GET도 부작용이 있을 수 있습니다. 자동 적용하지 않습니다.");
         private final String label;
         private final String ruleName;
         private final Mode mode;

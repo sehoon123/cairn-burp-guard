@@ -45,8 +45,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class SettingsEditorTest {
     private static final String SECRET = "synthetic-secret-never-echo";
-    private static final List<String> INTEGER_FIELDS = List.of("globalRps", "perHostRps", "maxConcurrent", "maxQueued");
-    private static final List<String> TIME_FIELDS = List.of("queueTimeoutSeconds", "approvalTimeoutSeconds", "requestTimeoutSeconds");
+    private static final List<String> INTEGER_FIELDS = List.of("globalRps", "perHostRps", "maxQueued");
+    private static final List<String> TIME_FIELDS = List.of("queueTimeoutSeconds", "approvalTimeoutSeconds");
 
     @Test void deferredListenerSelectionIsReadOnlyForAllProtectionAndCannotBeCreatedProgrammatically() throws Exception {
         edt(() -> {
@@ -87,10 +87,9 @@ class SettingsEditorTest {
             assertEquals("settings.editor", editor.component().getName());
             assertFalse(get(editor, "settings.advanced", JPanel.class).isVisible());
             assertFalse(get(editor, "settings.advanced.toggle", JCheckBox.class).isSelected());
-            assertTrue(get(editor, "settings.guidance", JTextArea.class).getText().contains("세션 갱신 기능은 없습니다"));
+            assertTrue(get(editor, "settings.guidance", JTextArea.class).getText().contains("0=끔"));
             String timing = get(editor, "settings.timing.help", JTextArea.class).getText();
-            assertTrue(timing.contains("같은 호스트") && timing.contains("5xx 회로가 아니") && timing.contains("늘려도"), timing);
-            assertTrue(get(editor, "settings.requestTimeoutSeconds.label", JLabel.class).getText().contains("같은 호스트 격리"));
+            assertTrue(timing.contains("응답 완료를 기다리지 않습니다"), timing);
             Set<String> names = new HashSet<>();
             for (String field : Stream.concat(INTEGER_FIELDS.stream(), TIME_FIELDS.stream()).toList()) {
                 JSpinner spinner = spinner(editor, field);
@@ -125,7 +124,6 @@ class SettingsEditorTest {
                 SettingsEditor editor = new SettingsEditor(initial);
                 assertEquals("0.001", text(editor, "queueTimeoutSeconds").getText());
                 assertEquals("123.457", text(editor, "approvalTimeoutSeconds").getText());
-                assertEquals("599.999", text(editor, "requestTimeoutSeconds").getText());
                 assertEquals(new SettingsEditor.Value(initial.defaultMode(), limits), editor.value());
                 assertEquals(overrides, editor.value().limits().hostRps());
             }
@@ -138,7 +136,7 @@ class SettingsEditorTest {
         });
     }
 
-    @Test void exampleButtonsChangeOnlyThreeBasicDraftValuesAndPreserveDetailedSettingsExactly() throws Exception {
+    @Test void exampleButtonsChangeOnlyTwoAuthoredRatesAndPreserveInactiveLegacySettings() throws Exception {
         edt(() -> {
             Limits original = new Limits(9, 7, Map.of("Example.TEST.", 2), 3, 12, 1, 23_001, 599_999);
             GuardConfig initial = config(original);
@@ -147,7 +145,7 @@ class SettingsEditorTest {
                 get(editor, value == 1 ? "settings.preset.slow" : "settings.preset.standard", JButton.class).doClick();
                 assertFalse(get(editor, "settings.advanced", JPanel.class).isVisible());
                 assertTrue(get(editor, "settings.validation", JTextArea.class).getText().contains("아직"));
-                assertEquals(new SettingsEditor.Value(initial.defaultMode(), new Limits(value, value, original.hostRps(), value,
+                assertEquals(new SettingsEditor.Value(initial.defaultMode(), new Limits(value, value, original.hostRps(), original.maxConcurrent(),
                         original.maxQueued(), original.queueTimeoutMillis(), original.approvalTimeoutMillis(), original.requestTimeoutMillis())), editor.value());
                 assertEquals(original, initial.limits());
             }
@@ -183,19 +181,17 @@ class SettingsEditorTest {
         edt(() -> {
             GuardConfig initial = GuardConfig.defaults();
             SettingsEditor editor = new SettingsEditor(initial);
-            for (String field : List.of("globalRps", "perHostRps", "maxConcurrent", "maxQueued",
-                    "queueTimeoutSeconds", "approvalTimeoutSeconds", "requestTimeoutSeconds")) {
+            for (String field : List.of("globalRps", "perHostRps", "maxQueued",
+                    "queueTimeoutSeconds", "approvalTimeoutSeconds")) {
                 assertTrue(text(editor, field).isEditable(), field + " must accept human typing/paste");
                 assertTrue(text(editor, field).isEnabled(), field + " must be enabled");
             }
             text(editor, "globalRps").setText("7");
             text(editor, "perHostRps").setText("4");
-            text(editor, "maxConcurrent").setText("3");
             text(editor, "maxQueued").setText("0");
             text(editor, "queueTimeoutSeconds").setText("2.001");
             text(editor, "approvalTimeoutSeconds").setText("3.009");
-            text(editor, "requestTimeoutSeconds").setText("4.999");
-            assertEquals(5, spinner(editor, "globalRps").getValue());
+            assertEquals(0, spinner(editor, "globalRps").getValue());
             get(editor, "settings.defaultMode", JComboBox.class).setSelectedItem(Mode.ASK);
             get(editor, "settings.hostRps.add", JButton.class).doClick();
             JTable hosts = table(editor);
@@ -206,7 +202,7 @@ class SettingsEditorTest {
             assertFalse(hosts.isEditing());
             assertEquals(Mode.ASK, result.defaultMode());
             Limits old = initial.limits();
-            assertEquals(new Limits(7, 4, Map.of("api.example.test", 5), 3, 0, 2_001, 3_009, 4_999,
+            assertEquals(new Limits(7, 4, Map.of("api.example.test", 5), old.maxConcurrent(), 0, 2_001, 3_009, old.requestTimeoutMillis(),
                     old.perPathMaxResponseBytes(), old.autoBlockMillis(), old.circuit5xx(), old.fanout(), old.perIntentMaxRequests(), old.healthProbePassthrough(), old.healthProbePaths(), old.heavyPathLimits()), result.limits());
             assertEquals(GuardConfig.defaults(), initial);
             assertThrows(UnsupportedOperationException.class, () -> result.limits().hostRps().put("other.example.test", 1));
@@ -255,24 +251,20 @@ class SettingsEditorTest {
         edt(() -> {
             SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
             spinner(editor, "globalRps").setValue(1_000);
-            spinner(editor, "perHostRps").setValue(1);
-            spinner(editor, "maxConcurrent").setValue(100);
+            spinner(editor, "perHostRps").setValue(0);
             spinner(editor, "maxQueued").setValue(10_000);
             spinner(editor, "queueTimeoutSeconds").setValue(new BigDecimal("0.001"));
             spinner(editor, "approvalTimeoutSeconds").setValue(new BigDecimal("600"));
-            spinner(editor, "requestTimeoutSeconds").setValue(new BigDecimal("0.009"));
             assertNull(spinner(editor, "globalRps").getNextValue());
             assertNull(spinner(editor, "perHostRps").getPreviousValue());
-            assertNull(spinner(editor, "maxConcurrent").getNextValue());
             assertNull(spinner(editor, "maxQueued").getNextValue());
             assertNull(spinner(editor, "queueTimeoutSeconds").getPreviousValue());
             assertEquals(new BigDecimal("0.002"), spinner(editor, "queueTimeoutSeconds").getNextValue());
             assertNull(spinner(editor, "approvalTimeoutSeconds").getNextValue());
-            spinner(editor, "requestTimeoutSeconds").setValue(spinner(editor, "requestTimeoutSeconds").getNextValue());
             Limits result = editor.value().limits();
             assertEquals(1, result.queueTimeoutMillis());
             assertEquals(600_000, result.approvalTimeoutMillis());
-            assertEquals(10, result.requestTimeoutMillis());
+            assertEquals(GuardConfig.defaults().limits().requestTimeoutMillis(), result.requestTimeoutMillis());
             text(editor, "queueTimeoutSeconds").setText("0.001000000000000000000");
             assertEquals(1, editor.value().limits().queueTimeoutMillis());
             spinner(editor, "maxQueued").setValue(0);
@@ -284,9 +276,8 @@ class SettingsEditorTest {
 
     static Stream<Arguments> invalidNumbers() {
         return Stream.concat(
-                Stream.of(Arguments.of("globalRps", 0), Arguments.of("globalRps", 1_001),
+                Stream.of(Arguments.of("globalRps", -1), Arguments.of("globalRps", 1_001),
                         Arguments.of("perHostRps", -1), Arguments.of("perHostRps", 1_001),
-                        Arguments.of("maxConcurrent", 0), Arguments.of("maxConcurrent", 101),
                         Arguments.of("maxQueued", -1), Arguments.of("maxQueued", 10_001)),
                 Stream.concat(INTEGER_FIELDS.stream(), TIME_FIELDS.stream()).flatMap(field -> Stream.of(
                         Arguments.of(field, Double.NaN), Arguments.of(field, Double.POSITIVE_INFINITY),
@@ -306,7 +297,7 @@ class SettingsEditorTest {
         });
     }
 
-    @ParameterizedTest @ValueSource(strings = {"globalRps", "perHostRps", "maxConcurrent", "maxQueued"})
+    @ParameterizedTest @ValueSource(strings = {"globalRps", "perHostRps", "maxQueued"})
     void fractionalIntegerFieldsNeverRoundOrRevertOnCommit(String field) throws Exception {
         edt(() -> {
             SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
@@ -367,7 +358,7 @@ class SettingsEditorTest {
         });
     }
 
-    @ParameterizedTest @ValueSource(strings = {"0", "1001", "4.5", "NaN", "1e2", "", SECRET})
+    @ParameterizedTest @ValueSource(strings = {"-1", "1001", "4.5", "NaN", "1e2", "", SECRET})
     void invalidOverrideRatesNeverRevertToTheExistingRate(String input) throws Exception {
         edt(() -> {
             SettingsEditor editor = new SettingsEditor(config(withHosts(Map.of("example.test", 2))));
@@ -550,7 +541,7 @@ class SettingsEditorTest {
         edt(() -> {
             assertSafe(assertThrows(FormValidationException.class, () -> new SettingsEditor(null)));
             Limits base = GuardConfig.defaults().limits();
-            Limits invalid = new Limits(0, base.perHostRps(), Map.of(), base.maxConcurrent(), base.maxQueued(), 1, 1, 1);
+            Limits invalid = new Limits(-1, base.perHostRps(), Map.of(), base.maxConcurrent(), base.maxQueued(), 1, 1, 1);
             assertSafe(assertThrows(FormValidationException.class, () -> new SettingsEditor(config(invalid))));
             assertSafe(assertThrows(FormValidationException.class, () -> new SettingsEditor(config(withHosts(Map.of("EXAMPLE.test", 2, "example.test.", 3))))));
             Map<String, Integer> tooMany = new LinkedHashMap<>();

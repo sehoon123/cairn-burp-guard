@@ -34,7 +34,7 @@ class SettingsV2Test {
             get(editor, "settings.hostRps.table", JTable.class).setValueAt("6", 0, 1);
             SettingsEditor.Value value = editor.value();
             Limits old = original.limits();
-            Limits expected = new Limits(1, 1, Map.of("Example.TEST.", 6), 1, old.maxQueued(), old.queueTimeoutMillis(), old.approvalTimeoutMillis(), old.requestTimeoutMillis(),
+            Limits expected = new Limits(1, 1, Map.of("Example.TEST.", 6), old.maxConcurrent(), old.maxQueued(), old.queueTimeoutMillis(), old.approvalTimeoutMillis(), old.requestTimeoutMillis(),
                     old.perPathMaxResponseBytes(), old.autoBlockMillis(), old.circuit5xx(), old.fanout(), old.perIntentMaxRequests(), old.healthProbePassthrough(), old.healthProbePaths(), old.heavyPathLimits(), old.circuit5xxExceptions());
             assertEquals(expected, value.limits());
             assertEquals(new SettingsEditor.Value(original.defaultMode(), expected, original.guardListenerPorts()),
@@ -47,12 +47,6 @@ class SettingsV2Test {
     @Test void allSafetyControlsAuthorActualModelsAndActiveRouteEditsAreCommitted() throws Exception {
         edt(() -> {
             SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
-            assertFalse(get(editor, "settings.circuit.enabled", JCheckBox.class).isSelected(), "the 5xx circuit is optional and OFF by default");
-            get(editor, "settings.circuit.enabled", JCheckBox.class).setSelected(true);
-            text(editor, "heavyMiB", "2.5"); text(editor, "autoBlockSeconds", "1.001");
-            text(editor, "circuit.windowSeconds", "3.001"); text(editor, "circuit.threshold", "2"); text(editor, "circuit.openSeconds", "4.005");
-            text(editor, "fanout.windowSeconds", "5.006"); text(editor, "fanout.distinctPaths", "7");
-            get(editor, "settings.fanout.action", JComboBox.class).setSelectedItem(FanoutAction.PAUSE);
             text(editor, "intent.maxRequests", "20");
             assertFalse(get(editor, "settings.listenerPorts", JTextField.class).isEditable());
             get(editor, "settings.probes.enabled", JCheckBox.class).setSelected(true);
@@ -60,21 +54,13 @@ class SettingsV2Test {
             JTable probes = get(editor, "settings.probes.table", JTable.class);
             probes.setValueAt("example.test", 0, 1); probes.setValueAt("/health", 0, 3);
             assertTrue(probes.editCellAt(0, 3)); ((JTextField) probes.getEditorComponent()).setText("/ready");
-            get(editor, "settings.pathLimits.add", JButton.class).doClick(0);
-            JTable paths = get(editor, "settings.pathLimits.table", JTable.class);
-            paths.setValueAt("http", 0, 0); paths.setValueAt("example.test", 0, 1); paths.setValueAt("80", 0, 2); paths.setValueAt("/large", 0, 3); paths.setValueAt("0.00000095367431640625", 0, 4);
             SettingsEditor.Value result = editor.value(); Limits l = result.limits();
-            assertFalse(probes.isEditing()); assertEquals(2_621_440, l.perPathMaxResponseBytes()); assertEquals(1001, l.autoBlockMillis());
-            assertEquals(new Circuit5xx(3001, 2, 4005, 1), l.circuit5xx());
-            assertEquals(new Fanout(5006, 7, FanoutAction.PAUSE), l.fanout()); assertEquals(20, l.perIntentMaxRequests());
-            assertTrue(result.guardListenerPorts().isEmpty(), "Per-port protection is deferred; new settings protect all listeners");
-            assertEquals(List.of(new ProbePath("https", "example.test", 443, "/ready")), l.healthProbePaths());
-            assertEquals(List.of(new PathByteLimit("http", "example.test", 80, "/large", 1)), l.heavyPathLimits());
-            get(editor, "settings.probes.enabled", JCheckBox.class).setSelected(false);
-            get(editor, "settings.circuit.enabled", JCheckBox.class).setSelected(false);
-            get(editor, "settings.fanout.enabled", JCheckBox.class).setSelected(false);
-            Limits off = editor.value().limits(); assertFalse(off.healthProbePassthrough()); assertNull(off.circuit5xx()); assertNull(off.fanout());
-            assertEquals(l.healthProbePaths(), off.healthProbePaths()); assertEquals(l.heavyPathLimits(), off.heavyPathLimits());
+            assertFalse(probes.isEditing()); assertEquals(20,l.perIntentMaxRequests());
+            assertTrue(result.guardListenerPorts().isEmpty());
+            assertEquals(List.of(new ProbePath("https","example.test",443,"/ready")),l.healthProbePaths());
+            get(editor,"settings.probes.enabled",JCheckBox.class).setSelected(false);
+            assertFalse(editor.value().limits().healthProbePassthrough());
+            assertEquals(l.healthProbePaths(),editor.value().limits().healthProbePaths());
             return null;
         });
     }
@@ -82,16 +68,10 @@ class SettingsV2Test {
     @Test void invalidThresholdsWindowsCountersListenersAndRoutesCannotBecomeSilentDefaults() throws Exception {
         edt(() -> {
             for (var test : Map.of(
-                    "heavyMiB", List.of("-1", "2048.1", "0.1", "1e3", "NaN"),
-                    "autoBlockSeconds", List.of("0.999", "86400.001"),
-                    "circuit.threshold", List.of("0", "1.5", "1001"),
-                    "circuit.windowSeconds", List.of("0", "3600.001"),
-                    "fanout.distinctPaths", List.of("1", "1001"),
                     "intent.maxRequests", List.of("-1", "1000001"),
                     "listenerPorts", List.of("8080", "8080, 8081", "8080,8080", "0", "65536", "8080,", "+8080", "80.1")
             ).entrySet()) for (String invalid : test.getValue()) {
                 SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
-                if (test.getKey().startsWith("circuit.")) get(editor, "settings.circuit.enabled", JCheckBox.class).setSelected(true);
                 text(editor, test.getKey(), invalid);
                 assertThrows(FormValidationException.class, editor::value, test.getKey() + ": " + invalid);
             }
@@ -108,96 +88,20 @@ class SettingsV2Test {
         });
     }
 
-    @Test void circuitExceptionTableAddsEditsDeletesReopensAndSurvivesDetectorOff() throws Exception {
-        edt(() -> {
-            SettingsEditor empty = new SettingsEditor(GuardConfig.defaults());
-            assertTrue(empty.value().limits().circuit5xxExceptions().isEmpty());
-            JTable table = get(empty, "settings.circuit.exceptions.table", JTable.class);
-            assertEquals(0, table.getRowCount());
-            assertTrue(table.getColumnName(3).contains("모든 메서드"), "not a GET-only table");
-            assertEquals("5xx 회로 예외 경로", table.getAccessibleContext().getAccessibleName());
-            get(empty, "settings.circuit.exceptions.add", JButton.class).doClick(0);
-            table.setValueAt("example.test", 0, 1);
-            assertTrue(table.editCellAt(0, 3)); ((JTextField) table.getEditorComponent()).setText("/expected-error");
-            List<ProbePath> added = empty.value().limits().circuit5xxExceptions();
-            assertFalse(table.isEditing(), "an active cell edit is committed into the returned draft");
-            assertEquals(List.of(new ProbePath("https", "example.test", 443, "/expected-error")), added);
-            assertNull(empty.value().limits().circuit5xx(), "the list is authored data even while the circuit is OFF");
-            // reopen from the saved shape, then OFF/ON toggles never erase it
-            GuardConfig saved = new GuardConfig(2, List.of(), List.of(), GuardConfig.defaults().rules(), Mode.ALLOW, empty.value().limits());
-            SettingsEditor reopened = new SettingsEditor(saved);
-            JCheckBox enabled = get(reopened, "settings.circuit.enabled", JCheckBox.class);
-            enabled.setSelected(true); assertEquals(added, reopened.value().limits().circuit5xxExceptions());
-            enabled.setSelected(false); assertEquals(added, reopened.value().limits().circuit5xxExceptions());
-            // unrelated edits keep them
-            get(reopened, "settings.preset.slow", JButton.class).doClick(0);
-            assertEquals(added, reopened.value().limits().circuit5xxExceptions());
-            // delete is explicit
-            JTable again = get(reopened, "settings.circuit.exceptions.table", JTable.class);
-            again.setRowSelectionInterval(0, 0); get(reopened, "settings.circuit.exceptions.remove", JButton.class).doClick(0);
-            assertTrue(reopened.value().limits().circuit5xxExceptions().isEmpty());
-            return null;
-        });
-    }
-
-    @Test void heavyMasterAndFanoutExceptionTableAreAuthoredDataPreservedAcrossReopenUnrelatedEditsAndToggles() throws Exception {
-        edt(() -> {
-            SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
-            JCheckBox heavy = get(editor, "settings.heavy.enabled", JCheckBox.class);
-            assertTrue(heavy.isSelected(), "large-response protection is ON by default");
-            assertEquals("해당 서비스 자동 차단", ((JLabel) get(editor, "settings.fanout.action", JComboBox.class).getRenderer()
-                    .getListCellRendererComponent(new JList<>(), FanoutAction.BLOCK, 0, false, false)).getText());
-            heavy.setSelected(false);
-            get(editor, "settings.pathLimits.add", JButton.class).doClick(0);
-            JTable paths = get(editor, "settings.pathLimits.table", JTable.class); paths.setValueAt("example.test", 0, 1); paths.setValueAt("/large", 0, 3); paths.setValueAt("7", 0, 4);
-            get(editor, "settings.fanout.exceptions.add", JButton.class).doClick(0);
-            JTable fanout = get(editor, "settings.fanout.exceptions.table", JTable.class);
-            fanout.setValueAt("example.test", 0, 1);
-            assertTrue(fanout.editCellAt(0, 3)); ((JTextField) fanout.getEditorComponent()).setText("/batch");
-            Limits value = editor.value().limits();
-            assertFalse(fanout.isEditing());
-            assertFalse(value.heavyResponseEnabled());
-            assertEquals(5L * 1_048_576, value.perPathMaxResponseBytes(), "authored default limit retained while OFF");
-            assertEquals(7L * 1_048_576, value.heavyPathLimits().getFirst().maxBytes(), "authored route limit retained while OFF");
-            assertEquals(List.of(new ProbePath("https", "example.test", 443, "/batch")), value.fanoutExceptions());
-            GuardConfig saved = new GuardConfig(2, List.of(), List.of(), GuardConfig.defaults().rules(), Mode.ALLOW, value);
-            SettingsEditor reopened = new SettingsEditor(saved);
-            assertFalse(get(reopened, "settings.heavy.enabled", JCheckBox.class).isSelected());
-            get(reopened, "settings.preset.slow", JButton.class).doClick(0);
-            JCheckBox fanoutOn = get(reopened, "settings.fanout.enabled", JCheckBox.class);
-            fanoutOn.setSelected(false); fanoutOn.setSelected(true);
-            Limits after = reopened.value().limits();
-            assertFalse(after.heavyResponseEnabled()); assertEquals(value.fanoutExceptions(), after.fanoutExceptions());
-            assertEquals(value.heavyPathLimits(), after.heavyPathLimits());
-            JTable again = get(reopened, "settings.fanout.exceptions.table", JTable.class);
-            again.setRowSelectionInterval(0, 0); get(reopened, "settings.fanout.exceptions.remove", JButton.class).doClick(0);
-            assertTrue(reopened.value().limits().fanoutExceptions().isEmpty());
-            for (int i = 0; i < 20; i++) get(reopened, "settings.fanout.exceptions.add", JButton.class).doClick(0);
-            assertEquals(16, again.getRowCount());
-            return null;
-        });
-    }
-
-    @Test void circuitExceptionTableIsBoundedAndRejectsDuplicateAliasesAndNonRoutes() throws Exception {
-        edt(() -> {
-            SettingsEditor editor = new SettingsEditor(GuardConfig.defaults());
-            JTable table = get(editor, "settings.circuit.exceptions.table", JTable.class);
-            JButton add = get(editor, "settings.circuit.exceptions.add", JButton.class);
-            for (int i = 0; i < 20; i++) { add.doClick(0); }
-            assertEquals(16, table.getRowCount(), "17th row is refused");
-            for (int i = 0; i < 16; i++) { table.setValueAt("example.test", i, 1); table.setValueAt("/e/" + i, i, 3); }
-            assertEquals(16, editor.value().limits().circuit5xxExceptions().size());
-            table.setValueAt("EXAMPLE.test.", 1, 1); table.setValueAt("/e/0", 1, 3);
-            assertThrows(FormValidationException.class, editor::value, "canonical alias duplicate");
-            table.setValueAt("example.test", 1, 1);
-            for (String bad : List.of("/e?x=1", "/e#f", "/e/../x", "/e;m", "/e%2fx", "relative")) {
-                table.setValueAt(bad, 1, 3);
-                assertThrows(FormValidationException.class, editor::value, bad);
-            }
-            table.setValueAt("/e/1", 1, 3);
-            table.setValueAt("*.example.test", 1, 1);
-            assertThrows(FormValidationException.class, editor::value, "wildcard host");
-            return null;
+    @Test void retiredControlsAreAbsentAndLegacyValuesSurviveAllRatesOffDraftAndReopen() throws Exception {
+        edt(()-> {
+            var initial=configured(); var editor=new SettingsEditor(initial);
+            for(String name:List.of("settings.heavy.enabled","settings.circuit.enabled","settings.fanout.enabled","settings.pathLimits.table","settings.maxConcurrent","settings.requestTimeoutSeconds")) assertNull(find(editor.component(),name));
+            get(editor,"settings.rates.off",JButton.class).doClick(0);
+            var off=editor.value().limits(); var old=initial.limits();
+            assertEquals(0,off.globalRps()); assertEquals(0,off.perHostRps());
+            assertEquals(Map.of("Example.TEST.",0),off.hostRps()); assertEquals(3,old.hostRps().get("Example.TEST."));
+            assertEquals(old.maxConcurrent(),off.maxConcurrent()); assertEquals(old.requestTimeoutMillis(),off.requestTimeoutMillis());
+            assertEquals(old.circuit5xx(),off.circuit5xx()); assertEquals(old.fanout(),off.fanout());
+            assertEquals(old.heavyPathLimits(),off.heavyPathLimits()); assertEquals(old.circuit5xxExceptions(),off.circuit5xxExceptions());
+            assertEquals(old.perPathMaxResponseBytes(),off.perPathMaxResponseBytes()); assertEquals(old.heavyResponseEnabled(),off.heavyResponseEnabled());
+            var saved=new GuardConfig(2,initial.allowScope(),initial.blockScope(),initial.rules(),initial.defaultMode(),off,initial.guardListenerPorts());
+            assertEquals(off,new SettingsEditor(saved).value().limits()); return null;
         });
     }
 

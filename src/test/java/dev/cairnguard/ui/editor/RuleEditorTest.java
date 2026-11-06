@@ -202,6 +202,19 @@ class RuleEditorTest {
         });
     }
 
+    @Test void exemptionHelpNamesOnlyRemainingProtectionsAndNeverAutomaticBlocking() throws Exception {
+        edt(() -> {
+            RuleEditor editor = new RuleEditor(null);
+            get(editor, "rule.preset", JComboBox.class).setSelectedIndex(7);
+            for (String component : List.of("rule.priorityHint", "rule.presetHint")) {
+                String text = get(editor, component, JTextArea.class).getText();
+                assertFalse(text.contains("자동 차단"), component);
+                for (String remaining : List.of("범위", "일시중지", "속도", "예산", "수명")) assertTrue(text.contains(remaining), remaining);
+            }
+            return null;
+        });
+    }
+
     @Test void previewsExplainPositiveAndNegativeExamplesWithoutChangingTheDraft() throws Exception {
         edt(() -> {
             RuleEditor editor = new RuleEditor(null);

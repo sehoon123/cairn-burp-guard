@@ -68,7 +68,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
     private static final String TABLE_EDIT_ERROR = "호스트 표의 편집 중인 값을 확인하고 입력을 마친 뒤 다시 저장하세요.";
     private static final String HOST_ERROR = "호스트를 확인하세요. URL·포트·경로·와일드카드 없이 호스트 이름이나 IP 주소만 입력하세요.";
     private static final String DUPLICATE_ERROR = "같은 호스트를 가리키는 행이 중복되었습니다. 대소문자·끝의 점·국제 도메인·IPv6 별칭을 확인하고 한 행만 남기세요.";
-    private static final String HOST_RATE_ERROR = "호스트별 초당 요청 수는 1~1,000 사이의 정수로 입력하세요.";
+    private static final String HOST_RATE_ERROR = "호스트별 초당 요청 수는 0~1,000 사이의 정수로 입력하세요.";
     private static final String TIME_ERROR = "대기 제한은 0.001~600초로 입력하세요. 소수점 셋째 자리(1밀리초)보다 작은 단위는 사용할 수 없습니다.";
     private static final String POLICY_ERROR = "설정을 저장할 수 없습니다. 범위와 규칙을 포함한 정책을 다시 불러온 뒤 설정값을 확인하세요.";
 
@@ -78,11 +78,9 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
     private final JScrollPane root;
     private final JSpinner globalRps;
     private final JSpinner perHostRps;
-    private final JSpinner maxConcurrent;
     private final JSpinner maxQueued;
     private final JSpinner queueTimeout;
     private final JSpinner approvalTimeout;
-    private final JSpinner requestTimeout;
     private final JComboBox<Mode> defaultMode;
     private final JCheckBox advancedToggle;
     private final JPanel advanced;
@@ -100,13 +98,11 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         this.initial = initial;
         Limits limits = initial.limits();
         safety = new SafetySettingsEditor(initial);
-        globalRps = number("settings.globalRps", "전체 초당 요청 수 (RPS)", limits.globalRps(), 1, 1_000, false);
-        perHostRps = number("settings.perHostRps", "기본 호스트당 초당 요청 수", limits.perHostRps(), 1, 1_000, false);
-        maxConcurrent = number("settings.maxConcurrent", "최대 동시 요청 수", limits.maxConcurrent(), 1, 100, false);
+        globalRps = number("settings.globalRps", "전체 초당 요청 수 (RPS)", limits.globalRps(), 0, 1_000, false);
+        perHostRps = number("settings.perHostRps", "기본 호스트당 초당 요청 수", limits.perHostRps(), 0, 1_000, false);
         maxQueued = number("settings.maxQueued", "전송 대기열 크기", limits.maxQueued(), 0, 10_000, false);
         queueTimeout = number("settings.queueTimeoutSeconds", "전송 대기 제한 (초)", seconds(limits.queueTimeoutMillis()), 0, 600, true);
         approvalTimeout = number("settings.approvalTimeoutSeconds", "승인 대기 제한 (초)", seconds(limits.approvalTimeoutMillis()), 0, 600, true);
-        requestTimeout = number("settings.requestTimeoutSeconds", "응답 대기 제한 (초, 초과 시 같은 호스트 격리)", seconds(limits.requestTimeoutMillis()), 0, 600, true);
         defaultMode = named(new JComboBox<>(new Mode[]{Mode.ALLOW, Mode.BLOCK, Mode.MONITOR, Mode.ASK}), "settings.defaultMode", "규칙에 해당하지 않을 때의 기본 동작");
         defaultMode.setRenderer(new ModeRenderer());
         defaultMode.setSelectedItem(initial.defaultMode());
@@ -148,34 +144,38 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         FormPanel content = named(new FormPanel(), "settings.form", "요청 제어 설정");
         content.setLayout(new BoxLayout(content, BoxLayout.PAGE_AXIS));
         content.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        content.add(wrapped("settings.guidance", "요청의 속도와 동시 실행을 제한합니다. 로그인, 쿠키·토큰 주입, 세션 갱신 기능은 없습니다. 저장 전까지 기존 설정은 바뀌지 않습니다."));
+        content.add(wrapped("settings.guidance", "수동 고정 속도와 대기를 설정합니다. 0=끔. 저장 전에는 바뀌지 않습니다. native 완료와 동시 실행 수는 추정하거나 제한하지 않습니다."));
         JPanel basic = grid("settings.basic", "일반 설정");
         row(basic, 0, "전체 초당 요청 수 (RPS)", globalRps);
         row(basic, 1, "기본 호스트당 초당 요청 수", perHostRps);
-        row(basic, 2, "최대 동시 요청 수", maxConcurrent);
         content.add(basic);
-        JPanel presets = named(new JPanel(new GridLayout(1, 2, 6, 0)), "settings.presets", "일반 숫자 예시 · 전체 RPS / 호스트 RPS / 동시 요청");
-        JButton slow = named(new JButton("천천히 · 1/1/1"), "settings.preset.slow", "전체·기본 호스트 RPS·동시 요청을 각각 1로 폼에 채우기");
-        JButton standard = named(new JButton("기본 · 5/5/5"), "settings.preset.standard", "전체·기본 호스트 RPS·동시 요청을 각각 5로 폼에 채우기");
+        JPanel presets = named(new JPanel(new GridLayout(1, 3, 6, 0)), "settings.presets", "일반 숫자 예시 · 전체 RPS / 호스트 RPS");
+        JButton slow = named(new JButton("천천히 · 1/1"), "settings.preset.slow", "전체·기본 호스트 RPS을 각각 1로 폼에 채우기");
+        JButton standard = named(new JButton("수동 · 5/5"), "settings.preset.standard", "전체·기본 호스트 RPS을 각각 5로 폼에 채우기");
         slow.addActionListener(e -> fillBasic(1));
         standard.addActionListener(e -> fillBasic(5));
-        presets.add(slow); presets.add(standard);
+        JButton off = named(new JButton("모든 속도 제한 끄기 (0)"), "settings.rates.off", "모든 속도와 호스트별 속도를 0으로 채우기 · 저장 전 초안");
+        off.addActionListener(e -> editRows(() -> {
+            fillBasic(0);
+            for (HostRow host : hostModel.rows) { host.rate = "0"; host.rateTooLong = false; }
+            hostModel.fireTableDataChanged();
+        }));
+        presets.add(off); presets.add(slow); presets.add(standard);
         content.add(presets);
-        content.add(wrapped("settings.presets.help", "숫자 예시: 전체 RPS / 기본 호스트 RPS / 동시 요청. 버튼은 이 3개만 채웁니다. 상세 설정·호스트 예외는 유지하며 저장은 별도입니다."));
-        content.add(wrapped("settings.basic.help", "예: 전체 5·호스트 2이면 한 호스트는 기본 초당 2회, 여러 호스트 합산 초당 5회까지 전송을 허가합니다. 동시 요청 1은 응답을 기다리는 요청이 하나라는 뜻입니다 (워커 수 아님). RPS 1~1,000·동시 요청 1~100이며 쉼표 없이 입력하세요."));
+        content.add(wrapped("settings.presets.help", "수동 숫자 예시는 전체/기본 호스트 속도만 바꿉니다. 모든 속도 끄기는 호스트 표기도 보존하고 속도만 모두 0으로 채웁니다. 저장은 별도입니다."));
+        content.add(wrapped("settings.basic.help", "0은 해당 속도 제한 끔, 1~1000은 명시적 고정 속도입니다. 전체 0과 기본 호스트 0이어도 양수 호스트별 속도는 유지됩니다. 모든 속도 끄기는 표의 모든 숫자도 0으로 바꾸는 미저장 작업입니다."));
         content.add(advancedToggle);
         JPanel timing = grid("settings.timing", "대기와 기본 동작");
         row(timing, 0, "전송 대기열 크기 (0~10,000)", maxQueued);
         row(timing, 1, "전송 대기 제한 (초)", queueTimeout);
         row(timing, 2, "승인 대기 제한 (초)", approvalTimeout);
-        row(timing, 3, "응답 대기 제한 (초, 초과 시 같은 호스트 격리)", requestTimeout);
-        row(timing, 4, "규칙에 해당하지 않을 때", defaultMode);
+        row(timing, 3, "규칙에 해당하지 않을 때", defaultMode);
         advanced.add(timing);
-        advanced.add(wrapped("settings.timing.help", "시간은 0.001~600초, 0.001초(1밀리초) 단위입니다. 전송·승인 대기 제한이 지나면 차단합니다. 응답 대기 제한이 지나도 기존 요청을 취소하거나 동시 실행 자리를 자동으로 비우지 않습니다. 같은 호스트에서 실제 미완료 요청 하나라도 이 제한을 넘기면 그 호스트의 새 요청만 IN_FLIGHT_TIMEOUT로 막고(다른 호스트는 실제 남은 슬롯 사용), 제한을 넘긴 요청이 동시 요청 한도를 모두 차지하면 전체가 막힙니다. 5xx 회로가 아니며 대상 장애의 증거도 아닙니다. 제한을 늘려도 이미 초과한 요청은 풀리지 않고 실제 완료 또는 전송 안 됨 확정이 필요합니다. 일부 upstream 실패는 완료 콜백 없이 자리가 남을 수 있으며 자동 복구는 없습니다(확인된 플랫폼 한계)."));
+        advanced.add(wrapped("settings.timing.help", "전송 대기열은 켜진 수동 속도만 기다립니다. 응답 완료를 기다리지 않습니다. 전송·승인 대기 시간은 0.001~600초이며 만료 시 거절합니다."));
         advanced.add(wrapped("settings.mode.help", "기본 동작은 등록한 허용 범위 안에서만 적용됩니다. 허용 대상이 없거나 필수 안전 검사에 실패하면 항상 차단합니다."));
         JPanel hostPanel = named(new JPanel(new BorderLayout(4, 4)), "settings.hostRps", "호스트별 속도");
         hostPanel.setBorder(BorderFactory.createTitledBorder("호스트별 속도 (최대 256행)"));
-        hostPanel.add(wrapped("settings.hostRps.help", "기본 호스트 속도만 대체하며 전체 속도 제한과 허용 범위는 유지됩니다. URL·포트·경로·와일드카드 없이 호스트만 입력하세요. 각 속도는 1~1,000 정수입니다. 같은 호스트의 별칭은 중복할 수 없습니다. 기존 호스트 표기는 그대로 보존됩니다."), BorderLayout.NORTH);
+        hostPanel.add(wrapped("settings.hostRps.help", "기본 호스트 속도만 대체하며 전체 속도 제한과 허용 범위는 유지됩니다. URL·포트·경로·와일드카드 없이 호스트만 입력하세요. 각 속도는 0~1,000 정수입니다. 같은 호스트의 별칭은 중복할 수 없습니다. 기존 호스트 표기는 그대로 보존됩니다."), BorderLayout.NORTH);
         hostPanel.add(scroll(hosts, "settings.hostRps.scroll"), BorderLayout.CENTER);
         JPanel hostButtons = named(new JPanel(new FlowLayout(FlowLayout.LEADING)), "settings.hostRps.buttons", "호스트별 속도 작업");
         hostButtons.add(addHost);
@@ -202,13 +202,11 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
 
     @Override public Value value() {
         requireEdt();
-        int global = integer(globalRps, 1, 1_000, "전체 초당 요청 수는 1~1,000 사이의 정수로 입력하세요.", false);
-        int perHost = integer(perHostRps, 1, 1_000, "기본 호스트당 초당 요청 수는 1~1,000 사이의 정수로 입력하세요.", false);
-        int concurrent = integer(maxConcurrent, 1, 100, "최대 동시 요청 수는 1~100 사이의 정수로 입력하세요.", false);
+        int global = integer(globalRps, 0, 1_000, "전체 초당 요청 수는 0~1,000 사이의 정수로 입력하세요.", false);
+        int perHost = integer(perHostRps, 0, 1_000, "기본 호스트당 초당 요청 수는 0~1,000 사이의 정수로 입력하세요.", false);
         int queued = integer(maxQueued, 0, 10_000, "전송 대기열 크기는 0~10,000 사이의 정수로 입력하세요.", true);
         long queueMillis = millis(queueTimeout);
         long approvalMillis = millis(approvalTimeout);
-        long requestMillis = millis(requestTimeout);
         commitTable();
         Map<String, Integer> overrides = new LinkedHashMap<>();
         Set<String> canonicalHosts = new HashSet<>();
@@ -221,7 +219,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
             int rate;
             try {
                 rate = decimal(row.rate).intValueExact();
-                if (rate < 1 || rate > 1_000) throw new ArithmeticException();
+                if (rate < 0 || rate > 1_000) throw new ArithmeticException();
             } catch (RuntimeException e) { throw failure(HOST_RATE_ERROR, true); }
             // Do not rewrite valid existing operator-authored aliases on merely opening/saving this form.
             overrides.put(row.host, rate);
@@ -231,7 +229,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         Limits limits;
         List<Integer> ports;
         try {
-            limits = safety.limits(global, perHost, overrides, concurrent, queued, queueMillis, approvalMillis, requestMillis);
+            limits = safety.limits(global, perHost, overrides, queued, queueMillis, approvalMillis);
             ports = safety.listenerPorts();
         } catch (FormValidationException e) { throw failure(e.getMessage(), true); }
         try {
@@ -244,14 +242,14 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
     /** Explicit local draft replacement only; advanced values and an active host-table edit stay untouched. */
     private void fillBasic(int value) {
         requireEdt();
-        for (JSpinner spinner : List.of(globalRps, perHostRps, maxConcurrent)) {
+        for (JSpinner spinner : List.of(globalRps, perHostRps)) {
             BigDecimal next = BigDecimal.valueOf(value);
             spinner.setValue(next);
             JFormattedTextField text = ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField();
             text.setValue(next); // Replace even an invalid typed draft when the model already has this value.
             text.putClientProperty(TOO_LONG, Boolean.FALSE);
         }
-        validation.setText("일반 숫자 3개를 폼에 채웠습니다. 상세 설정·호스트 예외는 그대로이며 아직 정책을 저장하지 않았습니다.");
+        validation.setText("일반 숫자 2개를 폼에 채웠습니다. 상세 설정·호스트 예외는 그대로이며 아직 정책을 저장하지 않았습니다.");
     }
 
     private int integer(JSpinner spinner, int min, int max, String message, boolean detailed) {

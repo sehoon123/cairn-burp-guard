@@ -148,7 +148,7 @@ class ProxyV2Test {
             controller.clearEvidence(); assertNull(controller.rawRequest(row.id())); assertNull(controller.rawResponse(row.id()));
         }
     }
-    @Test void sixMiBObservedEvenWhenTheCopyIsUnavailableCreatesOverlayTyped451AndDoesNotSavePolicy() throws Exception {
+    @Test void sixMiBObservationWithUnavailableCopyDoesNotDenyTheNextRequestOrSavePolicy() throws Exception {
         var project = new MemoryProject(policy(limits(5L * 1_048_576, null, null, 0, List.of()), List.of(), List.of()));
         String before = project.json; var controller = new GuardController(project); var actions = new Actions();
         try (var handler = new ProxyGuardHandler(controller, actions)) {
@@ -160,28 +160,20 @@ class ProxyV2Test {
             assertEquals(false, controller.rawCaptureInfo(row.id()).get("responseBodyComplete"));
             assertTrue(controller.rawResponse(row.id()).contains("Body incomplete or omitted"));
             assertFalse(controller.rawResponse(row.id()).contains("00000000"));
-            assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(2)).action());
-            var local = denial(actions, "HEAVY_ENDPOINT_AUTO_BLOCKED", "OVERLAY_BLOCK");
-            assertEquals(controller.overlays().getFirst().id(), local.path("overlayId").asText()); assertEquals(before, project.json);
-            controller.releaseAllOverlays(project.ref.id(), revision(controller));
-            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(3)).action()); handler.handleHttpResponseReceived(response(3, "{}"));
+            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(2)).action());
+            assertEquals(before, project.json);
             var incident = Json.MAPPER.readTree(controller.exportIncident(System.currentTimeMillis() - 60_000, System.currentTimeMillis() + 1));
             assertTrue(incident.has("events")); assertTrue(incident.has("topBytes"));
         }
     }
-    @Test void fiveNative5xxOpenThenOneHalfOpenSuccessfulResponseClosesCircuit() throws Exception {
+    @Test void fiveNative5xxNeverOpenACircuitOrRequireHalfOpen() throws Exception {
         var controller = new GuardController(new MemoryProject(policy(limits(0, new Circuit5xx(60_000, 5, 1_000, 1), null, 0, List.of()), List.of(), List.of()))); var actions = new Actions();
         try (var handler = new ProxyGuardHandler(controller, actions)) {
             for (int id = 1; id <= 5; id++) {
                 assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(id)).action());
                 var response = response(id, "{}"); when(response.statusCode()).thenReturn((short) 503); handler.handleHttpResponseReceived(response);
             }
-            assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(6)).action()); denial(actions, "CIRCUIT_OPEN", "CIRCUIT_OPEN");
-            Thread.sleep(1_050);
-            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(7)).action()); assertEquals("half_open", controller.traffic().getFirst().outcome());
-            assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(8)).action()); denial(actions, "CIRCUIT_OPEN", "CIRCUIT_OPEN");
-            handler.handleHttpResponseReceived(response(7, "{}"));
-            assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(9)).action()); handler.handleHttpResponseReceived(response(9, "{}"));
+            for(int id=6;id<=9;id++) assertEquals(RequestAction.CONTINUE,handler.handleHttpRequestToBeSent(request(id)).action());
         }
     }
     @Test void exact21stIntentDenialAndOtherIntentAllowed() throws Exception {
@@ -193,7 +185,7 @@ class ProxyV2Test {
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(tagged(22, "other")).action()); handler.handleHttpResponseReceived(response(22, "{}"));
         }
     }
-    @ParameterizedTest @ValueSource(strings = {"throw", "null", "pause", "fanout"})
+    @ParameterizedTest @ValueSource(strings = {"throw", "null", "pause"})
     void localPreHandoffFailuresNeverSpendBudgetAndFinalReasonIsNotGeneric(String kind) throws Exception {
         var controller = new GuardController(new MemoryProject(policy(limits(0, null, kind.equals("fanout") ? new Fanout(60_000, 2, FanoutAction.BLOCK) : null, 20, List.of()), List.of(), List.of())));
         var actions = new Actions() {
@@ -212,8 +204,8 @@ class ProxyV2Test {
             var second = tagged(2, "one"); when(second.path()).thenReturn("/second"); assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(second).action());
             String reason = kind.equals("fanout") ? "FANOUT_SUSPECTED" : kind.equals("pause") ? "PAUSED" : "CONTINUATION_FAILED";
             denial(actions, reason, kind.equals("fanout") ? "OVERLAY_BLOCK" : kind.equals("pause") ? "PAUSED_BY_OPERATOR" : "PROTECTED");
-            assertEquals(1, metric(controller, "intents", "consumed")); assertEquals(0, handler.inFlightCount()); assertEquals(0, gate(controller).get("active"));
-            assertEquals(0, metric(controller, "watchers", "activeTickets"));
+            assertEquals(1, metric(controller, "intents", "consumed")); assertEquals(0, handler.inFlightCount());
+            assertFalse(controller.status().containsKey("watcherTickets"));
         }
     }
     @Test void knownUnselectedAndUnknownRestrictedListenerNeverCaptureContentOrResponseScalars() throws Exception {
@@ -231,7 +223,7 @@ class ProxyV2Test {
             assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(3)).action()); handler.handleHttpResponseReceived(response(3, "{}"));
         }
     }
-    @Test void responseScalarStillOpensHeavyOverlayWhenAllRequestInspectionSlotsAreBusy() throws Exception {
+    @Test void responseScalarIsObservedWithoutAnOverlayWhileRequestInspectionSlotsAreBusy() throws Exception {
         var controller = new GuardController(new MemoryProject(policy(limits(5L * 1_048_576, null, null, 0, List.of()), List.of(), List.of())));
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1); var worker = Executors.newSingleThreadExecutor();
         try (var handler = new ProxyGuardHandler(controller, new Actions(), 2, 1)) {
@@ -240,7 +232,7 @@ class ProxyV2Test {
             var pending = worker.submit(() -> handler.handleHttpRequestToBeSent(second)); assertTrue(entered.await(5, TimeUnit.SECONDS));
             var response = response(1, "{}"); var huge = mock(ByteArray.class); when(huge.length()).thenReturn(6 * 1_048_576); when(response.body()).thenReturn(huge);
             handler.handleHttpResponseReceived(response); verify(response).headers(); // response copies need no inspection slot
-            assertEquals(1, controller.overlays().size()); assertEquals(0, gate(controller).get("active"));
+            assertEquals(6L * 1_048_576,controller.traffic().stream().filter(row->row.statusCode()!=null).findFirst().orElseThrow().responseBytes());
             release.countDown(); assertEquals(RequestAction.CONTINUE, pending.get(5, TimeUnit.SECONDS).action()); handler.handleHttpResponseReceived(response(2, "{}"));
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }
     }
@@ -265,19 +257,18 @@ class ProxyV2Test {
             release.countDown(); assertEquals(RequestAction.SPOOF_RESPONSE, pending.get(5, TimeUnit.SECONDS).action());
         } finally { release.countDown(); worker.shutdownNow(); assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS)); }
     }
-    @Test void reentrantFactoryResponseOrDuplicateCannotCompleteFutureFlightOrRecycleAnotherPermit() {
-        var controller = controller(); var ref = new AtomicReference<ProxyGuardHandler>();
-        var actions = new Actions() {
-            @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request, Annotations a) {
-                ref.get().handleHttpResponseReceived(response(request.messageId(), "{}"));
-                assertEquals(RequestAction.DROP, ref.get().handleHttpRequestToBeSent(request(request.messageId())).action());
-                return super.continueRequest(request, a);
+    @Test void reentrantEarlyResponseCannotBeAttachedToAFutureSend() {
+        var controller=controller(); var ref=new AtomicReference<ProxyGuardHandler>();
+        var actions=new Actions() {
+            @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request,Annotations a) {
+                ref.get().handleHttpResponseReceived(response(request.messageId(),"early"));
+                return super.continueRequest(request,a);
             }
         };
-        try (var handler = new ProxyGuardHandler(controller, actions)) {
-            ref.set(handler); assertEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request(1)).action());
-            assertEquals(1, handler.inFlightCount()); assertEquals(1, gate(controller).get("active"));
-            handler.handleHttpResponseReceived(response(1, "{}")); assertEquals(0, gate(controller).get("active"));
+        try(var handler=new ProxyGuardHandler(controller,actions)) {
+            ref.set(handler); assertEquals(RequestAction.CONTINUE,handler.handleHttpRequestToBeSent(request(1)).action());
+            assertEquals(0,handler.inFlightCount()); handler.handleHttpResponseReceived(response(1,"late-ambiguous"));
+            assertNull(controller.rawResponse(controller.traffic().getFirst().id()));
         }
     }
 }
