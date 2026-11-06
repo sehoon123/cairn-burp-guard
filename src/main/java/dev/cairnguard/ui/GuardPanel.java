@@ -1256,7 +1256,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             case "SCOPE_NOT_ALLOWED", "SCOPE_BLOCKED" -> 1;
             case "RULE_BLOCK", "RULE_MATCH", "EXEMPT" -> 2;
             case "ASK" -> 4;
-            case "DEFAULT_BLOCK", "QUEUE_TIMEOUT", "QUEUE_FULL", "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "LISTENER_UNVERIFIED" -> 5;
+            case "DEFAULT_BLOCK", "QUEUE_TIMEOUT", "QUEUE_FULL", "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "LISTENER_UNVERIFIED" -> 5;
             case "PAUSED", "POLICY_CHANGED", "PROJECT_CHANGED" -> 0;
             default -> -1;
         };
