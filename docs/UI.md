@@ -1,4 +1,4 @@
-# 사람이 사용하는 v2 화면 — 2026-11-04
+# 사람이 사용하는 v0.3.0 소스 후보 화면 — 2026-11-06
 
 일반적인 대상·규칙·수동 속도·태그 예산은 **JSON 없이 폼으로 작성**합니다. `Cairn Guard`는 Burp 안에서 사람이 사용하는 Swing UI입니다. 워커 제어 API, 요청 전송/재실행 도구, 인증 편집기·쿠키 주입·세션 복구 기능은 없습니다. 허용한 native 요청·응답·annotation을 수정하는 기능도 아닙니다.
 
@@ -105,13 +105,78 @@ stalled/quarantine을 현재 집행 상태로 표시하지 않습니다.
 
 - 화면은 읽기 전용 **검사 사본**이지 wire proof가 아닙니다. 원문 존재·실제 읽기 실패(불완전)·본문 표시 방식을 표시합니다. 지원하지 않는 charset/바이너리는 보관한 모든 바이트의 lossless HEX입니다. 상세 보기는 길이 필터 없는 읽기 전용·스크롤·선택 가능한 전체 내용입니다(정책 편집기 입력 한도와 별개). 없는 응답을 성공으로 만들지 않습니다.
 - 원문이 없으면 ‘원문 없음/지움/미수집’을 표시합니다. OFF/미선택 리스너는 새 내용을 수집하지 않습니다. 표는 2000행 같은 표시 상한 없이 보관된 모든 행을 보여줍니다.
-- 프로젝트/수명/기록 비우기에서 원문이 폐기됩니다(퇴출 없음). 상태 확인 실패나 panel close 시 화면에 남긴 detail도 비웁니다. 북마크는 영구 저장이 아닙니다.
-- 검색은 원문 화면 URL·method·이유 등에서 literal substring입니다. 결과·북마크·method/status/UTC/project/Intent/Run/guardState 필터는 AND 결합합니다. `.*`를 regex로 해석하지 않습니다. Intent/Run·결과/상태/검사 경고 열도 정렬할 수 있습니다.
+- 프로젝트/수명/기록 비우기에서 원문이 폐기됩니다(퇴출 없음). 상태 확인 실패나 panel close 시 화면에 남긴 detail도 비웁니다. panel close는 승인 검토창의 기존 owned Document도 비운 뒤 창을 폐기합니다. 복사한 문자열·클립보드·내보낸 파일의 zeroization은 아닙니다. 북마크는 영구 저장이 아닙니다.
+- 검색의 기본값은 **All/Literal**입니다. 위치별 Literal 또는 명시 선택한 RE2로 원문 메타데이터·헤더·본문을 검사합니다. 검색은 집행 규칙이나 승인·속도·OFF 상태를 바꾸지 않습니다.
+- 결과·북마크·method/status/UTC/project/Intent/Run/guardState 필터는 계속 literal AND입니다. Literal 메타데이터 hit는 즉시, 내용 및 RE2 메타데이터 hit는 기존 background 검색 lane에서 합칩니다. ‘내용 검색 중 (pending)’은 RE2 메타데이터 작업도 포함합니다. ‘검색 실패 (불완전 결과)’도 완료가 아닙니다. 검색 중/실패 내보내기는 클릭 시점 **현재 표시된 행/선택된 표시 행만, 불완전 결과**라는 확인을 보존합니다.
+- 북마크 등 immutable 행 교체로 검색 재검증을 기다릴 때는 선택 ID·lead ID만 기억하고, 검증된 현재 표시 행에만 선택을 복원합니다. 숨은 ID는 상세·이동·설정 연결·선택 내보내기의 권한이 아닙니다. 정렬은 ID/lead를 유지하며 새 사람 선택·이동·필터 편집, 해당 행의 확정 불일치·소스 폐기·프로젝트/버전 변경·실패·비우기·close는 오래된 선택 의도를 폐기합니다. 무관한 행의 pending은 확정 불일치를 보존하지 않습니다.
+- 첫 11열은 유지하고 관측 응답 본문 bytes(Long, 미상은 빈 값), 요청/응답 선언 MIME, 가용성·불완전·표시 encoding 열을 추가했습니다. 헤더 drag 정렬/폭 조절, 열별 정렬은 보기 전용이며 Tool/latency/wire 길이를 만들지 않습니다. 차단 색은 보조 표시이고 텍스트가 기준입니다.
+- 표 아래 세로 divider와 inline 요청·응답 가로 divider는 resize/one-touch 접기가 가능합니다. 각 쪽 Raw inspection / Headers / Body·HEX, 결과·메타데이터와 보이는 이유 strip은 읽기 전용·선택·복사 가능하며 내용 상한이 없습니다. Raw 첫 줄은 **synthetic first line / inspection projection, not original wire transcript**입니다. 별도 상세 popout은 자체 component/document를 사용하며 inline을 빼앗지 않습니다. 이전/다음은 현재 정렬·필터 순서이며 끝에서 wrap하지 않습니다. 표 키보드 선택/북마크/여러 행 export는 유지됩니다.
 - `exempt` / `probe_allowed` / `unpaired_response`와 pending/queued/approval을 구분합니다. 원문 table/detail은 screen-only이며 저장할 때 screen text를 가져가지 않습니다.
 - `Decision`/`TrafficEntry.inspectionWarnings`를 표와 상세에서 보여주어 미평가 헤더/본문 조건을 평가 완료로 오인하지 않게 합니다.
 - 승인 탭은 보관된 원문 요청을 보여줍니다(증거 UUID로만 연결, 프로젝트 표시 문자열로 연결하지 않음). 보관된 증거가 없거나 만료/변경된 ASK는 승인하지 않습니다. 상세 열기/닫기는 결정하지 않습니다.
 
 **JSON/HAR/사건 내보내기는 화면 텍스트를 다시 파싱하지 않고** 보관된 구조(헤더 목록·모든 본문 바이트·완전성)를 씁니다. 매번(새 파일 포함) Authorization·Cookie·토큰 평문 경고를 기본 취소로 확인한 뒤 잠금 안에서 스냅샷을 만들고, 직렬화·파일 작업은 잠금 밖·EDT 밖, 이름 바꾸기 직전 최종 확인(그 사이 짧은 경쟁은 막지 못함)으로 소유자 전용 파일에 씁니다. 원문이 없으면 ‘원문 없음’입니다. 문서 크기 상한은 없습니다(큰 선택은 그만큼 메모리가 필요). 기계용 JSON/HAR/사건 API도 원문을 담고, 상태·로그 필드에는 요청 내용을 넣지 않으며 원문을 자동으로 규칙/설정에 채집하지 않습니다.
+
+## v0.3.0 검색 위치와 방식
+
+위치·방식은 **상세 필터**를 접어도 표시됩니다. **필터 지우기**는 검색어를 비우고
+All/Literal로 돌아가며 오류도 지웁니다. 작은 창이나 큰 글꼴에서 제어·오류·최소 검사 영역이
+함께 들어가지 않으면 요청 기록 전체를 세로로 스크롤할 수 있습니다.
+
+| 위치 | 검색 후보 |
+|---|---|
+| All | 기존 메타데이터 값 또는 요청·응답의 개별 헤더와 본문 |
+| Metadata | 표시 원문 URL·method, UTC 시각, 상태 문자열, 원래 이유 코드·번역, 증거 ID만 |
+| Request headers | 보관 요청의 각 `name: value` 헤더 줄 |
+| Request body | 보관 요청의 본문 또는 연속 HEX |
+| Response headers | 보관 응답의 각 `name: value` 헤더 줄 |
+| Response body | 보관 응답의 본문 또는 연속 HEX |
+
+Metadata는 Intent/Run·guardState·MIME·검사 경고·preview·synthetic first line을 포함하지
+않습니다. 원문 없는 행의 기존 표시 대체값은 유지합니다. 요청 연결 없는 응답 행에서 요청을
+추측하지 않습니다. 검색어·위치·방식과 모든 상세 필터 편집은 기존 refresh 경로에서
+현재 프로젝트·버전·소스 membership을 확인한 뒤 결과를 공개합니다. 원문 사본만 없는
+보관 행은 메타데이터 검색에서 제외하지 않으며 이 확인은 여전히 샘플 경계입니다.
+
+Literal은 메타데이터에 `Locale.ROOT` 소문자 substring, 내용에는 기존 문자별 대소문자 접기를
+사용합니다. `.*`·대괄호·`[REDACTED]`도 문자 그대로입니다. RE2는 설치된 RE2/J로 대소문자
+무시 Boolean `find`를 사용합니다. `matches`나 Java backtracking regex가 아닙니다.
+inline flags는 RE2 의미 그대로이며 식을 소문자화·quote·trim하지 않습니다.
+lookaround·backreference는 지원하지 않습니다. 예를 들어 요청 본문에서
+`(?m)^action=review$`는 한 행을 찾습니다.
+
+각 필드를 따로 검색합니다. 중복 헤더는 별개 줄이고 `(?s)`도 헤더끼리, 메타데이터 값끼리,
+헤더와 본문, 요청과 응답을 이어 붙이지 않습니다. 비어 있지 않은 UTF8_TEXT 및 HEX 본문만
+후보입니다. HEX는 화면의 연속 HEX 문자 그대로이며 홀수 위치에서도 찾고 UTF-8로 추측하지
+않습니다. 없는 본문·EMPTY·UNAVAILABLE은 `^` 같은 zero-width 식에도 일치하지 않습니다.
+기존의 빈 메타데이터 값은 zero-width 식에 일치할 수 있으므로 본문 존재의 증거가 아닙니다.
+본문이 없어도 보관 헤더는 검색하며 불완전 사본의 알려진 부분은 기존 경고와 함께 검색합니다.
+
+빈 검색어는 모든 위치·방식에서 검색을 끕니다. 공백은 데이터입니다. 입력은 4,096 Java 문자,
+RE2 source는 4,096 문자, 컴파일된 프로그램은 4,096 instructions 이하입니다. 이 값은
+작성·compiler 한도이며 검색 대상·결과·수집·보관·내보내기의 상한이 아닙니다.
+
+잘못되거나 지원하지 않는 RE2는 `BAD_RE2`, 초과 편집은 `TOO_LONG`, 초과 프로그램은
+`TOO_COMPLEX`라는 고정 오류를 표시합니다. 이전 결과·선택·상세 원문을 비우고 fallback이나
+자동 truncate를 하지 않습니다. 초과 편집을 거부해 이전 문자가 입력창에 남아도 검색은
+중지 상태입니다. 타이머·상세 필터는 이전 검색을 되살리지 않습니다. 입력·위치·방식의 실제
+편집 또는 필터 지우기로 복구합니다. 오류에 원래 식이나 library exception을 붙이지 않습니다.
+
+pending은 현재 query의 알려진 hit만 보여주며 실패도 현재 query의 알려진 부분 결과만
+남깁니다. 같은 실패 query를 매초 재시도하지 않습니다. 내보내기는 chooser·평문 확인 중
+검색이 완료되거나 위치·방식이 바뀌어도 클릭 시점 행과 불완전 결과 안내를 유지합니다.
+원문 소실과 기존 project/revision 검사는 여전히 내보내기를 무효화할 수 있습니다.
+RE2도 CPU·heap·취소 지연의 고정 상한은 보장하지 않습니다.
+
+## v0.3.0 Static HTML preview
+
+응답의 preview 탭을 선택할 때만 기본 HTML 제목(h1–h6)·문단·줄바꿈·목록·표·pre·bold/italic/underline/strike/code를 투영합니다. **완전하고 present인 UTF8_TEXT(또는 완전한 empty)**, 정확히 하나의 유효한 text/html 또는 application/xhtml+xml 선언과 생략/단일 UTF-8(UTF8)/US-ASCII charset만 대상입니다. charset 생략은 저장소가 이미 엄격 검증한 UTF8_TEXT 검사 사본이지 browser encoding detection이 아닙니다. 중복/잘못된 선언·unsupported charset·HEX·미수집/생략/잘림·모호하거나 nonidentity content/transfer encoding은 고정된 불가 이유를 보입니다. sniff/decompress/dechunk/meta charset/XML 처리를 하지 않습니다.
+
+자체 iterative scanner가 **모든 source 속성/URL/CSS/event를 버리고**, 닫힌 block/run 데이터에서 일반 JPanel/GridBag 표와 StyledEditorKit/DefaultStyledDocument 텍스트만 만듭니다. HTML/XML/browser/native Render 엔진에 raw나 생성 HTML을 넣지 않습니다. script/style/title/template 내용은 숨기고 form/frame/object/embed/SVG/media/image/control은 고정 inert placeholder로 대체합니다. 링크 label만 남고 클릭/이동/폼/이미지/JS/외부 resource·file 접근은 없습니다. `amp/lt/gt/quot/apos/nbsp/copy/reg` 및 유효 numeric scalar entity만 디코딩하며 결과를 markup으로 재해석하지 않습니다. uncommon entity·nested table은 근사, style/list 중첩64 이후는 구조를 단순화하지만 일반 텍스트나 원문을 자르지 않습니다. **CSS·이미지·JS·탐색·full-browser fidelity 없음**을 상시 표시합니다.
+
+원문/JSON/HAR 바이트는 이 투영과 무관합니다. preview 실패는 Raw로 돌아가는 이유이지 active renderer fallback이 아닙니다. 큰 문서의 AST/components/documents/EDT layout은 heap·시간을 무제한 사용할 수 있습니다. 비용 때문에 capture/result를 clipping하거나 자동 저장하지 않습니다. Native Render는 read-only만으로 외부 요청 억제를 입증할 수 없어 사용하지 않습니다.
+
+패널이 search/presentation 두 lane을 소유합니다. 각 lane은 실제 처리1개+교체 가능한 최신 pending1개, EDT 전달도 최신 결과 하나만 합칩니다. 취소 후 실제 처리 exit 전에 교체 작업을 시작하지 않습니다. Message identity/current query cache는 변하지 않은 multi-MiB 본문을 매초 재검색/포맷하지 않고 같은 ID의 새 응답은 무효화합니다. worker는 immutable 사본만 읽으며 access는 EDT에서만 호출합니다. 공개 직전 source snapshot·프로젝트/revision·Message identity/availability를 다시 확인합니다(샘플 경계, 원자적 권한 아님). clear는 먼저 모든 inline/popout 원문을 비우고 작업을 취소합니다. 프로젝트 변경·원문 소실·refresh 실패·close도 pending/cache/문서와 owned popout을 폐기하며 실패 뒤 typing으로 오래된 행을 되살리지 않습니다. close는 자신의 thread를 interrupt/종료 신호하고 EDT를 무한 join하지 않습니다. native/다른 작업은 취소하지 않습니다. 메모리 zeroization 보장은 아닙니다.
 
 ## UTC 사건·증거·원본 정책 파일 내보내기
 
@@ -137,7 +202,7 @@ POSIX에서는 임시/결과 파일 `0600`, 같은 디렉터리 atomic publicati
 
 각 작업은 **열었을 때의 프로젝트/revision**을 유지합니다. timer로 다른 프로젝트를 읽어도 열린 초안을 새 baseline으로 바꾸지 않습니다. 마지막 확인 후 CAS를 다시 검사하며 stale 저장/런타임 해제를 자동 재시도하지 않습니다. 모든 policy copy는 새 Limits 전체와 `guardListenerPorts`를 보존합니다. 변경이 같은 값이면 불필요하게 저장하지 않되 실제 migration pending의 명시적 저장은 수행합니다.
 
-패널/폼은 EDT-only, 1초 coalescing refresh입니다. 원문 evidence/관측 표시는 수집 상한이 없고 정책 입력·선택 검사·승인 용량은 bounded입니다. 이름·요청·응답·정책은 plain text(HTML 해석 없음)이고 새 요청을 보내거나 URL을 여는 viewer가 아닙니다. 오류는 고정 범주이며 원본 exception/traffic을 로그나 오류 문자열로 붙이지 않습니다. close는 자신의 timer/worker/window와 화면 사본을 정리할 뿐 native 작업의 완료를 추측하거나 조작하지 않습니다.
+패널/폼은 EDT-only, 1초 coalescing refresh입니다. 원문 evidence/관측 표시는 수집 상한이 없고 정책 입력·선택 검사·승인 용량은 bounded입니다. 이름·요청·응답·정책은 plain text이고 (선택적 static preview도 HTML engine 없이 닫힌 layout으로만 투영), 새 요청을 보내거나 URL을 여는 viewer가 아닙니다. 오류는 고정 범주이며 원본 exception/traffic을 로그나 오류 문자열로 붙이지 않습니다. close는 자신의 timer/worker/window와 화면 사본을 정리할 뿐 native 작업의 완료를 추측하거나 조작하지 않습니다.
 
 합성 headless UI와 실제 격리 display의 Swing scale1/2는 native Burp 검증과 다릅니다.
 이전 overlay/candidate/timeout smoke는 과거 기록이며 현재 기능 수용 기준이 아닙니다.

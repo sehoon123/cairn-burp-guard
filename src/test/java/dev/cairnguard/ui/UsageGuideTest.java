@@ -56,6 +56,24 @@ class UsageGuideTest {
         });
     }
 
+    @Test void historyGuideExplainsLiteralHexInlinePendingExportAndSinkFreeLazyPreview() throws Exception {
+        edt(() -> {
+            List<JTextArea> pages = new ArrayList<>(); collect(UsageGuide.create(), pages);
+            String text = pages.getLast().getText();
+            for (String required : List.of("v0.3.0", "literal substring", "연속 HEX", "pending", "불완전 결과", "inline", "popout", "정렬·필터 순서", "synthetic first line", "Static HTML preview", "탭을 선택", "StyledEditorKit", "CSS·이미지·JS", "원문/내보내기를 바꾸지", "실제 exit", "zeroization")) assertTrue(text.contains(required), required);
+            return null;
+        });
+    }
+
+    @Test void historyGuideExplainsScopedRe2ValidationAndUnchangedHumanControls() throws Exception {
+        edt(() -> {
+            List<JTextArea> pages = new ArrayList<>(); collect(UsageGuide.create(), pages);
+            String text = pages.getLast().getText();
+            for (String required : List.of("기본 All/Literal", "Literal에서 .*는 regex가 아닙니다", "Metadata", "요청 헤더", "응답 본문", "RE2", "find", "inline flags", "lookaround", "zero-width", "빈 검색어", "공백은 데이터", "4,096자", "4,096 instructions", "상한이 아닙니다", "고정 오류", "이전 검색을 되살리지", "필터 지우기", "정책·승인·속도·OFF")) assertTrue(text.contains(required), required);
+            return null;
+        });
+    }
+
     @Test void examplesRemainScrollableAtSmallOrLargeFonts() throws Exception {
         edt(() -> {
             for (float size : new float[]{14f, 28f}) {

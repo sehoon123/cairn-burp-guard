@@ -133,8 +133,10 @@ class GuardPanelTest {
 
     @Test void trafficUsesRawScreenWhileApprovalUsesMaskedEvidenceAndNeitherShortcutSends() throws Exception {
         access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> { trafficTable().setRowSelectionInterval(0, 0); return null; });
+        awaitRequest(SECRET);
         edt(() -> {
-            trafficTable().setRowSelectionInterval(0, 0); pressEnter(trafficTable());
+            pressEnter(trafficTable());
             assertFalse(get("traffic.request", JTextArea.class).isEditable());
             assertTrue(get("traffic.request", JTextArea.class).getText().contains(SECRET));
             mouseClick(get("approval.table", JTable.class), 0, 2, MouseEvent.BUTTON1);
@@ -547,7 +549,11 @@ class GuardPanelTest {
         access.rows = fixtures(); open();
         edt(() -> {
             JTable table = trafficTable(); table.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(3, SortOrder.DESCENDING)));
-            table.setRowSelectionInterval(0, 0);
+            table.setRowSelectionInterval(0, 0); return null;
+        });
+        awaitRequest(SECRET);
+        edt(() -> {
+            JTable table = trafficTable();
             String expected = (String) table.getValueAt(0, 3);
             assertTrue(expected.contains("/z?"));
             click("traffic.detail");
@@ -592,9 +598,14 @@ class GuardPanelTest {
     @Test void retainedOriginalLargerThanTheEditorLimitIsShownCompleteAndReadOnly() throws Exception {
         access.rows = fixtures();
         String big = "B".repeat(GuardPanel.MAX_EDITOR_CHARS + 4096) + "-END-OF-ORIGINAL";
-        access.bigRequest = big; open();
+        TrafficEntry old = access.rows.getFirst();
+        TrafficEntry.Message original = new TrafficEntry.Message(old.requestCapture().headers(), big, "text/plain", false, false, true, "UTF8_TEXT");
+        access.rows = List.of(new TrafficEntry(old.id(), old.projectId(), old.projectName(), old.timestamp(), old.method(), old.url(), old.mode(), old.disposition(), old.reason(), old.statusCode(), old.hits(), old.revision(), old.bookmarked(), original, old.responseCapture(), old.truncated(), old.provenanceSeal()));
+        open();
+        edt(() -> { trafficTable().setRowSelectionInterval(0, 0); return null; });
+        awaitRequest("-END-OF-ORIGINAL");
         edt(() -> {
-            trafficTable().setRowSelectionInterval(0, 0); click("traffic.detail");
+            click("traffic.detail");
             JTextArea request = get("traffic.request", JTextArea.class);
             assertFalse(request.isEditable());
             assertNull(((javax.swing.text.AbstractDocument) request.getDocument()).getDocumentFilter(), "no editor length filter on the traffic viewer");
@@ -794,10 +805,12 @@ class GuardPanelTest {
 
     @Test void timerAndUnrelatedArrivalsDoNotResetDetailSelectionOrScrollIntent() throws Exception {
         access.rows = fixtures(); access.pending.add(pending("ask", access.rows.getFirst().id(), "project-one")); open();
+        edt(() -> { trafficTable().setRowSelectionInterval(0, 0); return null; });
+        awaitRequest(SECRET);
         edt(() -> {
-            trafficTable().setRowSelectionInterval(0, 0); click("traffic.detail");
+            click("traffic.detail");
             JTextArea request = get("traffic.request", JTextArea.class);
-            request.select(5, 12); String selectedRequest = request.getSelectedText();
+            request.select(5, 12); String selectedRequest = request.getSelectedText(); assertNotNull(selectedRequest); assertEquals(7, selectedRequest.length());
             JTable approvals = get("approval.table", JTable.class); approvals.setRowSelectionInterval(0, 0); click("approval.review");
             JTextArea approval = get("approval.detail", JTextArea.class);
             approval.select(5, 12); String selectedApproval = approval.getSelectedText();
@@ -831,7 +844,10 @@ class GuardPanelTest {
     @Test void listAndDetailDoNotCompeteForSmallTabHeightAndLargeFontRowsGrow() throws Exception {
         open();
         edt(() -> {
-            assertNull(SwingUtilities.getAncestorOfClass(JSplitPane.class, trafficTable()), "details open separately instead of collapsing either pane");
+            JSplitPane history = (JSplitPane) SwingUtilities.getAncestorOfClass(JSplitPane.class, trafficTable());
+            assertNotNull(history, "inline paired inspector is explicitly resizable/collapsible");
+            assertTrue(history.isOneTouchExpandable()); assertEquals(JSplitPane.VERTICAL_SPLIT, history.getOrientation());
+            assertTrue(history.getMinimumSize().height < 150);
             assertNotNull(SwingUtilities.getAncestorOfClass(JScrollPane.class, trafficTable()));
             trafficTable().setFont(trafficTable().getFont().deriveFont(28f));
             assertTrue(trafficTable().getRowHeight() > 28); return null;
@@ -878,6 +894,9 @@ class GuardPanelTest {
         if (name.equals(root.getName())) return root;
         if (root instanceof Container c) for (Component child : c.getComponents()) { Component found = find(child, name); if (found != null) return found; }
         return null;
+    }
+    private void awaitRequest(String literal) throws Exception {
+        GuardPanelTrafficViewTest.await(() -> get("traffic.request", JTextArea.class).getText().contains(literal));
     }
     private void awaitExport() throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
@@ -957,8 +976,7 @@ class GuardPanelTest {
         }
         @Override public List<TrafficEntry> traffic() { onEdt(); if (failTraffic) throw new IllegalStateException(SECRET); return List.copyOf(rows); }
         @Override public String rawUrl(String id) { return rows.stream().filter(e -> e.id().equals(id)).map(e -> e.url().replace("[REDACTED]", SECRET)).findFirst().orElse(null); }
-        String bigRequest;
-        @Override public String rawRequest(String id) { if (bigRequest != null && rawUrl(id) != null) return bigRequest; return rawUrl(id) == null ? null : "Authorization: Bearer " + SECRET + "\nCookie: session=" + SECRET + "\n"; }
+        @Override public String rawRequest(String id) { return rawUrl(id) == null ? null : "Authorization: Bearer " + SECRET + "\nCookie: session=" + SECRET + "\n"; }
         @Override public String rawResponse(String id) { return rawUrl(id) == null ? null : "HTTP/1.1 200\nsynthetic response"; }
         @Override public Map<String,Object> rawCaptureInfo(String id) {
             TrafficEntry row = rows.stream().filter(e -> e.id().equals(id)).findFirst().orElse(null);

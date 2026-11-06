@@ -132,6 +132,30 @@ final class UsageGuide {
                 이번 범위는 모든 Proxy 리스너 보호이며 포트별 보호는 추후 지원합니다. 새 포트 제한은 저장할 수 없습니다.
                 기존 포트 제한은 자동 삭제하지 않습니다. 남아 있으면 모두 LISTENER_UNVERIFIED로 거절되므로 설정에서 직접 비우고 전체 보호 전환을 확인하세요.
 
+                v0.3.0 요청 기록 · 읽기 전용
+                기본 All/Literal은 원문 URL·메타데이터 또는 보관 요청/응답 헤더·본문에서 대소문자 구분 없는 literal substring을 찾습니다.
+                Literal에서 .*는 regex가 아닙니다. [REDACTED]도 문자 그대로입니다. 지원하지 않는 문자셋/바이너리는 Body / HEX 탭의 연속 HEX 문자 그대로 검색합니다 (UTF-8 추측 없음).
+                검색 위치는 All / Metadata / 요청 헤더 / 요청 본문·HEX / 응답 헤더 / 응답 본문·HEX입니다. 상세 필터를 접어도 위치·방식을 고릅니다.
+                RE2는 명시 선택하는 검사 전용 방식이며 대소문자 무시 find로 부분 일치를 찾습니다. 예시: 요청 본문에서 (?m)^action=review$.
+                inline flags는 RE2 의미 그대로이고 lookaround·backreference는 지원하지 않습니다. 헤더 한 줄·메타데이터 값·본문·요청/응답을 이어 붙이지 않습니다.
+                EMPTY/UNAVAILABLE 본문은 ^ 같은 zero-width 식에도 일치하지 않습니다. 보관 헤더와 불완전 사본의 알려진 부분은 경고와 함께 검색합니다.
+                빈 검색어는 위치·방식과 무관하게 검색을 끕니다. 공백은 데이터입니다. 필터 지우기는 All/Literal/빈 값으로 되돌립니다.
+                입력은 4,096자, RE2 프로그램은 4,096 instructions 이하입니다. 검색 대상·결과·보관량의 상한이 아닙니다.
+                잘못된 RE2·초과 편집은 고정 오류를 보이고 이전 결과·선택·상세 원문을 비웁니다. 초과 편집을 거부한 뒤 refresh로 이전 검색을 되살리지 않습니다.
+                입력·위치·방식을 실제로 편집하거나 필터 지우기로 복구하세요. 원문 보관·집행 정책·승인·속도·OFF는 검색으로 바뀌지 않습니다.
+                Literal 메타데이터 hit는 즉시, 내용 및 RE2 메타데이터는 기존 background 검색 lane에서 처리합니다.
+                다른 필터는 literal AND입니다. 검색 중 (pending)/검색 실패는 불완전 결과이며 내보내기는 클릭 시 현재 표시/선택 행만 저장한다고 확인합니다.
+                표 아래 divider로 inline 요청·응답을 함께 resize/접기하고 Raw inspection / Headers / Body·HEX·메타데이터를 봅니다.
+                raw 첫 줄은 synthetic first line / inspection projection, not original wire transcript입니다.
+                별도 상세 popout은 자체 문서이며 이전/다음은 현재 정렬·필터 순서입니다. 화면 조작으로 요청을 보내지 않습니다.
+                응답 Static HTML preview 탭을 선택해야 기본 제목·문단·목록·표·서식을 투영합니다.
+                완전한 HTML/XHTML 선언 + 검증된 UTF8_TEXT (charset 생략/UTF-8/ASCII)만 허용하며 중복/unsupported/HEX/잘림/encoding은 불가 이유를 보입니다.
+                일반 Swing layout + StyledEditorKit 텍스트만 사용하고 HTML/native Render 엔진에 원문을 넣지 않습니다.
+                CSS·이미지·JS·외부 resource·탐색·폼·full-browser fidelity는 없습니다. 링크/active content는 inert이고 복잡한 layout/entity는 근사입니다.
+                preview는 원문/내보내기를 바꾸지 않습니다. 큰 문서의 heap/EDT layout 비용은 무제한일 수 있습니다.
+                search/presentation은 각각 처리1개+최신 pending1개이며 취소의 실제 exit 이후 교체합니다.
+                기록 비우기·프로젝트 전환·상태 실패·close는 모든 owned 창의 원문과 pending/cache를 폐기합니다 (zeroization 보장은 아님).
+
                 화면 원문과 내보내기 (평문 동의) 안내
                 요청 기록은 민감한 원문 URL·인증 헤더·본문을 메모리에 보관한 사본 전체로 보여줍니다.
                 바이너리/지원하지 않는 문자셋은 captured bytes의 HEX일 수 있습니다. 읽기 실패·응답 없음 표시와 이 사본은 도착 증명이 아닙니다.

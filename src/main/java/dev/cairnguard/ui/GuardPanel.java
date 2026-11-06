@@ -109,11 +109,14 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JTable rulesTable = table("rules.table", rulesModel, false);
     private final JTextArea settingsSummary = textArea("settings.summary", false);
     private final RowsModel<TrafficEntry> trafficModel = new RowsModel<>(
-            new String[]{"보관", "시각 (UTC)", "메서드", "원문 URL · 화면 전용", "결과", "HTTP", "이유", "Intent (비신뢰)", "Run (비신뢰)", "보호 상태", "검사 경고"},
-            new Class<?>[]{Boolean.class, String.class, String.class, String.class, String.class, Integer.class, String.class, String.class, String.class, String.class, String.class},
-            e -> new Object[]{e.bookmarked(), e.timestamp(), screenMethod(e), screenUrl(e), trafficOutcome(e), e.statusCode(), UiText.reason(e.reason()), screenTag(e, "intentId"), screenTag(e, "runId"), UiText.guardState(e.guardState()), UiText.warnings(e.inspectionWarnings(), false)});
+            new String[]{"보관", "시각 (UTC)", "메서드", "원문 URL · 화면 전용", "결과", "HTTP", "이유", "Intent (비신뢰)", "Run (비신뢰)", "보호 상태", "검사 경고", "응답 본문 bytes (관측)", "요청 MIME (선언)", "응답 MIME (선언)", "요청 사본", "응답 사본"},
+            new Class<?>[]{Boolean.class, String.class, String.class, String.class, String.class, Integer.class, String.class, String.class, String.class, String.class, String.class, Long.class, String.class, String.class, String.class, String.class},
+            e -> new Object[]{e.bookmarked(), e.timestamp(), screenMethod(e), screenUrl(e), trafficOutcome(e), e.statusCode(), UiText.reason(e.reason()), screenTag(e, "intentId"), screenTag(e, "runId"), UiText.guardState(e.guardState()), UiText.warnings(e.inspectionWarnings(), false), e.responseBytes() < 0 ? null : e.responseBytes(), e.requestCapture().mimeType(), e.responseCapture().mimeType(), captureState(e, true), captureState(e, false)});
     private final JTable trafficTable = table("traffic.table", trafficModel, true);
     private final JTextField search = textField("traffic.search");
+    private final JComboBox<TrafficSearch.Location> searchLocation = named(new JComboBox<>(TrafficSearch.Location.values()), "traffic.searchLocation");
+    private final JComboBox<TrafficSearch.MatchMode> searchMode = named(new JComboBox<>(TrafficSearch.MatchMode.values()), "traffic.searchMode");
+    private final JTextArea searchError = note("traffic.searchError", "");
     private final JTextField methodFilter = textField("traffic.method");
     private final JTextField statusFilter = textField("traffic.status");
     private final JTextField timeFilter = textField("traffic.time");
@@ -126,10 +129,25 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final JLabel trafficCount = named(new JLabel("기록 없음"), "traffic.count");
     private final JComboBox<String> exportRange = named(new JComboBox<>(new String[]{"현재 표의 요청", "선택한 요청만"}), "traffic.exportRange");
     private final JComboBox<String> exportFormat = named(new JComboBox<>(new String[]{"JSON", "HAR"}), "traffic.exportFormat");
-    private final JTextArea requestDetail = viewer("traffic.request");
-    private final JTextArea responseDetail = viewer("traffic.response");
-    private final JTextArea trafficDetail = viewer("traffic.metadata");
-    private JTabbedPane trafficDetails;
+    private TrafficInspector inlineInspector;
+    private TrafficInspector popoutInspector;
+    private final TrafficSearch.Session contentSearch = new TrafficSearch.Session();
+    private TrafficSearch.Input searchInput = TrafficSearch.compile(new TrafficSearch.Query("", TrafficSearch.Location.ALL, TrafficSearch.MatchMode.LITERAL));
+    private final TrafficSearch.Pump presentation = new TrafficSearch.Pump("cairn-history-presentation");
+    private PresentationKey presentationKey;
+    private TrafficInspector.Content presentedContent;
+    private HtmlPreview.Projection presentedPreview;
+    private String previewReason;
+    private boolean presenting, presentingPreview, presentationFailed;
+    private long presentationGeneration;
+    private record PresentationKey(String id, TrafficEntry.Message request, TrafficEntry.Message response,
+                                   String requestLine, String responseLine, String metadata) {
+        boolean same(PresentationKey other) {
+            return other != null && id.equals(other.id) && request == other.request && response == other.response
+                    && requestLine.equals(other.requestLine) && responseLine.equals(other.responseLine) && metadata.equals(other.metadata);
+        }
+    }
+    private record PresentationResult(TrafficInspector.Content content, HtmlPreview.Projection preview, String reason) {}
     private final JTextField incidentFrom = textField("incident.from");
     private final JTextField incidentTo = textField("incident.to");
     private final RowsModel<Pending> approvalModel = new RowsModel<>(
@@ -143,6 +161,13 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private boolean available;
     private boolean loading;
     private int selectionUpdates;
+    private TrafficSelection trafficSelection = new TrafficSelection(Set.of(), null);
+    private record TrafficSelection(Set<String> ids, String leadId) {
+        TrafficSelection {
+            ids = Set.copyOf(ids);
+            if (leadId != null && !ids.contains(leadId)) leadId = null;
+        }
+    }
     private boolean closed;
     private SwingWorker<Void, Void> exportWorker;
 
@@ -276,6 +301,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 button("settings.diagnostics", "진단 정보…", this::diagnostics),
                 button("settings.clear", "보관 기록 비우기…", () -> {
                     if (dialogs.confirm(this, "보관된 요청 기록과 화면 원문·사건 기록을 모두 지울까요? 누적 처리 수·열린 태그 사용량은 남을 수 있으며 복구할 수 없습니다.")) {
+                        invalidateHistory(""); traffic = List.of(); trafficModel.setRows(List.of());
                         access.clearEvidence(); refreshNow(); message.setText("보관 기록과 화면 원문·사건을 비웠습니다. 열린 차단·태그 사용량은 별도입니다.");
                     }
                 })), BorderLayout.SOUTH);
@@ -284,12 +310,16 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private JPanel trafficTab() {
-        JPanel panel = new JPanel(new BorderLayout(6, 6));
+        JPanel panel = new TrafficPanel();
         JPanel header = new JPanel(new BorderLayout(4, 4));
         JPanel quick = new JPanel(new BorderLayout(8, 0));
-        quick.add(labeled("원문 URL·이유·메서드 검색 (화면 전용)", search), BorderLayout.CENTER);
+        quick.add(labeled("검색어 · 기본 Literal", search), BorderLayout.CENTER);
         quick.add(buttons(outcomeFilter, bookmarksOnly, button("traffic.reset", "필터 지우기", this::resetFilters)), BorderLayout.LINE_END);
-        header.add(quick, BorderLayout.NORTH);
+        JPanel inputs = new JPanel(new BorderLayout(4, 4));
+        inputs.add(quick, BorderLayout.NORTH);
+        inputs.add(buttons(labeled("검색 위치", searchLocation), labeled("일치 방식", searchMode)), BorderLayout.CENTER);
+        searchError.setVisible(false); inputs.add(searchError, BorderLayout.SOUTH);
+        header.add(inputs, BorderLayout.NORTH);
         JPanel extra = new JPanel(new GridLayout(0, 4, 6, 4));
         extra.add(labeled("메서드 포함", methodFilter));
         extra.add(labeled("HTTP 상태 포함", statusFilter));
@@ -303,34 +333,75 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         more.addActionListener(e -> { extra.setVisible(more.isSelected()); header.revalidate(); });
         JPanel filterBottom = new JPanel(new BorderLayout());
         filterBottom.add(extra, BorderLayout.NORTH);
-        filterBottom.add(buttons(more, trafficCount, button("traffic.detail", "선택 요청 상세…", this::openTrafficDetail),
+        filterBottom.add(buttons(more, trafficCount, resolve, button("traffic.detail", "선택 요청 상세…", this::openTrafficDetail),
                 button("traffic.bookmark", "선택 요청 보관 / 해제", this::bookmarkSelected)), BorderLayout.SOUTH);
         header.add(filterBottom, BorderLayout.CENTER);
         panel.add(header, BorderLayout.NORTH);
-        for (JTextField filter : List.of(search, methodFilter, statusFilter, timeFilter, intentFilter, runFilter, stateFilter)) listen(filter, this::filterTraffic);
+        ((AbstractDocument) search.getDocument()).setDocumentFilter(new LengthLimit(4_096, () -> setSearchInput(TrafficSearch.Invalid.TOO_LONG)));
+        listen(search, this::searchEdited);
+        searchLocation.addItemListener(e -> { if (e.getStateChange() == java.awt.event.ItemEvent.SELECTED) searchEdited(); });
+        searchMode.addItemListener(e -> { if (e.getStateChange() == java.awt.event.ItemEvent.SELECTED) searchEdited(); });
+        for (JTextField filter : List.of(methodFilter, statusFilter, timeFilter, intentFilter, runFilter, stateFilter)) listen(filter, this::filtersEdited);
         DefaultListCellRenderer plain = new DefaultListCellRenderer();
         plain.putClientProperty("html.disable", Boolean.TRUE);
-        projectFilter.setRenderer(plain);
-        projectFilter.addActionListener(e -> { if (!loading) filterTraffic(); });
-        outcomeFilter.addActionListener(e -> filterTraffic());
-        bookmarksOnly.addItemListener(e -> filterTraffic());
-        trafficTable.getSelectionModel().addListSelectionListener(e -> { if (!e.getValueIsAdjusting() && selectionUpdates == 0) showTrafficDetail(); });
+        projectFilter.setRenderer(plain); searchLocation.setRenderer(plain); searchMode.setRenderer(plain);
+        projectFilter.addActionListener(e -> filtersEdited());
+        outcomeFilter.addActionListener(e -> filtersEdited());
+        bookmarksOnly.addItemListener(e -> filtersEdited());
+        trafficTable.setUpdateSelectionOnSort(false);
+        trafficTable.getSelectionModel().addListSelectionListener(e -> {
+            if (selectionUpdates == 0) {
+                rememberTrafficSelection();
+                if (!e.getValueIsAdjusting()) showTrafficDetail();
+            }
+        });
         installOpenAction(trafficTable, this::openTrafficDetail, "두 번 클릭 또는 Enter: 민감정보가 포함된 메모리 원문 요청·응답 (화면 전용)");
-        JTabbedPane details = named(new JTabbedPane(), "traffic.details");
-        trafficDetails = details;
-        JPanel explanation = new JPanel(new BorderLayout());
-        explanation.add(new JScrollPane(trafficDetail), BorderLayout.CENTER);
-        explanation.add(buttons(resolve), BorderLayout.SOUTH);
-        details.addTab("결과와 해결 방법", explanation);
-        details.addTab("원문 요청 · 화면 전용", new JScrollPane(requestDetail));
-        details.addTab("원문 응답 · 화면 전용", new JScrollPane(responseDetail));
-        panel.add(new JScrollPane(trafficTable), BorderLayout.CENTER);
+        inlineInspector = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail);
+        JSplitPane history = named(new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(trafficTable), inlineInspector), "traffic.history");
+        history.setResizeWeight(0.55); history.setOneTouchExpandable(true); history.setContinuousLayout(true);
+        history.setMinimumSize(new Dimension(80, 80));
+        panel.add(history, BorderLayout.CENTER);
+        trafficTable.getTableHeader().setReorderingAllowed(true);
+        trafficTable.getRowSorter().addRowSorterListener(e -> {
+            if (e.getType() == javax.swing.event.RowSorterEvent.Type.SORTED && selectionUpdates == 0) {
+                replaceRows(trafficTable, trafficModel, trafficModel.rows, TrafficEntry::id);
+                showTrafficDetail();
+            }
+        });
+        trafficTable.setDefaultRenderer(String.class, new DefaultTableCellRenderer() {
+            { putClientProperty("html.disable", true); }
+            @Override public Component getTableCellRendererComponent(JTable table, Object value, boolean selected, boolean focus, int row, int col) {
+                super.getTableCellRendererComponent(table, value, selected, focus, row, col);
+                TrafficEntry entry = trafficModel.rows.get(table.convertRowIndexToModel(row));
+                if (!selected) setForeground("BLOCKED".equals(entry.disposition()) ? new java.awt.Color(170, 65, 0) : table.getForeground());
+                return this;
+            }
+        });
         JPanel footer = new JPanel(new BorderLayout());
         footer.add(buttons(exportRange, exportFormat, button("traffic.export", "원문 내보내기 (평문)…",
                 () -> chooseExport(exportRange.getSelectedIndex() == 1, exportFormat.getSelectedIndex() == 1))), BorderLayout.NORTH);
         footer.add(note("traffic.exportNotice", EXPORT_NOTICE), BorderLayout.SOUTH);
         panel.add(footer, BorderLayout.SOUTH);
-        return panel;
+        JPanel result = new JPanel(new BorderLayout());
+        JScrollPane scroll = new JScrollPane(panel, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setBorder(BorderFactory.createEmptyBorder()); result.add(scroll, BorderLayout.CENTER);
+        return result;
+    }
+
+    private static final class TrafficPanel extends JPanel implements Scrollable {
+        TrafficPanel() { super(new BorderLayout(6, 6)); }
+        @Override public Dimension getPreferredSize() {
+            Dimension size = super.getPreferredSize(); BorderLayout layout = (BorderLayout) getLayout(); Insets insets = getInsets();
+            size.height = layout.getLayoutComponent(BorderLayout.NORTH).getPreferredSize().height
+                    + layout.getLayoutComponent(BorderLayout.SOUTH).getPreferredSize().height
+                    + layout.getLayoutComponent(BorderLayout.CENTER).getMinimumSize().height + layout.getVgap() * 2 + insets.top + insets.bottom;
+            return size;
+        }
+        @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        @Override public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) { return getFontMetrics(getFont()).getHeight(); }
+        @Override public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) { return Math.max(1, visible.height - getFontMetrics(getFont()).getHeight()); }
+        @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        @Override public boolean getScrollableTracksViewportHeight() { return getParent() != null && getParent().getHeight() >= getPreferredSize().height; }
     }
 
     private JPanel incidentTab() {
@@ -646,9 +717,18 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private void openTrafficDetail() {
-        if (selected(trafficTable, trafficModel) == null) throw failure("SELECT_TRAFFIC_FIRST");
-        showTrafficDetail();
-        showReadOnly("요청 상세 · 민감정보 포함 원문 화면 (내보내기는 평문 동의 후)", trafficDetails);
+        if (selectedTrafficAnchor() == null) throw failure("SELECT_TRAFFIC_FIRST");
+        if (popoutInspector != null) return;
+        TrafficInspector owned = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail);
+        popoutInspector = owned;
+        try {
+            showTrafficDetail();
+            showReadOnly("요청 상세 · 민감정보 포함 원문 화면 (내보내기는 평문 동의 후)", owned);
+        } finally {
+            owned.clear("");
+            if (popoutInspector == owned) popoutInspector = null;
+            if (!closed) showTrafficDetail();
+        }
     }
 
     private void showReadOnly(String title, JComponent component) {
@@ -759,6 +839,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             Map<String, Object> after = access.status();
             if (!sameVersion(before, after) || Boolean.TRUE.equals(after.get("closed"))) throw failure("PROJECT_UNAVAILABLE");
             if (view == null || !view.policy().equals(config)) new PolicyEngine().validate(config);
+            if (view != null && !view.matches(after)) invalidateHistory("");
             view = new Snapshot(config, projectId(after), revision(after));
             latestStatus = Map.copyOf(after);
             migration = Map.copyOf(access.migrationView());
@@ -768,6 +849,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             allowModel.setRows(config.allowScope()); blockModel.setRows(config.blockScope());
             replaceRows(rulesTable, rulesModel, config.rules(), Rule::id);
             traffic = List.copyOf(access.traffic());
+            if (!sameVersion(after, access.status())) throw failure("PROJECT_UNAVAILABLE");
             updateProjects(); filterTraffic();
             replaceRows(approvalTable, approvalModel, access.approvals().stream().limit(100).toList(), Pending::id);
             approvalTable.repaint(); // Remaining time changes without mutating pending records.
@@ -782,10 +864,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됐습니다. 허가받은 대상을 등록하고 보호 상태를 확인하세요.");
         } catch (RuntimeException e) {
             available = false;
-            setDetail(requestDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
-            setDetail(responseDetail, "[원문 표시 중단: 프로젝트 상태 확인 불가]");
-            setDetail(trafficDetail, "현재 프로젝트 확인 후 요청을 다시 선택하세요.");
-            trafficModel.setRows(List.of());
+            invalidateHistory("현재 프로젝트 확인 후 요청을 다시 선택하세요.");
+            traffic = List.of(); trafficModel.setRows(List.of());
+            setDetail(approvalDetail, "");
             migrationBanner.setVisible(false);
             for (JButton action : policyActions) action.setEnabled(false);
             pause.setText("긴급: 새 요청 모두 차단"); pause.setEnabled(!closed);
@@ -895,18 +976,65 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private void resetFilters() {
-        search.setText(""); methodFilter.setText(""); statusFilter.setText(""); timeFilter.setText("");
-        intentFilter.setText(""); runFilter.setText(""); stateFilter.setText("");
-        projectFilter.setSelectedItem(ALL_PROJECTS); outcomeFilter.setSelectedIndex(0); bookmarksOnly.setSelected(false);
-        filterTraffic();
+        loading = true;
+        try {
+            search.setText(""); searchLocation.setSelectedItem(TrafficSearch.Location.ALL); searchMode.setSelectedItem(TrafficSearch.MatchMode.LITERAL);
+            methodFilter.setText(""); statusFilter.setText(""); timeFilter.setText("");
+            intentFilter.setText(""); runFilter.setText(""); stateFilter.setText("");
+            projectFilter.setSelectedItem(ALL_PROJECTS); outcomeFilter.setSelectedIndex(0); bookmarksOnly.setSelected(false);
+        } finally { loading = false; }
+        searchEdited();
+    }
+
+    private void searchEdited() {
+        if (closed || loading) return;
+        setSearchInput(TrafficSearch.compile(new TrafficSearch.Query(search.getText(),
+                (TrafficSearch.Location) searchLocation.getSelectedItem(), (TrafficSearch.MatchMode) searchMode.getSelectedItem())));
+    }
+    private void setSearchInput(TrafficSearch.Input input) {
+        if (closed) return;
+        searchInput = input;
+        String error = input instanceof TrafficSearch.Invalid invalid ? switch (invalid) {
+            case BAD_RE2 -> "[BAD_RE2] 지원하지 않거나 잘못된 RE2 식입니다. 결과 없음. 식을 고치거나 Literal을 선택하세요.";
+            case TOO_LONG -> "[TOO_LONG] 4,096자 초과 편집을 거부하고 검색을 중지했습니다. 입력·위치·방식 편집 또는 필터 지우기로 복구하세요.";
+            case TOO_COMPLEX -> "[TOO_COMPLEX] RE2 프로그램이 4,096 instructions를 넘습니다. 식을 줄이세요. 결과 없음.";
+        } : "";
+        setDetail(searchError, error); searchError.setVisible(!error.isEmpty());
+        filtersEdited();
+    }
+
+    private void filtersEdited() {
+        if (closed || loading || !available) return;
+        rememberTrafficSelection();
+        refreshNow();
+    }
+
+    private void rememberTrafficSelection() {
+        TrafficEntry lead = selectedTrafficAnchor();
+        trafficSelection = new TrafficSelection(ids(trafficTable, trafficModel, TrafficEntry::id), lead == null ? null : lead.id());
     }
 
     private void filterTraffic() {
-        if (closed || loading) return;
+        if (closed || loading || !available) return;
+        if (!(searchInput instanceof TrafficSearch.CompiledQuery query)) {
+            trafficSelection = new TrafficSelection(Set.of(), null);
+            contentSearch.clear(); replaceRows(trafficTable, trafficModel, List.of(), TrafficEntry::id); clearPresentation("");
+            resolve.setEnabled(false); updateTrafficNavigation();
+            trafficCount.setText("0개 표시 / " + traffic.size() + "개 보관 · 검색 입력 오류 (invalid search)");
+            return;
+        }
+        List<TrafficSearch.Subject> subjects = new ArrayList<>();
+        for (TrafficEntry entry : traffic) subjects.add(new TrafficSearch.Subject(entry,
+                Boolean.TRUE.equals(access.rawCaptureInfo(entry.id()).get("available")),
+                List.of(screenUrl(entry), screenMethod(entry), entry.timestamp(), entry.statusCode() == null ? "" : entry.statusCode().toString(),
+                        entry.reason(), UiText.reason(entry.reason()), entry.id())));
+        contentSearch.update(query, subjects, this::refreshNow);
         String project = (String) projectFilter.getSelectedItem();
         String outcome = switch (outcomeFilter.getSelectedIndex()) { case 1 -> "BLOCKED"; case 2 -> "FORWARDED"; case 3 -> "PENDING"; case 4 -> "exempt"; case 5 -> "probe_allowed"; default -> ""; };
         List<TrafficEntry> displayed = new ArrayList<>();
-        for (TrafficEntry entry : traffic) {
+        Set<String> retainedSelection = new HashSet<>();
+        for (TrafficSearch.Subject subject : subjects) {
+            TrafficEntry entry = subject.entry();
             String status = entry.statusCode() == null ? "" : entry.statusCode().toString();
             if (bookmarksOnly.isSelected() && !entry.bookmarked()
                     || project != null && !project.equals(ALL_PROJECTS) && !project.equals(entry.projectId())
@@ -915,16 +1043,17 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                     || !contains(entry.timestamp(), timeFilter.getText()) || !contains(screenTag(entry, "intentId"), intentFilter.getText())
                     || !contains(screenTag(entry, "runId"), runFilter.getText())
                     || !(contains(entry.guardState(), stateFilter.getText()) || contains(UiText.guardState(entry.guardState()), stateFilter.getText()))) continue;
-            String needle = search.getText();
-            if (!needle.isEmpty() && !(contains(screenUrl(entry), needle) || contains(screenMethod(entry), needle) || contains(entry.timestamp(), needle)
-                    || contains(status, needle) || contains(entry.reason(), needle) || contains(UiText.reason(entry.reason()), needle) || contains(entry.id(), needle))) continue;
-            displayed.add(entry);
+            boolean hit = contentSearch.hit(subject);
+            if (trafficSelection.ids().contains(entry.id()) && (hit || contentSearch.pending(subject))) retainedSelection.add(entry.id());
+            if (hit) displayed.add(entry);
         }
+        trafficSelection = new TrafficSelection(retainedSelection, trafficSelection.leadId());
         replaceRows(trafficTable, trafficModel, displayed, TrafficEntry::id);
         boolean filtered = !search.getText().isEmpty() || !methodFilter.getText().isEmpty() || !statusFilter.getText().isEmpty()
                 || !timeFilter.getText().isEmpty() || !intentFilter.getText().isEmpty() || !runFilter.getText().isEmpty() || !stateFilter.getText().isEmpty()
                 || !ALL_PROJECTS.equals(project) || !outcome.isEmpty() || bookmarksOnly.isSelected();
-        trafficCount.setText(displayed.size() + "개 표시 / " + traffic.size() + "개 보관" + (filtered ? " · 필터 적용 중" : ""));
+        trafficCount.setText(displayed.size() + "개 표시 / " + traffic.size() + "개 보관" + (filtered ? " · 필터 적용 중" : "")
+                + (contentSearch.failed() ? " · 검색 실패: 불완전 결과 (search failed)" : contentSearch.pending() ? " · 내용 검색 중 (pending)" : ""));
         showTrafficDetail();
     }
 
@@ -943,11 +1072,110 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private void showTrafficDetail() {
-        TrafficEntry entry = selected(trafficTable, trafficModel);
-        setDetail(trafficDetail, entry == null ? "요청을 선택하면 결과·이유·다음 행동을 볼 수 있습니다." : screenMetadata(entry));
-        setDetail(requestDetail, entry == null ? "" : screenContent(entry.id(), true));
-        setDetail(responseDetail, entry == null ? "" : screenContent(entry.id(), false));
-        resolve.setEnabled(entry != null && targetTab(entry.reason()) >= 0);
+        if (inlineInspector == null || closed) return;
+        TrafficEntry entry = selectedTrafficAnchor();
+        if (!available || entry == null) {
+            clearPresentation("");
+            inlineInspector.metadata("요청을 선택하면 결과·이유·다음 행동을 볼 수 있습니다.");
+            resolve.setEnabled(false); updateTrafficNavigation(); return;
+        }
+        boolean original = Boolean.TRUE.equals(access.rawCaptureInfo(entry.id()).get("available"));
+        String metadata = screenMetadata(entry);
+        resolve.setEnabled(targetTab(entry.reason()) >= 0);
+        if (!original) {
+            clearPresentation(""); inlineInspector.unavailable(); inlineInspector.metadata(metadata);
+            if (popoutInspector != null) { popoutInspector.unavailable(); popoutInspector.metadata(metadata); }
+            updateTrafficNavigation(); return;
+        }
+        PresentationKey key = new PresentationKey(entry.id(), entry.requestCapture(), entry.responseCapture(),
+                screenMethod(entry) + " " + screenUrl(entry) + " HTTP/1.1 (inspection copy)",
+                "HTTP/1.1 " + (entry.statusCode() == null ? "unknown" : entry.statusCode()) + " (inspection copy)", metadata);
+        if (!key.same(presentationKey)) {
+            clearPresentation("선택한 원문 사본 처리 중…"); presentationKey = key;
+        }
+        inlineInspector.metadata(metadata); inlineInspector.reason(trafficOutcome(entry) + " · " + UiText.reason(entry.reason()));
+        if (popoutInspector != null) { popoutInspector.metadata(metadata); popoutInspector.reason(trafficOutcome(entry) + " · " + UiText.reason(entry.reason())); }
+        updateTrafficNavigation();
+        if (presentationFailed) return;
+        boolean wantPreview = inlineInspector.wantsPreview() || popoutInspector != null && popoutInspector.wantsPreview();
+        if (presenting && presentingPreview != wantPreview) { presentation.cancel(); presentationGeneration++; presenting = false; }
+        if (presentedContent != null) {
+            inlineInspector.install(presentedContent); if (popoutInspector != null) popoutInspector.install(presentedContent);
+            if (wantPreview && (presentedPreview != null || previewReason != null)) { installPreview(); return; }
+            if (!wantPreview) return;
+        }
+        if (presenting) return;
+        presenting = true; presentingPreview = wantPreview;
+        TrafficInspector.Content ready = presentedContent;
+        if (wantPreview) { inlineInspector.previewMessage("Static preview pending…"); if (popoutInspector != null) popoutInspector.previewMessage("Static preview pending…"); }
+        long generation = ++presentationGeneration; Snapshot source = view;
+        presentation.submit(cancelled -> {
+            TrafficInspector.Content content = ready != null ? ready : TrafficInspector.project(key.request(), key.response(), key.requestLine(), key.responseLine(), cancelled);
+            String reason = wantPreview ? HtmlPreview.unavailable(key.response(), cancelled) : null;
+            HtmlPreview.Projection preview = wantPreview && reason == null ? HtmlPreview.scan(key.response().body(), cancelled) : null;
+            return new PresentationResult(content, preview, reason);
+        }, result -> {
+            if (closed || generation != presentationGeneration) return;
+            // Refresh immutable source/availability and bracket project/revision on the EDT before publication.
+            refreshNow();
+            if (!available || !source.matches(latestStatus) || generation != presentationGeneration || !key.same(presentationKey)) return;
+            presenting = false;
+            if (result.failed()) {
+                presentationFailed = true;
+                inlineInspector.clear("Inspection presentation unavailable (processing failed).");
+                if (popoutInspector != null) popoutInspector.clear("Inspection presentation unavailable (processing failed).");
+                return;
+            }
+            PresentationResult output = (PresentationResult) result.value();
+            presentedContent = output.content(); presentedPreview = output.preview(); previewReason = output.reason();
+            inlineInspector.install(presentedContent); if (popoutInspector != null) popoutInspector.install(presentedContent);
+            if (wantPreview) installPreview();
+        });
+    }
+    private void installPreview() {
+        if (presentedPreview != null) {
+            if (inlineInspector.wantsPreview()) inlineInspector.preview(presentedPreview);
+            if (popoutInspector != null && popoutInspector.wantsPreview()) popoutInspector.preview(presentedPreview);
+        } else if (previewReason != null) {
+            inlineInspector.previewMessage("Static preview unavailable: " + previewReason);
+            if (popoutInspector != null) popoutInspector.previewMessage("Static preview unavailable: " + previewReason);
+        }
+    }
+    private void clearPresentation(String reason) {
+        presentationGeneration++; presentation.cancel(); presentationKey = null; presentedContent = null;
+        presentedPreview = null; previewReason = null; presenting = false; presentationFailed = false;
+        if (inlineInspector != null) inlineInspector.clear(reason);
+        if (popoutInspector != null) popoutInspector.clear(reason);
+    }
+    private void invalidateHistory(String reason) {
+        trafficSelection = new TrafficSelection(Set.of(), null);
+        contentSearch.clear(); clearPresentation(reason);
+        if (popoutInspector != null && SwingUtilities.getWindowAncestor(popoutInspector) instanceof JDialog dialog) dialog.dispose();
+    }
+    private int trafficAnchorRow() {
+        int lead = trafficTable.getSelectionModel().getLeadSelectionIndex();
+        return lead >= 0 && lead < trafficTable.getRowCount() && trafficTable.isRowSelected(lead) ? lead : -1;
+    }
+    private TrafficEntry selectedTrafficAnchor() {
+        int index = modelIndex(trafficTable, trafficAnchorRow(), trafficModel.rows.size());
+        return index < 0 ? null : trafficModel.rows.get(index);
+    }
+    private void updateTrafficNavigation() {
+        if (inlineInspector == null) return;
+        int lead = trafficAnchorRow();
+        boolean anchor = lead >= 0;
+        inlineInspector.navigation(anchor && lead > 0, anchor && lead + 1 < trafficTable.getRowCount());
+        if (popoutInspector != null) popoutInspector.navigation(anchor && lead > 0, anchor && lead + 1 < trafficTable.getRowCount());
+    }
+    private void stepTraffic(int delta) {
+        int lead = trafficAnchorRow(), next = lead + delta;
+        if (closed || !available || lead < 0 || next < 0 || next >= trafficTable.getRowCount()) return;
+        trafficTable.setRowSelectionInterval(next, next); trafficTable.scrollRectToVisible(trafficTable.getCellRect(next, 0, true));
+    }
+    private String captureState(TrafficEntry entry, boolean request) {
+        if (!Boolean.TRUE.equals(access.rawCaptureInfo(entry.id()).get("available"))) return "원문 없음";
+        TrafficEntry.Message message = request ? entry.requestCapture() : entry.responseCapture();
+        return (!message.present() ? "없음" : message.truncated() || message.bodyOmitted() ? "불완전" : "보관됨") + " · " + message.bodyEncoding();
     }
 
     private static void setDetail(JTextArea area, String text) {
@@ -1012,7 +1240,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private void resolveSelected() {
-        TrafficEntry entry = selected(trafficTable, trafficModel);
+        TrafficEntry entry = selectedTrafficAnchor();
         if (entry == null) throw failure("SELECT_TRAFFIC_FIRST");
         int target = targetTab(entry.reason());
         if (target >= 0) {
@@ -1109,7 +1337,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (entries.isEmpty()) throw failure("NO_DISPLAYED_EVIDENCE_TO_EXPORT");
         Snapshot base = beginEdit();
         List<String> ids = entries.stream().map(TrafficEntry::id).toList();
-        exportHuman(har ? "HAR 1.2" : "JSON", base, () -> access.humanExport(ids, har), entries.size() + "개 요청 (현재 표 선택)");
+        exportHuman(har ? "HAR 1.2" : "JSON", base, () -> access.humanExport(ids, har), entries.size() + "개 요청 (현재 표 선택)"
+                + (contentSearch.pending() || contentSearch.failed() ? " · search pending/failed: only currently visible rows (or selected visible rows), results incomplete · 검색 중/실패: 현재 표시된 요청만, 불완전 결과" : ""));
     }
 
     /** Capture overwrite-consent identity before background work; do not follow a target symlink. */
@@ -1300,11 +1529,19 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return result;
     }
     private <T> void replaceRows(JTable table, RowsModel<T> model, List<T> rows, java.util.function.Function<T, String> id) {
-        Set<String> selection = ids(table, model, id);
+        Set<String> selection = table == trafficTable ? trafficSelection.ids() : ids(table, model, id);
+        String leadId = table == trafficTable ? trafficSelection.leadId() : null;
         boolean adjusting = table.getSelectionModel().getValueIsAdjusting();
         selectionUpdates++;
         table.getSelectionModel().setValueIsAdjusting(true);
-        try { model.setRows(rows); selectId(table, model.rows, id, selection); }
+        try {
+            model.setRows(rows); selectId(table, model.rows, id, selection);
+            if (leadId != null) for (int i = 0; i < trafficModel.rows.size(); i++) if (leadId.equals(trafficModel.rows.get(i).id())) {
+                int row = trafficTable.convertRowIndexToView(i);
+                if (row >= 0 && trafficTable.isRowSelected(row)) ((DefaultListSelectionModel) trafficTable.getSelectionModel()).moveLeadSelectionIndex(row);
+                break;
+            }
+        }
         finally {
             // JTable's sorter can itself toggle valueIsAdjusting; the panel-level guard spans all events.
             table.getSelectionModel().setValueIsAdjusting(adjusting);
@@ -1353,8 +1590,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         for (JButton action : policyActions) action.setEnabled(false);
         pause.setEnabled(false); passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
         protectionState.setText("확장 종료 · 보호 상태 확인 불가");
-        setDetail(requestDetail, ""); setDetail(responseDetail, ""); setDetail(trafficDetail, "");
+        invalidateHistory(""); contentSearch.close(); presentation.close();
         trafficModel.setRows(List.of()); traffic = List.of();
+        setDetail(approvalDetail, "");
         migration = Map.of();
         dialogs.closeEditors();
         version.setText("확장 종료 · 설정 변경과 승인 불가");

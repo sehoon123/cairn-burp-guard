@@ -1,4 +1,4 @@
-# Owned native A–G plus OFF checklist — unreleased v2
+# Owned native A–G and OFF checklist for the v0.3.0 development prerelease
 
 > **2026-11-05 note (current source):** nothing is masked and there is no collection,
 > retention or export quota. Wherever a step below expects a redacted/masked "safe" export,

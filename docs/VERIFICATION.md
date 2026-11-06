@@ -1,4 +1,63 @@
-# Verification status — v2 development checkpoints, 2026-11-05
+# Verification status for the v0.3.0 development prerelease
+
+Actual publication status and downloads belong to the [GitHub v0.3.0 release page](https://github.com/sehoon123/cairn-burp-guard/releases/tag/v0.3.0).
+Documentation and a source push do not establish publication, installation, native
+acceptance or production safety.
+
+**Authorization, Cookie and token data remain plaintext. Collection, retention and
+export have no quota. Unbounded heap growth, OOM and UI or Proxy latency remain
+operator-managed risks.** No automatic disk persistence or spool is added.
+
+## Exact v0.3.0 artifact
+
+- File `cairn-proxy-guard-0.3.0.jar`, **3,009,472 bytes**.
+- SHA-256 `570a7369f75baa729274d9d455b9f53942656a5eb28d79588fdeb4a94b7ae2a2`.
+- The accepted original is copied unchanged for publication. Independent builds
+  must reproduce it, never replace or repackage it.
+
+## Recorded local validation
+
+These results were executed for the accepted 165-input candidate, not by this
+documentation update. Publication requires fresh non-author execution against the
+final documentation-only source with identical runtime, test, build and legal
+inputs. The sealed release `BUILDINFO.json` binds final source and CI provenance.
+
+| Layer | Recorded result and boundary |
+|---|---|
+| Full offline clean Java test and JAR | **1,369 tests / 46 suites**, zero failures, errors or skips. Unit, adapter, headless UI and owned loopback, not native Burp |
+| Python helper fixtures | **38 tests**, OK. Helper self-checks, not native phases |
+| Template fixtures | **18 tests**, OK, both fixture-only loaders passed. Actual-upstream check SKIP |
+| Authenticated isolated Xvfb and owned WM, scale 1 | **38 tests / 4 suites**, zero failures, errors or skips. Actual Swing, not Burp |
+| Authenticated isolated Xvfb and owned WM, scale 2 | **38 tests / 4 suites**, zero failures, errors or skips. Separate forced Swing execution |
+| Two clean builds | Byte-identical to the exact JAR above |
+| Original JAR inventory | **1,479 unique ZIP entries**, valid CRCs, **200 application classes**, class major **65**, bundled Montoya classes **0**. Project and bundled legal bytes match source |
+
+The first correctness review was BLOCKED by an introduced adjusting-selection
+regression. A bounded correction and failing-before-fix regression preceded a
+fresh non-author REVIEW_PASS. Attribution is **GPT-6.1 Sol, independent non-author
+context**. Reviewers inspected source and saved evidence. The parent separately
+rehashed source, XML and JARs and replayed the unchanged exact-JAR selection probe.
+This was independent-context review, not a model-diverse or whole-v2 audit.
+Seven inherited compiler warnings remain unsuppressed. Validation is not warning-free.
+
+**Exact-JAR native Burp loading, callbacks, wire equality and target arrival remain
+UNVERIFIED.** Live upstream, Pi, model and report-file E2E are NOT RUN. No full A–G
+acceptance, H support, all-platform coverage or stable integration is claimed.
+H is DEFERRED. CI for the final commit is separate and is not claimed here.
+
+The [v0.3.0 release record](PRERELEASE_0.3.0.md) covers accumulated features,
+source-manifest checks, limitations and rollback. The
+[current native checklist](MANUAL_BURP_SMOKE.md#current-removal-aware-procedure)
+is prospective, not a result log.
+
+## Historical artifact-specific records
+
+<details>
+<summary>Earlier checkpoint observations and procedures</summary>
+
+Every "current" or "latest" label below refers to its historical artifact, not the
+v0.3.0 JAR above. Historical observations do not transfer to new bytes.
+
 
 **An explicitly requested development prerelease is NOT full acceptance, final
 independent audit, installation or production approval. Native observations below
@@ -539,3 +598,5 @@ compare the same displayed original method as the table (`screenMethod`), so a r
 original such as `CUSTMETHOD` is found while the safe entry/machine APIs stay `[REDACTED]`;
 an unavailable original is matched only by its explicit diagnostic text. Failing-first run:
 `reviewfix6-red1` (real EvidenceStore fixture, both branches observed independently).
+
+</details>

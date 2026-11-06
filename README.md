@@ -2,11 +2,40 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립 Burp Extension 개발 프로젝트입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> **현재 개발 프리릴리즈: 자동 차단 제거 — 이 exact JAR의 native Burp 검증은 미실행.** 사용자가 공개를 명시적으로 요청한 개발 빌드입니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
+> **v0.3.0 개발 프리릴리즈.** 실제 공개 상태와 다운로드는 아래 GitHub 릴리스 페이지에서 확인하세요. 문서·소스 푸시만으로 공개·설치나 exact JAR native 검증 완료를 뜻하지 않습니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
 
-**[자동 차단 제거 개발 빌드 다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix)** · [이번 릴리스의 검증·한계·출처](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix) · [이전 artifact별 검증](docs/VERIFICATION.md) · [전체 Proxy 과거 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
+**[v0.3.0 공개 상태·다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/v0.3.0)** · [v0.3.0 검증·한계·출처](docs/PRERELEASE_0.3.0.md) · [artifact별 검증](docs/VERIFICATION.md) · [이전 v0.2.0·rollback](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix) · [전체 Proxy 과거 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
 
-## 현재 개발 프리릴리즈: 자동 차단 제거 (native 검증 미실행)
+## v0.3.0 요청 기록 개선
+
+Proxy-only 보관 원문의 헤더·본문까지 검색합니다. 기본 **All/Literal**은 기존의
+대소문자 구분 없는 **literal substring** 검색입니다. 위치는 전체·메타데이터·요청 헤더·
+요청 본문/HEX·응답 헤더·응답 본문/HEX 중 고릅니다. **RE2**를 명시 선택하면 대소문자
+무시 `find` 검색을 사용하며 헤더·메타데이터·본문·요청/응답 경계를 이어 붙이지 않습니다.
+잘못된 식이나 거부된 초과 입력은 오류를 보이고 이전 결과를 비웁니다. 검색은 검사 전용이며
+정책·승인·속도·OFF·전달 원문을 바꾸지 않습니다.
+
+바이너리/지원하지 않는 문자셋은 화면에 표시한 연속 HEX 문자 그대로 검색하며 UTF-8로
+재해석하지 않습니다. 기존 literal AND 필터·정렬·북마크·현재 표/선택 내보내기를 유지합니다.
+내용 및 RE2 메타데이터 검색 중/실패는 표시하며 그때 내보내기는 **클릭 시 현재 표시된 행만,
+불완전 결과**입니다. 입력·RE2 compiler 한도는 수집·검색 대상·결과·보관 상한이 아닙니다.
+
+표 아래 크기 조절/접기 가능한 **inline 요청·응답 쌍**에서 Raw inspection / Headers /
+Body·HEX와 메타데이터를 봅니다. 별도 popout은 자체 문서를 사용하고 이전/다음은 현재
+정렬·필터 순서를 따릅니다. 관측 응답 body bytes(미상은 미상), 선언 MIME, 사본 가용성 열을
+추가합니다. Tool/latency/wire length를 추측하지 않습니다.
+
+**Static HTML preview**는 선택한 탭에서만 만드는 기본 제목·문단·목록·표·서식의 비활성
+검사 투영입니다. 검증된 UTF8_TEXT의 완전한 HTML/XHTML 선언(문자셋 생략 또는 UTF-8/ASCII)만
+대상입니다. 자체 scanner가 속성/URL/CSS를 버리고 일반 Swing layout + StyledEditorKit
+텍스트만 만듭니다. HTML/native Render 엔진·외부 리소스·JS·이미지·탐색·폼이 없습니다.
+복잡한 레이아웃/일부 entity는 근사이며 큰 문서의 heap/EDT layout 비용은 무제한일 수 있습니다.
+원문/내보내기는 바뀌지 않습니다. [UI·검색·preview 한계](docs/UI.md#v030-static-html-preview)
+
+Logger++의 화면 흐름만 참고했습니다. AGPL 코드·자산·의존성을 복사/포함하지 않았고
+새 라이브러리도 없습니다. 백엔드/자동 차단 제거 동작은 변경하지 않습니다.
+
+## 이전 공개 v0.2.0 개발 프리릴리즈: 자동 차단 제거 (native 검증 미실행)
 
 이전 응답5xx·크기·fan-out, 느린/스트리밍 응답, 미확인/늦은 콜백,
 추정 timeout·회로·native-flight/correlation 용량으로 새 요청을 자동 차단하는
@@ -27,7 +56,7 @@ CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 
 - 원문 전체 무마스킹·무제한 메모리 보관, 평문 확인·owner-only atomic 내보내기는 유지합니다.
   **평문 자격증명·무제한 메모리/OOM·무제한 native 동시성** 위험은 사용자가 관리해야 합니다.
 
-이 빌드는 Java **1,294건**, Python **38건**, fixture template **18건**, 실제 Swing scale1·2 각각 **28건**을 통과했습니다 (실패·오류·skip0). 두 clean build의 JAR은 **2,941,968 bytes**로 일치하며 SHA-256은 `6213885ed1f0691b0cc15c7ab9c2df509d1d356ecbdf27fb13aee7d5fc39547f`입니다. 정확한 소스·산출물 결합을 독립 Sol 검토와 부모 직접 검사로 확인했습니다. 이는 **설치 Burp/native·upstream/model E2E 검증이나 누락 callback 수정 주장이 아닙니다**.
+이전 공개 v0.2.0 빌드는 Java **1,294건**, Python **38건**, fixture template **18건**, 실제 Swing scale1·2 각각 **28건**을 통과했습니다 (실패·오류·skip0). 두 clean build의 JAR은 **2,941,968 bytes**로 일치하며 SHA-256은 `6213885ed1f0691b0cc15c7ab9c2df509d1d356ecbdf27fb13aee7d5fc39547f`입니다. 정확한 소스·산출물 결합을 독립 Sol 검토와 부모 직접 검사로 확인했습니다. 이는 **설치 Burp/native·upstream/model E2E 검증이나 누락 callback 수정 주장이 아닙니다**.
 
 [테스트 변경 지도](docs/AUTOBLOCK_REMOVAL_TEST_MAP.md), 현재 소스 계약과 새 릴리스의 BUILDINFO/검증 범위를 보세요. 과거 [무마스킹 프리릴리즈](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-05-v2-unmasked-unbounded) 및 native 보고서는 보존된 이전 artifact의 기록이며 이번 JAR의 native 성공 증거가 아닙니다. 원문 자동 디스크 저장은 없습니다.
 
@@ -71,7 +100,7 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 | 개요·상단 | typed 보호 상태/이유/통계, 새 요청 차단, 사람 확인을 거친 전체 통과/OFF·복원 |
 | 대상 | URL → 미저장 폼·실제 범위 미리보기 → 명시 저장; 정확한 대상부터 등록 |
 | 규칙 | 메서드/실제 URL/경로/query/header/body/JSON/form, AND/OR·RE2, EXEMPT 위험 확인 |
-| 요청 기록 | **마스킹 없는 평문 원문 전체**(상한 없음)·검사 경고·intent/run·결과·상태. JSON/HAR 내보내기는 매번 평문 비밀 경고 확인 후 원문 구조(헤더·본문 바이트)를 저장 |
+| 요청 기록 | **마스킹 없는 평문 원문 전체**(상한 없음) 위치별 Literal/선택적 RE2 검색·정렬·inline 요청/응답·선택적 static preview·별도 popout·현재 순서 이동·검사 경고·intent/run·결과·상태. JSON/HAR 내보내기는 매번 평문 비밀 경고 확인 후 원문 구조(헤더·본문 바이트)를 저장 |
 | 승인 대기 | 읽기 전용 검토 후 별도1회 승인/거절. 오래된 승인·프로젝트/버전 변경은 취소 |
 | 설정 | 0=끔 수동 RPS·모든 속도 끄기 초안·대기/승인 시간·태그 한도·정확한 GET health 경로. 이전 자동 설정은 비활성 보존 |
 
@@ -99,9 +128,9 @@ python3 scripts/verify_templates.py
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-현재 후보 산출 경로는 `build/libs/cairn-proxy-guard-0.2.0.jar`입니다 (과거 프리뷰 JAR 이름은 `0.1.0-SNAPSHOT`이었음). 프로젝트 MIT `LICENSE`/`NOTICE`는 JAR의 `META-INF/cairn-proxy-guard/`에 있고, 루트 `META-INF/LICENSE`·`NOTICE`와 `META-INF/legal/`은 번들 라이브러리(Jackson/RE2J)의 원문 그대로이며 빌드가 이를 검사합니다. 이름이 같아도 hash가 다른 후보는 같은 검증 산출물이 아닙니다. 현재 v2 체크포인트와 과거 프리뷰를 태그/해시로 구분하세요. 다운로드만으로 설치되지는 않습니다.
+현재 후보 산출 경로는 `build/libs/cairn-proxy-guard-0.3.0.jar`입니다 (과거 프리뷰 JAR 이름은 `0.1.0-SNAPSHOT`이었음). 프로젝트 MIT `LICENSE`/`NOTICE`는 JAR의 `META-INF/cairn-proxy-guard/`에 있고, 루트 `META-INF/LICENSE`·`NOTICE`와 `META-INF/legal/`은 번들 라이브러리(Jackson/RE2J)의 원문 그대로이며 빌드가 이를 검사합니다. 이름이 같아도 hash가 다른 후보는 같은 검증 산출물이 아닙니다. 현재 v2 체크포인트와 과거 프리뷰를 태그/해시로 구분하세요. 다운로드만으로 설치되지는 않습니다.
 
-사람이 새 후보를 검증할 때만 실제 대상과 분리된 임시 Burp HOME/profile/project/display와 **소유 loopback fixture**를 사용하세요. EULA·라이선스 입력이 필요하면 멈추고 사용자에게 요청하며 동의/활성화 자료를 복사하거나 우회하지 않습니다. 정확한 JAR hash를 기록하고 [자동 차단 제거 후보의 현재 native 절차](docs/MANUAL_BURP_SMOKE.md#current-removal-aware-procedure)를 따릅니다. 같은 문서의 과거 자동 제어/permit 단계와 helper는 현재 후보 절차나 성공 증거가 아닙니다. 현재 후보의 installed-Burp/native 전달·도착은 UNVERIFIED입니다. 공개 허가는 미검증 개발 체크포인트의 보관·공유에 한정되며, native 수용·실서비스 안전 보증·사용자 설치 완료를 뜻하지 않습니다. 확장 언로드 후에는 보호가 없습니다.
+사람이 새 후보를 검증할 때만 실제 대상과 분리된 임시 Burp HOME/profile/project/display와 **소유 loopback fixture**를 사용하세요. EULA·라이선스 입력이 필요하면 멈추고 사용자에게 요청하며 동의/활성화 자료를 복사하거나 우회하지 않습니다. 정확한 JAR hash를 기록하고 [자동 차단 제거 후보의 현재 native 절차](docs/MANUAL_BURP_SMOKE.md#current-removal-aware-procedure)를 따릅니다. 같은 문서의 과거 자동 제어/permit 단계와 helper는 현재 후보 절차나 성공 증거가 아닙니다. 현재 후보의 installed-Burp/native 전달·도착은 UNVERIFIED입니다. 프리릴리즈 공개는 사용자 Burp 설치, exact-JAR native 수용 또는 실서비스 안전 보증이 아닙니다. 확장 언로드 후에는 보호가 없습니다.
 
 ## CAIRN 템플릿과 한계
 

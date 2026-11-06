@@ -1,7 +1,7 @@
-# V2 source integration contracts — unreleased
+# V2 integration contracts for v0.3.0 development source
 
-These are the APIs in the **current source worktree**, not the contract of the
-published preview or proof of installed/native behavior. Java package:
+These are the APIs in the **v0.3.0 development source**. They are not proof of
+installed/native behavior or stable integration certification. Java package:
 `dev.cairnguard`. Source is authoritative. See [VERIFICATION.md](VERIFICATION.md)
 for the frozen-snapshot results and pending acceptance gates. No worker/network
 control API, outbound HTTP client, authentication mutation or automatic policy

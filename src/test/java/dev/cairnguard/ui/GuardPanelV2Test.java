@@ -166,6 +166,8 @@ class GuardPanelV2Test {
 
     @Test void rawRequestResponseUrlAndTagsAreOriginalOnScreenAndInspectionWarningsAreHonest() throws Exception {
         String id=access.addRaw("intent1","run1","exempt");open();
+        edt(()->{get("traffic.table",JTable.class).setRowSelectionInterval(0,0);return null;});
+        GuardPanelTrafficViewTest.await(()->get("traffic.response",JTextArea.class).getText().contains(SECRET));
         edt(()->{
             JTable t=get("traffic.table",JTable.class);assertTrue(((String)t.getValueAt(0,3)).contains(SECRET));assertEquals("intent1",t.getValueAt(0,7));assertEquals("run1",t.getValueAt(0,8));
             t.setRowSelectionInterval(0,0);click("traffic.detail");
@@ -198,8 +200,10 @@ class GuardPanelV2Test {
 
     @Test void rawUnavailableClearProjectFailureAndCloseRemoveSensitiveScreenText() throws Exception {
         access.addRaw("i","r","forwarded");open();
+        edt(()->{get("traffic.table",JTable.class).setRowSelectionInterval(0,0);return null;});
+        GuardPanelTrafficViewTest.await(()->get("traffic.request",JTextArea.class).getText().contains(SECRET));
         edt(()->{
-            get("traffic.table",JTable.class).setRowSelectionInterval(0,0);click("traffic.detail");assertTrue(get("traffic.request",JTextArea.class).getText().contains(SECRET));
+            click("traffic.detail");assertTrue(get("traffic.request",JTextArea.class).getText().contains(SECRET));
             access.rawUnavailable=true;panel.refreshNow();assertFalse(get("traffic.request",JTextArea.class).getText().contains(SECRET));assertTrue(get("traffic.request",JTextArea.class).getText().contains("원문 없음"));
             access.rawUnavailable=false;panel.refreshNow();access.failStatus=true;panel.refreshNow();assertFalse(get("traffic.request",JTextArea.class).getText().contains(SECRET));assertEquals(0,get("traffic.table",JTable.class).getRowCount());
             access.failStatus=false;panel.refreshNow();click("settings.clear");assertEquals(0,get("traffic.table",JTable.class).getRowCount());panel.close();assertEquals("",get("traffic.request",JTextArea.class).getText());return null;
@@ -387,8 +391,7 @@ class GuardPanelV2Test {
         @Override public void resetIntentBudgets(String p,long r){cas(p,r);runtimeCalls++;}
         @Override public String exportIncident(long from,long to){throw new AssertionError("the human UI must not use the safe masked incident export");}
         @Override public Map<String,Object> migrationView(){return Map.of("pending",pendingMigration,"original",original,"migrated",PolicyCodec.encode(policy));}
-        volatile String bigRequest;
-        @Override public String rawRequest(String id){rawReads++;return rawUnavailable?null:bigRequest!=null?bigRequest:store.rawRequest(id);}
+        @Override public String rawRequest(String id){rawReads++;return rawUnavailable?null:store.rawRequest(id);}
         @Override public String rawResponse(String id){rawReads++;return rawUnavailable?null:store.rawResponse(id);}
         @Override public String rawUrl(String id){rawReads++;return rawUnavailable?null:store.rawUrl(id);}
         @Override public Map<String,Object> rawCaptureInfo(String id){return rawUnavailable?Map.of("available",false):store.rawCaptureInfo(id);}

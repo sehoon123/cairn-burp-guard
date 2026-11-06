@@ -111,21 +111,131 @@ class GuardPanelV2DesktopTest {
 
     @Test
     void forcedJvmUiScaleMatchesTheGraphicsTransformAndTheTrafficViewerShowsAnOriginalBeyondTheEditorLimitInFull() throws Exception {
+        assertFalse(java.awt.GraphicsEnvironment.isHeadless(), "actual isolated nonheadless Swing is required");
         String forced=System.getProperty("sun.java2d.uiScale");
         double transform=edt(()->java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration().getDefaultTransform().getScaleX());
         assertNotNull(forced,"the desktopTest task must force the Java UI scale");
         assertEquals(Double.parseDouble(forced),transform,0.0001,"actual graphics transform must follow the forced uiScale");
         try(View v=new View(false)) {
             String big="C".repeat(GuardPanel.MAX_EDITOR_CHARS+2048)+"-DESKTOP-END";
-            edt(()->{v.access.addRaw("i","r","forwarded");v.access.bigRequest=big;v.panel.refreshNow();
+            edt(()->{v.access.store.begin("p","Synthetic",new dev.cairnguard.model.RequestData("POST","https://example.test/large","example.test",443,true,List.of(new dev.cairnguard.model.RequestData.Header("Content-Type","text/plain; charset=UTF-8")),big.getBytes(java.nio.charset.StandardCharsets.UTF_8)),new dev.cairnguard.model.Decision(GuardConfig.Mode.ALLOW,"DEFAULT_ALLOW",List.of()),7);v.panel.refreshNow();
                 JTable t=get(v.panel,"traffic.table",JTable.class);t.setRowSelectionInterval(0,0);return null;});
             v.open("traffic.detail");JDialog detail=await("editor.dialog");
+            GuardPanelTrafficViewTest.await(()->get(detail,"traffic.request",JTextArea.class).getText().endsWith(big));
             edt(()->{JTextArea request=get(detail,"traffic.request",JTextArea.class);
                 assertFalse(request.isEditable());assertTrue(request.getText().endsWith(big),"complete original, selectable and scrollable");
                 request.select(0,5);assertEquals(5,request.getSelectedText().length());
                 assertNotNull(SwingUtilities.getAncestorOfClass(JScrollPane.class,request));
                 for(Window w:Window.getWindows())if(w instanceof JDialog d&&d.isShowing())d.dispose();return null;});
         }
+    }
+
+    @Test void loggerHistoryInlineFilterPreviewCurrentOrderPopoutAndResizeAreRealSwing() throws Exception {
+        assertFalse(java.awt.GraphicsEnvironment.isHeadless());
+        try (View v = new View(false)) {
+            edt(() -> {
+                for (String path : List.of("/c", "/a", "/b")) {
+                    String id = v.access.store.begin("p", "Synthetic", new dev.cairnguard.model.RequestData("POST", "https://example.test" + path, "example.test", 443, true,
+                            List.of(new dev.cairnguard.model.RequestData.Header("Content-Type", "text/plain; charset=UTF-8")), "desktop-body-literal".getBytes(java.nio.charset.StandardCharsets.UTF_8)), new dev.cairnguard.model.Decision(GuardConfig.Mode.ALLOW, "DEFAULT_ALLOW", List.of()), 7);
+                    v.access.store.response(id, 200, List.of(new dev.cairnguard.model.RequestData.Header("Content-Type", "text/html")), ("<h1>Static " + path + "</h1><table><tr><td>one</td><td>two</td></tr></table>").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                v.panel.refreshNow(); get(v.panel, "tabs", JTabbedPane.class).setSelectedIndex(3);
+                get(v.panel, "traffic.search", JTextField.class).setText("DESKTOP-body-literal"); return null;
+            });
+            GuardPanelTrafficViewTest.await(() -> !get(v.panel, "traffic.count", JLabel.class).getText().contains("pending"));
+            edt(() -> { JTable t = get(v.panel, "traffic.table", JTable.class); assertEquals(3, t.getRowCount());
+                t.getRowSorter().setSortKeys(List.of(new RowSorter.SortKey(3, SortOrder.ASCENDING))); t.setRowSelectionInterval(0, 0); return null; });
+            GuardPanelTrafficViewTest.await(() -> get(v.panel, "traffic.request", JTextArea.class).getText().contains("/a"));
+            edt(() -> {
+                assertTrue(v.frame.isShowing()); assertTrue(get(v.panel, "traffic.request", JTextArea.class).isShowing()); assertTrue(get(v.panel, "traffic.response", JTextArea.class).isShowing());
+                get(v.panel, "traffic.next", JButton.class).doClick(0); return null;
+            });
+            GuardPanelTrafficViewTest.await(() -> get(v.panel, "traffic.request", JTextArea.class).getText().contains("/b"));
+            edt(() -> { get(v.panel, "traffic.responseTabs", JTabbedPane.class).setSelectedIndex(3); return null; });
+            GuardPanelTrafficViewTest.await(() -> GuardPanelV2Test.find(v.panel, "traffic.preview.table") != null);
+            JTextArea inline = edt(() -> get(v.panel, "traffic.request", JTextArea.class));
+            v.open("traffic.detail"); JDialog detail = await("editor.dialog");
+            GuardPanelTrafficViewTest.await(() -> get(detail, "traffic.request", JTextArea.class).getText().contains("/b"));
+            JTextArea retainedPopout = edt(() -> get(detail, "traffic.request", JTextArea.class));
+            edt(() -> {
+                assertNotSame(inline, retainedPopout); assertNotSame(inline.getDocument(), retainedPopout.getDocument()); assertTrue(inline.isShowing());
+                get(detail, "traffic.next", JButton.class).doClick(0); return null;
+            });
+            GuardPanelTrafficViewTest.await(() -> retainedPopout.getText().contains("/c") && inline.getText().contains("/c"));
+            edt(() -> { get(detail, "editor.save", JButton.class).doClick(0); return null; }); awaitClosed(detail);
+            edt(() -> {
+                assertEquals("", retainedPopout.getText(), "disposed window loses retained plaintext even with a held widget reference"); assertTrue(inline.getText().contains("/c"));
+                v.frame.setSize(720, 560); v.frame.validate();
+                JSplitPane history = get(v.panel, "traffic.history", JSplitPane.class), pair = get(v.panel, "traffic.pair", JSplitPane.class);
+                history.setDividerLocation(0.40); pair.setDividerLocation(0.50); v.frame.validate();
+                assertTrue(history.getHeight() > 80, "small/high-DPI history remains resizable: " + history.getSize());
+                assertTrue(pair.getLeftComponent().getWidth() > 20); assertTrue(pair.getRightComponent().getWidth() > 20);
+                history.setDividerLocation(1.0); history.setDividerLocation(0.4); v.frame.validate(); assertTrue(pair.isShowing());
+                v.panel.close(); assertEquals("", inline.getText()); return null;
+            });
+            assertTrue(v.dialogs.errors.isEmpty()); assertEquals(0, v.access.updates);
+        }
+    }
+
+    @ParameterizedTest @ValueSource(ints={14,28})
+    void scopedSearchControlsErrorAndResetRemainReachableByKeyboardInSmallWindows(int font) throws Exception {
+        assertFalse(java.awt.GraphicsEnvironment.isHeadless());
+        try (View v = new View(false)) {
+            edt(() -> {
+                v.access.addRaw("synthetic-intent", "synthetic-run", "forwarded"); v.panel.refreshNow();
+                get(v.panel, "tabs", JTabbedPane.class).setSelectedIndex(3);
+                fonts(v.panel, font); v.frame.setSize(720, 560); v.frame.validate();
+                assertFalse(get(v.panel, "traffic.more", JCheckBox.class).isSelected());
+                return null;
+            });
+            java.awt.Robot robot = new java.awt.Robot(); robot.setAutoDelay(20);
+            JComboBox<?> mode = edt(() -> get(v.panel, "traffic.searchMode", JComboBox.class));
+            JComboBox<?> location = edt(() -> get(v.panel, "traffic.searchLocation", JComboBox.class));
+            JTextField search = edt(() -> get(v.panel, "traffic.search", JTextField.class));
+            JButton reset = edt(() -> get(v.panel, "traffic.reset", JButton.class));
+            for (JComponent control : List.of(search, location, mode, reset)) {
+                reachable(v.frame, control);
+                edt(() -> {
+                    assertTrue(control.isFocusable()); assertNotNull(control.getAccessibleContext().getAccessibleName(), control.getName());
+                    if (!(control instanceof JButton)) assertSame(control, get(v.panel, control.getName() + ".label", JLabel.class).getLabelFor());
+                    assertEquals(Boolean.TRUE, control.getClientProperty("html.disable")); return null;
+                });
+            }
+            reachable(v.frame, location); edt(() -> { assertTrue(location.requestFocusInWindow()); return null; });
+            GuardPanelTrafficViewTest.await(location::isFocusOwner);
+            press(robot, java.awt.event.KeyEvent.VK_END);
+            GuardPanelTrafficViewTest.await(() -> location.getSelectedItem() == TrafficSearch.Location.RESPONSE_BODY);
+            press(robot, java.awt.event.KeyEvent.VK_HOME);
+            GuardPanelTrafficViewTest.await(() -> location.getSelectedItem() == TrafficSearch.Location.ALL);
+            reachable(v.frame, mode); edt(() -> { assertTrue(mode.requestFocusInWindow()); return null; });
+            GuardPanelTrafficViewTest.await(mode::isFocusOwner); press(robot, java.awt.event.KeyEvent.VK_END);
+            GuardPanelTrafficViewTest.await(() -> mode.getSelectedItem() == TrafficSearch.MatchMode.RE2);
+            reachable(v.frame, search); edt(() -> { assertTrue(search.requestFocusInWindow()); return null; });
+            GuardPanelTrafficViewTest.await(search::isFocusOwner); press(robot, java.awt.event.KeyEvent.VK_OPEN_BRACKET);
+            JTextArea error = edt(() -> get(v.panel, "traffic.searchError", JTextArea.class));
+            GuardPanelTrafficViewTest.await(() -> error.isVisible() && error.getText().contains("BAD_RE2")); reachable(v.frame, error);
+            edt(() -> { assertTrue(error.getLineWrap()); assertTrue(error.getWrapStyleWord()); assertFalse(error.isEditable());
+                assertEquals(0, get(v.panel, "traffic.table", JTable.class).getRowCount()); v.panel.refreshNow(); assertTrue(error.getText().contains("BAD_RE2"));
+                System.out.printf("SCOPED_SEARCH_UI scale=%s font=%d window=%dx%d error=%s location=%s mode=%s%n", System.getProperty("sun.java2d.uiScale"), font,
+                        v.frame.getWidth(), v.frame.getHeight(), error.getBounds(), location.getBounds(), mode.getBounds()); return null; });
+            reachable(v.frame, reset); edt(() -> { assertTrue(reset.requestFocusInWindow()); return null; });
+            GuardPanelTrafficViewTest.await(reset::isFocusOwner); press(robot, java.awt.event.KeyEvent.VK_SPACE);
+            GuardPanelTrafficViewTest.await(() -> !error.isVisible() && search.getText().isEmpty());
+            edt(() -> { assertEquals(TrafficSearch.Location.ALL, location.getSelectedItem()); assertEquals(TrafficSearch.MatchMode.LITERAL, mode.getSelectedItem());
+                assertEquals(1, get(v.panel, "traffic.table", JTable.class).getRowCount()); assertEquals(0, v.access.updates); assertEquals(0, v.access.runtimeCalls); return null; });
+            assertTrue(v.dialogs.errors.isEmpty());
+        }
+    }
+    private static void press(java.awt.Robot robot, int key) { robot.keyPress(key); robot.keyRelease(key); robot.waitForIdle(); }
+    private static void reachable(JFrame frame, JComponent control) throws Exception {
+        edt(() -> { control.scrollRectToVisible(new Rectangle(0, 0, control.getWidth(), control.getHeight())); frame.validate(); return null; });
+        edt(() -> {
+            Rectangle visible = control.getVisibleRect();
+            assertTrue(control.isShowing(), control.getName());
+            assertTrue(control.getWidth() > 0 && control.getHeight() > 0 && visible.contains(new Rectangle(0, 0, control.getWidth(), control.getHeight())),
+                    control.getName() + " is clipped " + control.getBounds() + " visible=" + visible);
+            return null;
+        });
     }
 
     private static final class View implements AutoCloseable {
