@@ -359,7 +359,6 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         inlineInspector = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail, this::refreshNow);
         JSplitPane history = named(new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(trafficTable), inlineInspector), "traffic.history");
         history.setResizeWeight(0.55); history.setOneTouchExpandable(true); history.setContinuousLayout(true);
-        history.setMinimumSize(new Dimension(80, 80));
         panel.add(history, BorderLayout.CENTER);
         trafficTable.getTableHeader().setReorderingAllowed(true);
         trafficTable.getRowSorter().addRowSorterListener(e -> {
