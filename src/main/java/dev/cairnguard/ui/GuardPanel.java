@@ -1368,7 +1368,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             BasicFileAttributes initialTemp = safeAttributes(temp);
             try (java.io.OutputStream out = Files.newOutputStream(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS)) { out.write(content); }
             BasicFileAttributes writtenTemp = safeAttributes(temp);
-            if (!Objects.equals(initialTemp.fileKey(), writtenTemp.fileKey()) || !initialTemp.creationTime().equals(writtenTemp.creationTime())) throw new IOException("TEMP_CHANGED");
+            // Known file keys survive provider creation-time drift; absent keys retain the timestamp fallback.
+            if (!Objects.equals(initialTemp.fileKey(), writtenTemp.fileKey())
+                    || initialTemp.fileKey() == null && !initialTemp.creationTime().equals(writtenTemp.creationTime())) throw new IOException("TEMP_CHANGED");
             if (Thread.currentThread().isInterrupted()) throw new IOException("CANCELLED");
             if (choice.existing()) {
                 if (!sameFileState(choice.original(), safeAttributes(target))) throw new IOException("TARGET_CHANGED");
