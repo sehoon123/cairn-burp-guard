@@ -550,7 +550,29 @@ class GuardPanelV2DesktopTest {
         findReachable(window, control); edt(() -> { window.toFront(); assertTrue(control.requestFocusInWindow(), control.getName()); return null; }); GuardPanelTrafficViewTest.await(control::isFocusOwner);
     }
     private static void findReachable(Window window, JComponent control) throws Exception {
-        edt(() -> { control.scrollRectToVisible(new Rectangle(0, 0, control.getWidth(), control.getHeight())); window.validate();
+        edt(() -> {
+            TrafficInspector owner = (TrafficInspector) SwingUtilities.getAncestorOfClass(TrafficInspector.class, control);
+            String field = switch (control.getName() == null ? "" : control.getName()) {
+                case "traffic.request" -> "request"; case "traffic.request.headers" -> "requestHeaders"; case "traffic.request.body" -> "requestBody";
+                case "traffic.response" -> "response"; case "traffic.response.headers" -> "responseHeaders"; case "traffic.response.body" -> "responseBody";
+                default -> "";
+            };
+            if (control instanceof JTextArea && owner != null && !field.isEmpty() && control == TrafficInspectorFindTest.field(owner, field)) {
+                JTabbedPane tabs = field.startsWith("request") ? owner.requestTabs : owner.responseTabs;
+                JScrollPane scroll = (JScrollPane) tabs.getComponentAt(field.endsWith("Headers") ? 1 : field.endsWith("Body") ? 2 : 0);
+                assertTrue(control.getParent() instanceof JViewport, control.getName());
+                JViewport viewport = (JViewport) control.getParent();
+                assertSame(scroll.getViewport(), viewport, control.getName()); assertSame(control, viewport.getView(), control.getName());
+                scroll.scrollRectToVisible(new Rectangle(0, 0, scroll.getWidth(), scroll.getHeight())); window.validate();
+                Rectangle extent = new Rectangle(0, 0, viewport.getWidth(), viewport.getHeight());
+                assertTrue(control.isShowing(), control.getName());
+                assertTrue(viewport.getExtentSize().width > 0 && viewport.getExtentSize().height > 0 && viewport.getVisibleRect().contains(extent),
+                        control.getName() + " viewport clipped " + viewport.getBounds() + " visible " + viewport.getVisibleRect());
+                Rectangle visible = viewport.getViewRect().intersection(new Rectangle(0, 0, control.getWidth(), control.getHeight()));
+                assertTrue(visible.width > 0 && visible.height > 0, control.getName()); assertEquals(visible, control.getVisibleRect(), control.getName());
+                return null;
+            }
+            control.scrollRectToVisible(new Rectangle(0, 0, control.getWidth(), control.getHeight())); window.validate();
             assertTrue(control.isShowing(), control.getName()); assertTrue(control.getWidth() > 0 && control.getHeight() > 0 && control.getVisibleRect().contains(new Rectangle(0, 0, control.getWidth(), control.getHeight())), control.getName() + " clipped " + control.getBounds() + " visible " + control.getVisibleRect()); return null; });
     }
     private static void findScreenshot(java.awt.Robot robot, Window window, String name, int font) throws Exception {
