@@ -544,7 +544,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         Path choice = dialogs.chooseExport(this, "json"); if (choice == null) return;
         ExportTarget target;
         try { target = inspectTarget(choice); } catch (IOException | RuntimeException e) { throw failure("EXPORT_TARGET_UNSAFE_OR_UNAVAILABLE"); }
-        if (target.existing() && !dialogs.confirm(this, label + " 파일로 기존 일반 파일을 덮어쓸까요? 소유자 전용 권한으로 저장합니다. 심볼릭 링크나 중간에 바뀐 파일은 덮어쓰지 않습니다.")) return;
+        if (!dialogs.confirm(this, label + " · 평문 정책 내보내기\n운영자가 작성한 민감한 값이나 비밀이 정책 원문 그대로 파일에 들어갈 수 있습니다. 소유자 전용 권한으로 저장하지만 파일을 공유·게시하지 마세요."
+                + (target.existing() ? "\n선택한 기존 일반 파일을 덮어씁니다. 심볼릭 링크나 중간에 바뀐 파일은 덮어쓰지 않습니다." : "\n새 파일을 만듭니다."), "평문 정책 내보내기")) return;
         checkRuntimeVersion(base);
         message.setText(label + " 내보내는 중…");
         exportWorker = new SwingWorker<>() {
@@ -552,7 +553,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 if (!base.matches(access.status())) throw new IOException("STALE_EXPORT");
                 String text = source.get();
                 if (isCancelled() || !base.matches(access.status())) throw new IOException("STALE_EXPORT");
-                writeAtomic(target, text); return null;
+                writeAtomic(target, text.getBytes(StandardCharsets.UTF_8), () -> {
+                    Map<String,Object> current = access.status();
+                    return !isCancelled() && !closed && !Boolean.TRUE.equals(current.get("closed")) && base.matches(current);
+                }); return null;
             }
             @Override protected void done() {
                 exportWorker = null; if (closed) return;
