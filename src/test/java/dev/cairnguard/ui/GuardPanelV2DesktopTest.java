@@ -16,6 +16,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import java.util.stream.Stream;
 import static dev.cairnguard.ui.GuardPanelV2Test.edt;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -262,4 +266,130 @@ class GuardPanelV2DesktopTest {
     private static void awaitClosed(JDialog d)throws Exception{long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(System.nanoTime()<until){if(!edt(d::isShowing))return;Thread.sleep(10);}fail("owned modal did not close");}
     private static <T>T get(Component c,String name,Class<T> type){return type.cast(java.util.Objects.requireNonNull(GuardPanelV2Test.find(c,name),name));}
     private static void fonts(Component c,int size){if(c.getFont()!=null)c.setFont(c.getFont().deriveFont((float)size));if(c instanceof Container p)for(Component child:p.getComponents())fonts(child,size);}
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("originalPolicyDesktopCases")
+    void originalPolicyExportUsesRealChooserPlaintextConsentAndLateRefusal(String row, boolean review, boolean existing, boolean accept, boolean late, @TempDir Path directory) throws Exception {
+        assertFalse(java.awt.GraphicsEnvironment.isHeadless(), "these rows require actual isolated Swing");
+        PolicyExportModal consent = new PolicyExportModal();
+        try (GuardPanelV2Test.PolicyExportFixture f = new GuardPanelV2Test.PolicyExportFixture(directory, existing, consent)) {
+            JFrame frame = edt(() -> {
+                JFrame view = new JFrame("Synthetic original-policy export");
+                view.setContentPane(f.panel); view.setSize(1000, 760); view.setVisible(true); return view;
+            });
+            try {
+                if (late) f.access.late = GuardPanelV2Test.PolicyTransition.PROJECT;
+                if (review) {
+                    asyncClick(f.panel, "migration.review");
+                    JDialog editor = await("editor.dialog");
+                    edt(() -> {
+                        JTextArea original = get(editor, "migration.original", JTextArea.class);
+                        assertEquals(f.original, original.getText(), "review export retains the captured original, not a later project");
+                        assertFalse(original.isEditable());
+                        assertFalse(get(editor, "migration.removeLegacy", JCheckBox.class).isSelected());
+                        return null;
+                    });
+                    asyncClick(editor, "migration.exportInReview");
+                } else asyncClick(f.panel, "migration.exportOriginal");
+                JDialog chooserDialog = awaitPolicyChooser();
+                JButton save = edt(() -> {
+                    JFileChooser chooser = policyChooser(chooserDialog);
+                    assertNotNull(chooser); chooser.setSelectedFile(f.target.toFile());
+                    JButton button = policyButtonWithText(chooser, chooser.getUI().getApproveButtonText(chooser));
+                    assertNotNull(button, "the actual chooser Save button must be reachable");
+                    assertTrue(button.isEnabled()); assertNotNull(button.getAccessibleContext().getAccessibleName());
+                    return button;
+                });
+                SwingUtilities.invokeLater(() -> save.doClick(0));
+                awaitClosed(chooserDialog);
+                JDialog prompt = awaitPolicyPromptOrResult(f, consent);
+                if (prompt != null) {
+                    edt(() -> {
+                        assertTrue(prompt.isModal());
+                        JButton cancel = get(prompt, "dialog.cancel", JButton.class), confirm = get(prompt, "dialog.confirm", JButton.class);
+                        assertSame(cancel, prompt.getRootPane().getDefaultButton(), "Cancel is the safe default for every selected file");
+                        for (JButton button : List.of(cancel, confirm)) {
+                            assertTrue(button.isEnabled()); assertTrue(button.isShowing());
+                            assertNotNull(button.getAccessibleContext().getAccessibleName());
+                        }
+                        (accept ? confirm : cancel).doClick(0); return null;
+                    });
+                    awaitClosed(prompt);
+                }
+                if (accept || prompt == null) f.awaitResult(consent.errors);
+                else assertFalse(f.inProgress(), "actual plaintext Cancel must not start publication");
+                if (late) {
+                    assertNull(f.access.transitionFailure, "the late fixture must be valid");
+                    assertTrue(f.access.transitionReached, "the real controller transition must be reached before publication assertions");
+                }
+                f.assertProtectedState();
+                System.out.printf("POLICY_EXPORT_DESKTOP %s scale=%s realChooser=true prompts=%d intendedAccept=%s transitionReached=%s completed=%s%n", row, System.getProperty("sun.java2d.uiScale"), consent.confirmations.size(), accept, f.access.transitionReached, f.completed());
+                assertAll(() -> f.assertTarget(accept && !late), () -> GuardPanelV2Test.assertPolicyConsent(consent.confirmations, existing));
+            } finally {
+                edt(() -> { frame.dispose(); return null; });
+            }
+        }
+    }
+
+    static Stream<Arguments> originalPolicyDesktopCases() {
+        return Stream.of(Arguments.of("D1", false, false, false, false), Arguments.of("D2", true, false, true, false),
+                Arguments.of("D3", false, true, true, false), Arguments.of("D4", true, true, false, false),
+                Arguments.of("D5", false, false, true, true), Arguments.of("D6", true, true, true, true));
+    }
+
+    private static JDialog awaitPolicyChooser() throws Exception {
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < until) {
+            JDialog dialog = edt(() -> {
+                for (Window window : Window.getWindows())
+                    if (window instanceof JDialog candidate && candidate.isShowing() && policyChooser(candidate) != null) return candidate;
+                return null;
+            });
+            if (dialog != null) return dialog;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("the actual original-policy chooser did not open; this is not a behavioral red");
+    }
+
+    private static JDialog awaitPolicyPromptOrResult(GuardPanelV2Test.PolicyExportFixture fixture, PolicyExportModal consent) throws Exception {
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+        while (System.nanoTime() < until) {
+            JDialog prompt = edt(() -> {
+                for (Window window : Window.getWindows())
+                    if (window instanceof JDialog candidate && candidate.isShowing() && "message.dialog".equals(candidate.getName())) return candidate;
+                return null;
+            });
+            if (prompt != null) return prompt;
+            if (fixture.completed() || edt(() -> !consent.errors.isEmpty())) return null;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("neither an actual prompt nor a completed export/error was observed; this is not a behavioral red");
+    }
+
+    private static JFileChooser policyChooser(Component root) {
+        if (root instanceof JFileChooser chooser) return chooser;
+        if (root instanceof Container parent) for (Component child : parent.getComponents()) {
+            JFileChooser chooser = policyChooser(child); if (chooser != null) return chooser;
+        }
+        return null;
+    }
+
+    private static JButton policyButtonWithText(Component root, String text) {
+        if (root instanceof JButton button && text.equals(button.getText())) return button;
+        if (root instanceof Container parent) for (Component child : parent.getComponents()) {
+            JButton button = policyButtonWithText(child, text); if (button != null) return button;
+        }
+        return null;
+    }
+
+    private static final class PolicyExportModal implements GuardPanel.Dialogs {
+        final GuardPanel.SwingDialogs real = new GuardPanel.SwingDialogs();
+        final List<String> confirmations = new ArrayList<>(), errors = new ArrayList<>();
+        @Override public Path chooseExport(Component parent, String extension) { return real.chooseExport(parent, extension); }
+        @Override public boolean confirm(Component parent, String text) { confirmations.add(text); return real.confirm(parent, text); }
+        @Override public boolean confirm(Component parent, String text, String label) { confirmations.add(text); return real.confirm(parent, text, label); }
+        @Override public void error(Component parent, String text) { errors.add(text); }
+        @Override public void edit(Component parent, String title, String label, EditorForm<?> form, Runnable save) { real.edit(parent, title, label, form, save); }
+        @Override public void closeEditors() { real.closeEditors(); }
+    }
 }

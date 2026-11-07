@@ -28,6 +28,15 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
+import dev.cairnguard.runtime.GuardController;
+import dev.cairnguard.runtime.ProjectAccess;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
+import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Human-only v2 synthetic workflows. No Burp/native/network or live desktop session is used. */
@@ -397,5 +406,300 @@ class GuardPanelV2Test {
         @Override public Map<String,Object> rawCaptureInfo(String id){return rawUnavailable?Map.of("available",false):store.rawCaptureInfo(id);}
         void legacy(){GuardConfig d=GuardConfig.defaults();original=PolicyCodec.encodeLegacy(new GuardConfig(1,List.of(),List.of(),List.of(d.rules().getFirst(),new Rule("delete-string","Block delete string (conservative)",true,Mode.BLOCK,Condition.leaf(Field.ANY,Match.CONTAINS,"delete"))),Mode.ALLOW,new Limits(5,5,Map.of(),5,100,30000,30000,60000)));PolicyCodec.Decoded decoded=PolicyCodec.decode(original);policy=decoded.config();pendingMigration=true;}
         String addRaw(String intent,String run,String outcome){RequestData r=new RequestData("POST","https://example.test/x?token="+SECRET,"example.test",443,true,List.of(new RequestData.Header("Authorization","Bearer "+SECRET),new RequestData.Header("Cookie","session="+SECRET),new RequestData.Header("X-Broker-Grant",SECRET),new RequestData.Header("X-Cairn-Intent",intent),new RequestData.Header("X-Cairn-Run",run)),("body "+SECRET).getBytes(StandardCharsets.UTF_8));String id=store.begin("p","Synthetic",r,new Decision(Mode.ALLOW,"DEFAULT_ALLOW",List.of(),List.of("BODY_INSPECTION_UNAVAILABLE_UNSUPPORTED_CHARSET","PATH_INTERPRETATION_INCOMPLETE")),7);store.outcome(id,"FORWARDED","NATIVE_RELEASED",200);store.context(id,outcome,"PROTECTED","");store.response(id,200,List.of(),("response "+SECRET).getBytes(StandardCharsets.UTF_8));return id;}
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("originalPolicyConsentCases")
+    void originalPolicyExportRequiresPerFilePlaintextConsent(String row, boolean review, boolean existing, boolean accept) throws Exception {
+        PolicyExportDialogs consent = new PolicyExportDialogs();
+        consent.accept = accept;
+        try (PolicyExportFixture f = new PolicyExportFixture(directory, existing, consent)) {
+            consent.fixture = f;
+            f.exportFromComponent(review);
+            if (accept || consent.confirmations.isEmpty()) f.awaitResult(consent.errors);
+            else assertFalse(f.inProgress(), "declining the actual prompt must not start an export");
+            f.assertProtectedState();
+            System.out.printf("POLICY_EXPORT_ROW %s prompts=%d intendedAccept=%s completed=%s%n", row, consent.confirmations.size(), accept, f.completed());
+            assertAll(() -> f.assertTarget(accept), () -> assertPolicyConsent(consent.confirmations, existing));
+        }
+    }
+
+    static Stream<Arguments> originalPolicyConsentCases() {
+        return Stream.of(
+                Arguments.of("P1", false, false, false), Arguments.of("P2", true, false, false),
+                Arguments.of("P3", false, false, true), Arguments.of("P4", true, false, true),
+                Arguments.of("P5", false, true, false), Arguments.of("P6", true, true, false),
+                Arguments.of("P7", false, true, true), Arguments.of("P8", true, true, true));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("originalPolicyLateCases")
+    void originalPolicyExportRejectsAReachedLateSourceOrControllerTransition(String row, boolean review, boolean existing, PolicyTransition transition) throws Exception {
+        PolicyExportDialogs consent = new PolicyExportDialogs();
+        try (PolicyExportFixture f = new PolicyExportFixture(directory, existing, consent)) {
+            consent.fixture = f;
+            f.access.late = transition;
+            f.exportFromComponent(review);
+            f.awaitResult(consent.errors);
+            assertNull(f.access.transitionFailure, "the declared fixture transition must not fail");
+            assertTrue(f.access.transitionReached, "the real controller transition must be reached before testing publication");
+            f.assertProtectedState();
+            System.out.printf("POLICY_EXPORT_ROW %s prompts=%d acceptedAllActualPrompts=true transitionReached=true completed=%s%n", row, consent.confirmations.size(), f.completed());
+            f.assertTarget(false);
+            assertPolicyConsent(consent.confirmations, existing);
+        }
+    }
+
+    static Stream<Arguments> originalPolicyLateCases() {
+        return Stream.of(Arguments.of("L1", false, false, PolicyTransition.PROJECT),
+                Arguments.of("L2", true, true, PolicyTransition.PROJECT),
+                Arguments.of("L3", false, true, PolicyTransition.REVISION),
+                Arguments.of("L4", true, false, PolicyTransition.CONTROLLER_CLOSE));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"C1", "C2", "C3", "C4"})
+    void originalPolicyExportPreservesChooserAndEarlierStaleCancellationControls(String row) throws Exception {
+        boolean existing = row.equals("C3") || row.equals("C4");
+        PolicyExportDialogs consent = new PolicyExportDialogs();
+        try (PolicyExportFixture f = new PolicyExportFixture(directory, existing, consent)) {
+            consent.fixture = f;
+            switch (row) {
+                case "C1" -> consent.cancelChooser = true;
+                case "C2" -> consent.onChoose = () -> f.transitionUnchecked(PolicyTransition.PROJECT);
+                case "C3" -> consent.onConfirm = () -> f.transitionUnchecked(PolicyTransition.REVISION);
+                case "C4" -> consent.onConfirm = () -> {
+                    f.panel.close(); f.panelClosedByFixture = true;
+                };
+                default -> throw new AssertionError(row);
+            }
+            f.exportFromComponent(row.equals("C2") || row.equals("C4"));
+            assertFalse(f.inProgress(), "chooser cancellation or an earlier stale check must not start a worker");
+            if (row.equals("C1")) {
+                assertTrue(consent.confirmations.isEmpty()); assertTrue(consent.errors.isEmpty());
+            } else {
+                assertFalse(consent.errors.isEmpty(), "the stale action must be reported");
+                if (row.equals("C4")) assertTrue(f.panelClosedByFixture);
+                else assertEquals(1, f.fixtureTransitions, "the explicit early fixture transition was reached");
+            }
+            f.assertProtectedState();
+            f.assertTarget(false);
+            System.out.printf("POLICY_EXPORT_ROW %s prompts=%d fixtureTransitions=%d panelClosed=%s noPublication=true%n", row, consent.confirmations.size(), f.fixtureTransitions, f.panelClosedByFixture);
+        }
+    }
+
+    static void assertPolicyConsent(List<String> confirmations, boolean existing) {
+        assertEquals(1, confirmations.size(), "each selected original-policy file needs one plaintext confirmation, including a NEW file");
+        String text = confirmations.getFirst();
+        assertAll(() -> assertTrue(text.contains("평문"), "the warning must disclose plaintext"),
+                () -> assertTrue(text.contains("운영자") && text.contains("작성"), "the source is operator-authored policy"),
+                () -> assertTrue(text.contains("민감") || text.contains("비밀"), "operator-authored sensitive values remain literal"),
+                () -> assertTrue(text.contains("소유자 전용"), "publication uses owner-only permissions"),
+                () -> assertTrue(text.contains("공유") && text.contains("게시"), "warn against sharing or publishing the file"),
+                () -> assertTrue(text.contains(existing ? "덮어" : "새 파일"), "the warning must identify overwrite versus new-file publication"),
+                () -> assertFalse(text.contains("콜백") || text.contains("wire") || text.contains("검사 사본"), "policy is not a traffic callback or wire capture"));
+    }
+
+    enum PolicyTransition { NONE, PROJECT, REVISION, CONTROLLER_CLOSE }
+
+    static final class PolicyExportFixture implements AutoCloseable {
+        final Path directory, target;
+        final boolean existing, posix;
+        final byte[] previous = "기존 파일 그대로 · [REDACTED]\n".getBytes(StandardCharsets.UTF_8);
+        final Set<PosixFilePermission> previousMode;
+        final PolicyProjects projects = new PolicyProjects();
+        final GuardController controller = new GuardController(projects);
+        final PolicyExportAccess access = new PolicyExportAccess(this);
+        final GuardPanel panel;
+        final String original = projects.documents.get("policy-A");
+        volatile PolicyExportState expected;
+        int fixtureTransitions;
+        boolean panelClosedByFixture;
+
+        PolicyExportFixture(Path directory, boolean existing, GuardPanel.Dialogs dialogs) throws Exception {
+            this.directory = directory; this.existing = existing; target = directory.resolve("original-policy.json");
+            posix = Files.getFileStore(directory).supportsFileAttributeView("posix");
+            if (existing) {
+                Files.write(target, previous);
+                if (posix) Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rw-r-----"));
+            }
+            previousMode = existing && posix ? Set.copyOf(Files.getPosixFilePermissions(target)) : Set.of();
+            panel = edt(() -> new GuardPanel(access, dialogs, false));
+            expected = state();
+            assertEquals(original, controller.migrationView().get("original"));
+            assertEquals(true, controller.migrationView().get("pending"));
+            assertTrue(original.endsWith("\n") && original.contains("눈") && original.contains("[REDACTED]"));
+        }
+
+        void exportFromComponent(boolean review) throws Exception {
+            edt(() -> { policyClick(panel, review ? "migration.review" : "migration.exportOriginal"); return null; });
+        }
+
+        boolean completed() throws Exception { return edt(() -> ((JLabel) find(panel, "message")).getText().contains("내보내기 완료")); }
+        boolean inProgress() throws Exception { return edt(() -> ((JLabel) find(panel, "message")).getText().contains("내보내는 중")); }
+        void awaitResult(List<String> errors) throws Exception {
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (System.nanoTime() < until) {
+                if (completed() || edt(() -> !errors.isEmpty())) return;
+                Thread.sleep(10);
+            }
+            fail("original-policy export did not reach completion or a reported error; this is not a behavioral red");
+        }
+
+        void assertTarget(boolean published) throws Exception {
+            boolean present = Files.exists(target);
+            byte[] actual = present ? Files.readAllBytes(target) : null;
+            Set<PosixFilePermission> mode = present && posix ? Files.getPosixFilePermissions(target) : Set.of();
+            List<Path> children;
+            try (var entries = Files.list(directory)) { children = entries.sorted().toList(); }
+            System.out.printf("POLICY_EXPORT_TARGET existing=%s expectedPublished=%s present=%s mode=%s originalBase64=%s previousBase64=%s actualBase64=%s%n", existing, published, present, mode,
+                    java.util.Base64.getEncoder().encodeToString(original.getBytes(StandardCharsets.UTF_8)), java.util.Base64.getEncoder().encodeToString(previous),
+                    actual == null ? "ABSENT" : java.util.Base64.getEncoder().encodeToString(actual));
+            assertAll(() -> assertEquals(existing || published ? List.of(target) : List.of(), children, "no temporary or reservation file may remain"),
+                    () -> {
+                        if (published || existing) assertArrayEquals(published ? original.getBytes(StandardCharsets.UTF_8) : previous, actual, "compare the complete original UTF8 bytes, not displayed or migrated text");
+                        else assertFalse(present, "a stale or declined new file must not be published");
+                    },
+                    () -> {
+                        if ((published || existing) && posix) assertEquals(published ? PosixFilePermissions.fromString("rw-------") : previousMode, mode, "publication is 0600; refusal preserves the selected target's mode");
+                    });
+        }
+
+        PolicyExportState state() {
+            Map<String,Object> status = controller.status();
+            return new PolicyExportState(controller.config(), Map.copyOf(controller.migrationView()),
+                    Map.of("projectId", status.get("projectId"), "revision", status.get("revision"), "closed", status.get("closed"),
+                            "guardState", status.get("guardState"), "paused", status.get("paused"), "operatorPaused", status.get("operatorPaused"), "passthrough", status.get("passthrough")),
+                    projects.documents, projects.loads, projects.saves);
+        }
+
+        void assertProtectedState() {
+            assertEquals(expected, state(), "export must not save, load a new policy at its final checkpoint, or change controller state beyond explicit fixture transitions");
+            assertEquals(0, access.mutations, "no export-triggered control or save action");
+            assertEquals(0, projects.saves);
+            assertTrue(controller.approvals().isEmpty()); assertTrue(controller.traffic().isEmpty());
+            assertEquals(original, projects.documents.get("policy-A"), "the stored original remains exact");
+        }
+
+        void transitionUnchecked(PolicyTransition transition) {
+            try { transition(transition, controller.status()); }
+            catch (Exception e) { throw new AssertionError("explicit fixture transition failed", e); }
+        }
+
+        void transition(PolicyTransition transition, Map<String,Object> observed) throws Exception {
+            assertTarget(false);
+            Map<String,Object> before = controller.status();
+            assertEquals(before.get("projectId"), observed.get("projectId"));
+            assertEquals(before.get("revision"), observed.get("revision"));
+            assertEquals(false, before.get("closed"));
+            switch (transition) {
+                case PROJECT -> { projects.project = "policy-B"; controller.refreshProject(); }
+                case REVISION -> controller.pause(true);
+                case CONTROLLER_CLOSE -> controller.close();
+                default -> throw new AssertionError("no transition declared");
+            }
+            Map<String,Object> after = controller.status();
+            if (transition == PolicyTransition.PROJECT) {
+                assertEquals("policy-B", after.get("projectId"));
+                assertEquals(projects.documents.get("policy-B"), controller.migrationView().get("original"));
+                assertTrue(((Number) after.get("revision")).longValue() > ((Number) before.get("revision")).longValue());
+            } else {
+                assertEquals(before.get("projectId"), after.get("projectId"));
+                if (transition == PolicyTransition.CONTROLLER_CLOSE) {
+                    assertEquals(before.get("revision"), after.get("revision"), "controller close does not advance revision");
+                    assertEquals(true, after.get("closed")); assertEquals("SHUTDOWN", after.get("guardState"));
+                } else assertTrue(((Number) after.get("revision")).longValue() > ((Number) before.get("revision")).longValue());
+            }
+            assertTarget(false);
+            fixtureTransitions++;
+            expected = state();
+            System.out.printf("POLICY_EXPORT_TRANSITION kind=%s oldProject=%s oldRevision=%s project=%s revision=%s closed=%s targetPristine=true%n", transition, before.get("projectId"), before.get("revision"), after.get("projectId"), after.get("revision"), after.get("closed"));
+        }
+
+        @Override public void close() {
+            try { edt(() -> { panel.close(); controller.close(); return null; }); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError("owned policy UI cleanup interrupted", e); }
+            catch (Exception e) { throw new AssertionError("owned policy UI cleanup failed", e); }
+        }
+    }
+
+    record PolicyExportState(GuardConfig policy, Map<String,Object> migration, Map<String,Object> lifecycle,
+                             Map<String,String> documents, int loads, int saves) {}
+
+    static final class PolicyProjects implements ProjectAccess {
+        volatile String project = "policy-A";
+        final Map<String,String> documents = Map.of("policy-A", originalPolicy("A"), "policy-B", originalPolicy("B"));
+        int loads, saves;
+        @Override public Ref current() { return new Ref(project, "Synthetic original-policy project"); }
+        @Override public String load() { loads++; return documents.get(project); }
+        @Override public void save(String json) { saves++; throw new AssertionError("export must never save policy"); }
+        static String originalPolicy(String marker) {
+            GuardConfig d = GuardConfig.defaults();
+            return PolicyCodec.encodeLegacy(new GuardConfig(1, List.of(new ScopeEntry(true, "example.test", "https", 443, "")), List.of(),
+                    List.of(d.rules().getFirst(), new Rule("synthetic-authored", "운영자 원본 " + marker + " · 눈 [REDACTED]", true, Mode.BLOCK,
+                                    Condition.leaf(Field.ANY, Match.CONTAINS, "synthetic-policy-value-" + marker + "-비밀-[REDACTED]")),
+                            new Rule("delete-string", "Block delete string (conservative)", true, Mode.BLOCK, Condition.leaf(Field.ANY, Match.CONTAINS, "delete"))),
+                    Mode.ALLOW, new Limits(5, 5, Map.of(), 5, 100, 30000, 30000, 60000))) + "\n";
+        }
+    }
+
+    static final class PolicyExportAccess implements GuardUiAccess {
+        final PolicyExportFixture fixture;
+        volatile PolicyTransition late = PolicyTransition.NONE;
+        volatile boolean transitionReached;
+        volatile Throwable transitionFailure;
+        int workerObservations, mutations;
+        PolicyExportAccess(PolicyExportFixture fixture) { this.fixture = fixture; }
+        @Override public GuardConfig config() { return fixture.controller.config(); }
+        @Override public Map<String,Object> status() {
+            Map<String,Object> observed = fixture.controller.status();
+            // Inject after the baseline worker's last immutable source observation, not before consent.
+            if (!SwingUtilities.isEventDispatchThread() && late != PolicyTransition.NONE && ++workerObservations == 2) {
+                try { fixture.transition(late, observed); transitionReached = true; }
+                catch (Exception | AssertionError e) { transitionFailure = e; throw new AssertionError("late fixture transition failed", e); }
+            }
+            return observed;
+        }
+        @Override public void refreshProject() { fixture.controller.refreshProject(); }
+        @Override public Map<String,Object> migrationView() { return fixture.controller.migrationView(); }
+        @Override public List<TrafficEntry> traffic() { return fixture.controller.traffic(); }
+        @Override public List<Pending> approvals() { return fixture.controller.approvals(); }
+        private void mutation() { mutations++; throw new AssertionError("original-policy export must not call a control or persistence action"); }
+        @Override public void updateConfig(GuardConfig policy, String project, long revision) { mutation(); }
+        @Override public boolean decideApproval(String id, boolean allow) { mutation(); return false; }
+        @Override public void bookmark(String id, boolean value) { mutation(); }
+        @Override public void clearEvidence() { mutation(); }
+        @Override public void pause(boolean value) { mutation(); }
+        @Override public void passthrough(boolean value, String project, long revision) { mutation(); }
+        @Override public void resetIntentBudgets(String project, long revision) { mutation(); }
+        @Override public String exportJson(List<TrafficEntry> rows) { throw new AssertionError("not a traffic export"); }
+        @Override public String exportHar(List<TrafficEntry> rows) { throw new AssertionError("not a traffic export"); }
+    }
+
+    static final class PolicyExportDialogs implements GuardPanel.Dialogs {
+        PolicyExportFixture fixture;
+        boolean accept = true, cancelChooser;
+        Runnable onChoose = () -> {}, onConfirm = () -> {};
+        final List<String> confirmations = new ArrayList<>(), errors = new ArrayList<>();
+        @Override public Path chooseExport(Component parent, String extension) {
+            assertTrue(SwingUtilities.isEventDispatchThread()); assertEquals("json", extension);
+            onChoose.run(); return cancelChooser ? null : fixture.target;
+        }
+        @Override public boolean confirm(Component parent, String text) {
+            assertTrue(SwingUtilities.isEventDispatchThread()); confirmations.add(text); onConfirm.run(); return accept;
+        }
+        @Override public void error(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); errors.add(text); }
+        @Override public void edit(Component parent, String title, String label, EditorForm<?> form, Runnable save) {
+            JTextArea original = (JTextArea) find(form.component(), "migration.original");
+            assertEquals(fixture.original, original.getText(), "the review retains its captured original");
+            assertFalse(original.isEditable());
+            assertFalse(((JCheckBox) find(form.component(), "migration.removeLegacy")).isSelected());
+            policyClick(form.component(), "migration.exportInReview");
+        }
+    }
+
+    static void policyClick(Component root, String name) {
+        JButton button = (JButton) java.util.Objects.requireNonNull(find(root, name), name);
+        assertTrue(button.isEnabled(), name); button.doClick(0);
     }
 }
