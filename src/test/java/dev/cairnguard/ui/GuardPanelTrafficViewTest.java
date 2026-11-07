@@ -207,7 +207,7 @@ class GuardPanelTrafficViewTest {
     @Test void clearingOrReplacingPreviewBlanksDetachedDocumentsHeldByAWindowObserver() throws Exception {
         var projection = HtmlPreview.scan("<h1>synthetic-preview-plaintext</h1><table><tr><td>cell-secret</td></tr></table>", () -> false);
         edt(() -> {
-            TrafficInspector inspector = new TrafficInspector(() -> {}, () -> {}, () -> {});
+            TrafficInspector inspector = new TrafficInspector(() -> {}, () -> {}, () -> {}, () -> {});
             inspector.preview(projection);
             JPanel oldRoot = (JPanel) GuardPanelV2Test.find(inspector, "traffic.preview.document");
             JTextPane retainedHeading = (JTextPane) GuardPanelV2Test.find(oldRoot, "traffic.preview.h1");
@@ -780,7 +780,67 @@ class GuardPanelTrafficViewTest {
                             case "selection" -> {
                                 for (int i = 0; i < f.table().getRowCount(); i++) if (f.table().getValueAt(i, 3).toString().endsWith("/find-b")) f.table().setRowSelectionInterval(i, i);
                             }
-                            case "sameIdEqualResponseMessage" -> { f.access.store.response(f.id, 200, List.of(new RequestData.Header("X-Find", "needle needle"), new RequestData.Header("Content-Type", "text/html; charset=UTF-8")), "banana needle needle".getBytes(StandardCharsets.UTF_8)); f.panel.refreshNow(); }
+                            case "sameIdEqualResponseMessage" -> {
+                                JTable table = f.table();
+                                var model = (javax.swing.table.TableModel) TrafficInspectorFindTest.field(f.panel, "trafficModel");
+                                var previousRows = (List<?>) TrafficInspectorFindTest.field(model, "rows");
+                                var previous = f.access.rows().stream().filter(e -> e.id().equals(f.id)).findFirst().orElseThrow();
+                                int selectedView = table.getSelectedRow(); assertTrue(selectedView >= 0);
+                                var selected = (dev.cairnguard.evidence.TrafficEntry) previousRows.get(table.convertRowIndexToModel(selectedView));
+                                assertEquals(f.id, selected.id()); assertSame(previous, selected);
+                                var ids = previousRows.stream().map(e -> ((dev.cairnguard.evidence.TrafficEntry) e).id()).toList();
+                                int[] selectedViews = table.getSelectedRows();
+                                var selectedIds = java.util.Arrays.stream(selectedViews).mapToObj(v -> ((dev.cairnguard.evidence.TrafficEntry) previousRows.get(table.convertRowIndexToModel(v))).id()).toList();
+                                var cells = new java.util.ArrayList<List<Object>>();
+                                var viewCells = new java.util.ArrayList<List<Object>>();
+                                for (int i = 0; i < model.getRowCount(); i++) {
+                                    var values = new java.util.ArrayList<Object>();
+                                    for (int c = 0; c < model.getColumnCount(); c++) values.add(model.getValueAt(i, c));
+                                    cells.add(values);
+                                }
+                                for (int i = 0; i < table.getRowCount(); i++) {
+                                    var values = new java.util.ArrayList<Object>();
+                                    for (int c = 0; c < table.getColumnCount(); c++) values.add(table.getValueAt(i, c));
+                                    viewCells.add(values);
+                                }
+                                int lead = table.getSelectionModel().getLeadSelectionIndex(), anchor = table.getSelectionModel().getAnchorSelectionIndex();
+                                boolean adjusting = table.getSelectionModel().getValueIsAdjusting();
+                                var sortKeys = new java.util.ArrayList<>(table.getRowSorter().getSortKeys());
+                                int[] mapping = java.util.stream.IntStream.range(0, table.getRowCount()).map(table::convertRowIndexToModel).toArray();
+                                var events = new java.util.concurrent.atomic.AtomicInteger();
+                                javax.swing.event.TableModelListener listener = event -> events.incrementAndGet();
+                                model.addTableModelListener(listener);
+                                try {
+                                    f.access.store.response(f.id, 200, List.of(new RequestData.Header("X-Find", "needle needle"), new RequestData.Header("Content-Type", "text/html; charset=UTF-8")), "banana needle needle".getBytes(StandardCharsets.UTF_8));
+                                    var latest = f.access.rows().stream().filter(e -> e.id().equals(f.id)).findFirst().orElseThrow();
+                                    assertNotSame(previous, latest); assertEquals(previous, latest);
+                                    assertNotSame(previous.responseCapture(), latest.responseCapture()); assertEquals(previous.responseCapture(), latest.responseCapture());
+                                    assertSame(previous.requestCapture(), latest.requestCapture());
+                                    f.panel.refreshNow();
+                                    var currentRows = (List<?>) TrafficInspectorFindTest.field(model, "rows");
+                                    assertEquals(0, events.get(), "value-equal refresh must not fire a TableModelEvent");
+                                    assertEquals(ids, currentRows.stream().map(e -> ((dev.cairnguard.evidence.TrafficEntry) e).id()).toList());
+                                    assertArrayEquals(selectedViews, table.getSelectedRows());
+                                    assertEquals(selectedIds, java.util.Arrays.stream(table.getSelectedRows()).mapToObj(v -> ((dev.cairnguard.evidence.TrafficEntry) currentRows.get(table.convertRowIndexToModel(v))).id()).toList());
+                                    assertEquals(lead, table.getSelectionModel().getLeadSelectionIndex()); assertEquals(anchor, table.getSelectionModel().getAnchorSelectionIndex());
+                                    assertEquals(adjusting, table.getSelectionModel().getValueIsAdjusting()); assertEquals(sortKeys, table.getRowSorter().getSortKeys());
+                                    assertArrayEquals(mapping, java.util.stream.IntStream.range(0, table.getRowCount()).map(table::convertRowIndexToModel).toArray());
+                                    assertEquals(cells.size(), model.getRowCount()); assertEquals(viewCells.size(), table.getRowCount());
+                                    for (int i = 0; i < cells.size(); i++) for (int c = 0; c < cells.get(i).size(); c++) assertEquals(cells.get(i).get(c), model.getValueAt(i, c));
+                                    for (int i = 0; i < viewCells.size(); i++) for (int c = 0; c < viewCells.get(i).size(); c++) assertEquals(viewCells.get(i).get(c), table.getValueAt(i, c));
+                                    var currentSelected = (dev.cairnguard.evidence.TrafficEntry) currentRows.get(table.convertRowIndexToModel(table.getSelectedRow()));
+                                    assertEquals(f.id, currentSelected.id());
+                                    System.out.println("FIND_IDENTITY_CONTROLS " + row + " producerDistinctEqual=true requestSame=true dataEvents=0 cellsIdsSelectionSortMappingAdjusting=unchanged beforeReleaseOrAwait=true");
+                                    assertSame(latest.responseCapture(), currentSelected.responseCapture(), "latest store Message must replace previous value-equal selected model Message for " + row + " id=" + f.id + " selectedIsPrevious=" + (currentSelected.responseCapture() == previous.responseCapture()));
+                                    assertSame(latest, currentSelected);
+                                    assertSame(latest.responseCapture(), TrafficInspectorFindTest.recordValue(TrafficInspectorFindTest.field(f.panel, "presentationKey"), "response"));
+                                    for (TrafficInspector root : List.of(f.inspector, popout.inspector())) {
+                                        assertEquals("", TrafficInspectorFindTest.query(root).getText()); assertFalse(TrafficInspectorFindTest.bar(root).isVisible());
+                                        assertFalse(TrafficInspectorFindTest.pending(root)); assertNull(TrafficInspectorFindTest.field(TrafficInspectorFindTest.findState(root), "active"));
+                                        for (String field : TrafficInspectorFindTest.FIELDS) assertEquals(0, TrafficInspectorFindTest.area(root, field).getHighlighter().getHighlights().length);
+                                    }
+                                } finally { model.removeTableModelListener(listener); }
+                            }
                             case "syntheticFirstLine" -> { f.urlOverride.set("https://example.test/changed-first-line"); f.panel.refreshNow(); }
                             case "metadataChange" -> { f.access.store.context(f.id, "exempt", "PROTECTED", "synthetic-metadata"); f.panel.refreshNow(); }
                             case "filterHideThenRestore" -> { TrafficInspectorFindTest.ui(f.panel, "traffic.method", JTextField.class).setText("NO-MATCH"); TrafficInspectorFindTest.ui(f.panel, "traffic.method", JTextField.class).setText(""); }

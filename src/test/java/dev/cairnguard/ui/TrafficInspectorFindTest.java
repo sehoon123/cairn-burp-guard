@@ -132,7 +132,21 @@ class TrafficInspectorFindTest {
                     if (eligible) {
                         search(f.inspector, field, suffix.equals("Raw") ? "inspection projection" : "needle");
                         if (suffix.equals("Raw")) assertTrue(edt(() -> area(f.inspector, field).getHighlighter().getHighlights().length == 1));
-                        else if (m.bodyEncoding().equals("EMPTY")) assertNoMatch(f.inspector);
+                        else if (suffix.equals("Headers")) {
+                            String headers = m.headers().stream().map(h -> h.name() + ": " + h.value() + "\n").collect(java.util.stream.Collectors.joining());
+                            edt(() -> { assertEquals(headers, area(f.inspector, field).getText()); assertEquals(headers.length(), area(f.inspector, field).getDocument().getLength()); return null; });
+                            if (headers.isEmpty()) {
+                                assertNoMatch(f.inspector);
+                                edt(() -> { assertFalse(ui(f.inspector, "traffic.find.previous", JButton.class).isEnabled()); assertEquals(0, area(f.inspector, field).getHighlighter().getHighlights().length); return null; });
+                            } else {
+                                int start = switch (m.headers().getFirst().name()) { case "X-Find" -> 8; case "Retained" -> 10; case "Known" -> 7; default -> throw new AssertionError(m.headers()); };
+                                assertRange(area(f.inspector, field), start, 6);
+                                edt(() -> { assertTrue(status(f.inspector).contains("Found")); assertTrue(ui(f.inspector, "traffic.find.previous", JButton.class).isEnabled()); assertTrue(ui(f.inspector, "traffic.find.next", JButton.class).isEnabled()); return null; });
+                            }
+                        } else if (m.bodyEncoding().equals("EMPTY")) {
+                            assertNoMatch(f.inspector);
+                            edt(() -> { assertEquals("", area(f.inspector, field).getText()); assertEquals(0, area(f.inspector, field).getDocument().getLength()); assertFalse(ui(f.inspector, "traffic.find.previous", JButton.class).isEnabled()); assertEquals(0, area(f.inspector, field).getHighlighter().getHighlights().length); return null; });
+                        }
                     }
                 }
             }
