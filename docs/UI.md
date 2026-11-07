@@ -168,6 +168,44 @@ pending은 현재 query의 알려진 hit만 보여주며 실패도 현재 query�
 원문 소실과 기존 project/revision 검사는 여전히 내보내기를 무효화할 수 있습니다.
 RE2도 CPU·heap·취소 지연의 고정 상한은 보장하지 않습니다.
 
+## 선택한 메시지에서 찾기
+
+요청 기록의 검색창은 표시할 행을 고릅니다. 메시지의 **찾기 (Find)**는 선택한 행의
+요청 또는 응답에서 현재 보이는 한 필드만 찾습니다.
+
+1. 요청이나 응답에서 **Raw inspection**, **Headers**, **Body / HEX** 중 하나를 선택합니다.
+2. 그쪽의 **찾기 (Find)**를 누릅니다. 해당 텍스트에 포커스가 있으면 Ctrl+F 또는 Cmd+F도 사용할 수 있습니다.
+3. **Find literal**에 문자열을 입력합니다. 대소문자를 구분하고 첫 위치부터 찾습니다.
+4. Find 컨트롤에서 Enter로 다음 일치, Shift+Enter로 이전 일치로 이동합니다. 양 끝에서는 반대 끝으로 돌아갑니다.
+
+일치 시작 위치는 겹칠 수 있습니다. `banana`에서 `ana`를 찾으면 두 위치를 차례로
+표시합니다. 화면의 UTF-16 문자 위치를 사용하며 현재 일치 한 곳만 강조합니다.
+기존 선택과 다른 강조 표시는 유지합니다. 검색어를 비우면 강조를 지웁니다. 공백과
+붙여 넣은 줄바꿈도 문자 그대로 찾으며 검색어를 자르거나 저장하지 않습니다.
+RE2나 대소문자 무시 옵션, 일치 개수 표시는 없습니다.
+
+검색 중에는 **Searching**을 표시하고 앞뒤 이동 버튼을 끕니다. 이때 Find 컨트롤의
+Enter와 Shift+Enter는 상세창을 닫거나 검색을 재시작하거나 나중에 이동을 재생하지
+않습니다. 버튼의 Space는 원래 버튼 동작을 수행합니다. Escape나 **Close Find**로
+찾기를 닫을 수 있습니다. 상세창 하단 버튼에 포커스가 있으면 첫 Escape는 열린
+Find 바를 닫고, 다음 Escape는 기존 방식으로 상세창을 닫습니다.
+
+Metadata, 이유, Static HTML preview는 Find 대상이 아닙니다. 없는 요청·응답 쪽과
+UNAVAILABLE Body는 대상이 아니지만, present인 Raw와 보관 헤더는 별도 표시 필드로
+찾을 수 있습니다. 실제 빈 Headers와 EMPTY Body는 빈 검색 대상입니다. 가용성은
+안내 문구가 아니라 Message 정보로 판단합니다. Present Raw 검색에는 화면의 가용성
+안내와 합성 첫 줄도 포함됩니다. Raw는 여전히 검사 사본이지 wire 원문이 아닙니다.
+HEX는 화면의 연속 HEX 문자열을 찾으며 홀수 위치에서도 일치할 수 있습니다.
+
+대상 필드나 메시지가 바뀌면 이전 검색어와 강조를 폐기합니다. 반대쪽 탭만 바꾸어
+현재 대상이 계속 보이면 유지합니다. 원문 소실, 프로젝트 변경, 화면 숨김·제거,
+새로고침 실패, 닫기도 오래된 결과를 되살리지 않습니다. Inline과 별도 상세창은
+각자의 Find 상태를 가지며, 상세창을 다시 열면 빈 상태로 시작합니다. 찾기와 닫기는
+승인·정책·속도·OFF·전송·원문 내보내기를 바꾸지 않습니다. 큰 검색어·표시·새로고침은
+heap과 화면 시간을 제한 없이 쓸 수 있습니다. 취소한 작업이 종료할 때까지 복사한
+평문이 남을 수 있으며, 문자열·클립보드·내보낸 파일의 zeroization은 보장하지 않습니다.
+격리 Swing 검사는 native macOS 키 전달이나 설치된 Burp 동작의 인증이 아닙니다.
+
 ## v0.3.0 Static HTML preview
 
 응답의 preview 탭을 선택할 때만 기본 HTML 제목(h1–h6)·문단·줄바꿈·목록·표·pre·bold/italic/underline/strike/code를 투영합니다. **완전하고 present인 UTF8_TEXT(또는 완전한 empty)**, 정확히 하나의 유효한 text/html 또는 application/xhtml+xml 선언과 생략/단일 UTF-8(UTF8)/US-ASCII charset만 대상입니다. charset 생략은 저장소가 이미 엄격 검증한 UTF8_TEXT 검사 사본이지 browser encoding detection이 아닙니다. 중복/잘못된 선언·unsupported charset·HEX·미수집/생략/잘림·모호하거나 nonidentity content/transfer encoding은 고정된 불가 이유를 보입니다. sniff/decompress/dechunk/meta charset/XML 처리를 하지 않습니다.
