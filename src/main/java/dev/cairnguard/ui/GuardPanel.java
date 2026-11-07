@@ -1718,7 +1718,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         private final String[] columns; private final Class<?>[] types; private final java.util.function.Function<T, Object[]> values;
         private List<T> rows = List.of();
         RowsModel(String[] columns, Class<?>[] types, java.util.function.Function<T, Object[]> values) { this.columns = columns; this.types = types; this.values = values; }
-        void setRows(List<T> rows) { List<T> next = List.copyOf(rows); if (!this.rows.equals(next)) { this.rows = next; fireTableDataChanged(); } }
+        void setRows(List<T> rows) {
+            List<T> next = List.copyOf(rows);
+            boolean changed = !this.rows.equals(next);
+            this.rows = next;
+            if (changed) fireTableDataChanged();
+        }
         @Override public int getRowCount() { return rows.size(); }
         @Override public int getColumnCount() { return columns.length; }
         @Override public String getColumnName(int column) { return columns[column]; }
