@@ -547,7 +547,11 @@ class GuardPanelV2DesktopTest {
     }
     private static void findChord(java.awt.Robot robot, int modifier, int key) { robot.keyPress(modifier); robot.keyPress(key); robot.keyRelease(key); robot.keyRelease(modifier); robot.waitForIdle(); }
     private static void findFocus(Window window, JComponent control) throws Exception {
-        findReachable(window, control); edt(() -> { window.toFront(); assertTrue(control.isFocusOwner() || control.requestFocusInWindow(), control.getName()); return null; }); GuardPanelTrafficViewTest.await(control::isFocusOwner);
+        findReachable(window, control);
+        edt(() -> { window.toFront(); return null; });
+        GuardPanelTrafficViewTest.await(window::isFocused);
+        edt(() -> { assertTrue(control.isFocusOwner() || control.requestFocusInWindow(), control.getName()); return null; });
+        GuardPanelTrafficViewTest.await(control::isFocusOwner);
     }
     private static void findReachable(Window window, JComponent control) throws Exception {
         edt(() -> {
