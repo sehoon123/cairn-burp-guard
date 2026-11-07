@@ -20,7 +20,7 @@ import java.util.function.BooleanSupplier;
 final class TrafficInspector extends JPanel {
     final JTextArea request = viewer("traffic.request"), response = viewer("traffic.response"), metadata = viewer("traffic.metadata");
     private final JTextArea reason = viewer("traffic.reason");
-    final JTabbedPane details = named(new JTabbedPane(), "traffic.details");
+    final JTabbedPane details = visibleTabs("traffic.details");
     final JTabbedPane requestTabs, responseTabs;
     private final JTextArea requestHeaders = viewer("traffic.request.headers"), requestBody = viewer("traffic.request.body");
     private final JTextArea responseHeaders = viewer("traffic.response.headers"), responseBody = viewer("traffic.response.body");
@@ -42,6 +42,7 @@ final class TrafficInspector extends JPanel {
     private record Mark(Found found, Highlighter owner, Object tag) {}
     private record ScanInput(String text, String query, Step step, int currentStart) {}
     private final List<Target> targets;
+    private final JPanel contents = new Contents();
     private final Find find = new Find();
     private final DocumentListener messageEdits = new DocumentListener() {
         @Override public void insertUpdate(DocumentEvent e) { messageEdited(); }
@@ -58,6 +59,8 @@ final class TrafficInspector extends JPanel {
     private final FocusListener targetFocus = new FocusAdapter() {
         @Override public void focusGained(FocusEvent e) {
             if (find.active == null) return;
+            // Initial modal activation can deliver the old default focus after an explicit Find focus request.
+            if (e.getComponent() == reason && e.getCause() == FocusEvent.Cause.ACTIVATION) return;
             for (Target target : targets) if (target.area() == e.getComponent()) { find.bind(target, false); return; }
             find.retire();
         }
@@ -88,7 +91,7 @@ final class TrafficInspector extends JPanel {
         actions.add(label);
         reason.setRows(1); reason.setLineWrap(true); reason.setWrapStyleWord(true);
         JPanel strip = new JPanel(new BorderLayout()); strip.add(actions, BorderLayout.NORTH); strip.add(new JScrollPane(reason), BorderLayout.CENTER);
-        add(strip, BorderLayout.NORTH);
+        contents.add(strip, BorderLayout.NORTH);
         requestTabs = messageTabs(Side.REQUEST, "traffic.requestTabs");
         responseTabs = messageTabs(Side.RESPONSE, "traffic.responseTabs");
         responseTabs.addTab("Static HTML preview", preview);
@@ -97,7 +100,10 @@ final class TrafficInspector extends JPanel {
         pair.setResizeWeight(0.5); pair.setOneTouchExpandable(true); pair.setContinuousLayout(true);
         details.addTab("요청 · 응답", pair); details.addTab("결과와 메타데이터", new JScrollPane(metadata));
         details.addChangeListener(e -> { if (!closed) previewChanged.run(); });
-        add(details, BorderLayout.CENTER); add(find.bar, BorderLayout.SOUTH); setMinimumSize(new Dimension(80, 60));
+        contents.add(details, BorderLayout.CENTER); contents.add(find.bar, BorderLayout.SOUTH);
+        JScrollPane scroll = new InspectorScroll(contents);
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setBorder(BorderFactory.createEmptyBorder()); add(scroll, BorderLayout.CENTER); setMinimumSize(new Dimension(80, 60));
         requestTabs.addChangeListener(tabChanged); responseTabs.addChangeListener(tabChanged); details.addChangeListener(tabChanged);
         for (Target target : targets) {
             target.area().getDocument().addDocumentListener(messageEdits);
@@ -115,13 +121,55 @@ final class TrafficInspector extends JPanel {
         addHierarchyListener(visibilityChanged);
         previewMessage("Select this tab to build a static inspection projection. " + HtmlPreview.LIMITS); updateEntries();
     }
-    private static Target target(Side side, Field field, JTextArea area) { return new Target(side, field, area, new JScrollPane(area)); }
+    private final class Contents extends JPanel implements Scrollable {
+        Contents() { super(new BorderLayout(4, 4)); }
+        @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        @Override public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) { return getFontMetrics(getFont()).getHeight(); }
+        @Override public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) { return Math.max(1, visible.height - getFontMetrics(getFont()).getHeight()); }
+        @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        @Override public boolean getScrollableTracksViewportHeight() { return getParent() != null && getParent().getHeight() >= getPreferredSize().height; }
+    }
+    private static class InspectorScroll extends JScrollPane {
+        InspectorScroll(JComponent view) { super(view); }
+        @Override public Dimension getPreferredSize() {
+            Dimension size = super.getPreferredSize();
+            if (getViewport().getView() instanceof JTextArea area) {
+                Insets insets = getInsets();
+                size.height = area.getFontMetrics(area.getFont()).getHeight() + getHorizontalScrollBar().getPreferredSize().height + insets.top + insets.bottom;
+            }
+            return size;
+        }
+        @Override protected JViewport createViewport() {
+            return new JViewport() {
+                @Override public void scrollRectToVisible(Rectangle rectangle) {
+                    super.scrollRectToVisible(rectangle);
+                    // JViewport scrolls locally; expose its extent through the enclosing inspector/history panes too.
+                    if (isShowing() && getParent() instanceof JComponent parent) parent.scrollRectToVisible(getBounds());
+                }
+            };
+        }
+    }
+    private static JTabbedPane visibleTabs(String name) {
+        JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP, JTabbedPane.SCROLL_TAB_LAYOUT) {
+            @Override public Dimension getPreferredSize() {
+                Dimension size = super.getPreferredSize();
+                if (getSelectedComponent() != null) {
+                    int tallest = 0;
+                    for (int i = 0; i < getTabCount(); i++) tallest = Math.max(tallest, getComponentAt(i).getPreferredSize().height);
+                    size.height += getSelectedComponent().getPreferredSize().height - tallest;
+                }
+                return size;
+            }
+        };
+        return named(tabs, name);
+    }
+    private static Target target(Side side, Field field, JTextArea area) { return new Target(side, field, area, new InspectorScroll(area)); }
     private static JPanel titled(String title, JComponent child, JButton entry) {
         JPanel p = new JPanel(new BorderLayout()); JPanel heading = new JPanel(new WrappingFlowLayout(FlowLayout.LEADING, 4, 0));
         heading.add(named(new JLabel(title), null)); heading.add(entry); p.add(heading, BorderLayout.NORTH); p.add(child, BorderLayout.CENTER); p.setMinimumSize(new Dimension(32, 32)); return p;
     }
     private JTabbedPane messageTabs(Side side, String name) {
-        JTabbedPane tabs = named(new JTabbedPane(), name);
+        JTabbedPane tabs = visibleTabs(name);
         for (Target target : targets) if (target.side() == side) tabs.addTab(fieldLabel(target.field()), target.tab());
         tabs.setMinimumSize(new Dimension(32, 32)); return tabs;
     }
@@ -214,8 +262,13 @@ final class TrafficInspector extends JPanel {
 
     private final class Find {
         private final JPanel bar = named(new JPanel(new BorderLayout(4, 2)), "traffic.find.bar");
-        private final JLabel targetLabel = named(new JLabel(), "traffic.find.target"), status = named(new JLabel(), "traffic.find.status");
-        private final JTextArea query = named(ownedArea(1, 18), "traffic.find.query");
+        private final JLabel targetLabel = named(new JLabel(), "traffic.find.target"), status = named(new JLabel() {
+            @Override public Dimension getPreferredSize() {
+                Dimension size = super.getPreferredSize(); var metrics = getFontMetrics(getFont());
+                return new Dimension(Math.max(size.width, metrics.charWidth(' ')), Math.max(size.height, metrics.getHeight()));
+            }
+        }, "traffic.find.status");
+        private final JTextArea query = named(ownedArea(1, 0), "traffic.find.query");
         private final JButton previous = named(new JButton("Previous occurrence"), "traffic.find.previous"), next = named(new JButton("Next occurrence"), "traffic.find.next"), close = named(new JButton("Close Find"), "traffic.find.close");
         private Binding active;
         private Mark marked;
@@ -234,7 +287,7 @@ final class TrafficInspector extends JPanel {
         Find() {
             query.getAccessibleContext().setAccessibleName("Literal occurrence query");
             JLabel label = named(new JLabel("Find literal"), "traffic.find.query.label"); label.setLabelFor(query);
-            JPanel input = new JPanel(new BorderLayout(4, 0)); input.add(label, BorderLayout.WEST); input.add(new JScrollPane(query), BorderLayout.CENTER);
+            JPanel input = new JPanel(new BorderLayout(4, 0)); input.add(label, BorderLayout.WEST); input.add(new InspectorScroll(query), BorderLayout.CENTER);
             JPanel actions = new JPanel(new WrappingFlowLayout(FlowLayout.LEADING, 4, 2));
             for (JButton button : List.of(previous, next, close)) { button.setDefaultCapable(false); button.getAccessibleContext().setAccessibleName(button.getText()); actions.add(button); }
             actions.add(status); bar.add(targetLabel, BorderLayout.NORTH); bar.add(input, BorderLayout.CENTER); bar.add(actions, BorderLayout.SOUTH);
@@ -256,7 +309,11 @@ final class TrafficInspector extends JPanel {
                 targetLabel.setText((target.side() == Side.REQUEST ? "Request" : "Response") + " · " + fieldLabel(target.field()) + (target.field() == Field.RAW ? " · display projection" : ""));
                 bar.setVisible(true); bar.revalidate(); TrafficInspector.this.revalidate();
             }
-            if (focusQuery) query.requestFocusInWindow();
+            if (focusQuery) {
+                Window window = SwingUtilities.getWindowAncestor(TrafficInspector.this);
+                if (window != null) window.validate();
+                query.scrollRectToVisible(new Rectangle(0, 0, query.getWidth(), query.getHeight())); query.requestFocusInWindow();
+            }
         }
         private boolean valid(Binding expected) {
             return !closed && expected != null && active == expected && installedContent == expected.source()
