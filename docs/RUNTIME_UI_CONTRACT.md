@@ -236,6 +236,52 @@ All windows drop plaintext on disposal/clear/project/failure/close. Panel close 
 blanks the same owned approval-review Document before disposing its dialog; this is
 not zeroization of copied Strings, clipboard data or exported files.
 
+### Selected-message Find ownership and keys
+
+The history filter selects rows. Each inline or popout inspector has a separate
+case-sensitive literal Find for one visible eligible request or response field.
+The two side heading buttons and Ctrl+F or Meta+F in a traffic text field open the
+same inspector-owned bar. There is no cross-field picker or per-field query form.
+Retargeting resets the query and owned mark. Changes on the other side preserve a
+still-visible eligible target; metadata or preview focus retires it.
+
+Query edits search from offset zero. On Find controls, Enter moves to the next
+start and Shift+Enter moves to the previous start, with overlaps and wrap. The
+current match has one owned highlight and scrolls its start into view without
+changing ordinary selection or unrelated highlights. Pasted whitespace, line
+breaks, surrogate code units, and contiguous HEX retain their displayed literal
+meaning. No case folding, regex, normalization, or query length filter is added.
+
+While a scan is pending, status is `Searching` and occurrence buttons are disabled.
+Enter and Shift+Enter press and release remain consuming actions on Find controls.
+They neither close the dialog nor restart, queue, or replay navigation. Space
+keeps ordinary button behavior. Query edits, Escape, and Close Find still work.
+In an actual inspector dialog, Escape from the footer first dismisses an open Find
+bar. A second footer Escape uses the existing dialog close action. Default Close
+and other dialogs retain their existing behavior.
+
+Each inspector's lazy lane is independent of the panel's history and presentation
+lanes. Local stale deliveries do not refresh the source. A current delivery calls
+the existing source-owner refresh on the EDT and repeats generation, Binding,
+Content, actual Document, visibility, eligibility, and closed-owner checks before
+publishing any match, no-match, or failure feedback. Query notifications do not
+refresh the source. Identical valid Content preserves state, but semantic source
+replacement retires it even when the displayed text is equal.
+
+Clear and unavailable retire Find but permit a later trusted installation. A
+Document replacement blanks the held old owned Document after Swing releases its
+read lock; an unexpected in-place traffic edit revokes eligibility without
+rewriting the notifying Document. Permanent close blanks owned traffic, query,
+metadata, reason, and preview Documents, detaches hooks, and signals only its lane
+without an EDT join. Closing a popout leaves the inline inspector independent;
+reopening creates an empty owner. Copied plaintext may outlive retirement until
+work exits. There is no zeroization or fixed heap, scan, refresh, or layout latency
+guarantee.
+
+These source and UI contracts do not certify native macOS key delivery, installed
+Burp behavior, or wire traffic. Message eligibility and displayed Raw semantics
+are defined in [INTERFACES.md](INTERFACES.md#selected-message-literal-find).
+
 Preview is lazy for the selected tab/response, never direct raw/native rendering.
 Complete present UTF8_TEXT/empty plus exactly one valid HTML/XHTML Content-Type
 with absent or one supported UTF8/UTF-8/US-ASCII charset is required. Absent charset

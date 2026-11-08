@@ -207,7 +207,7 @@ class GuardPanelTrafficViewTest {
     @Test void clearingOrReplacingPreviewBlanksDetachedDocumentsHeldByAWindowObserver() throws Exception {
         var projection = HtmlPreview.scan("<h1>synthetic-preview-plaintext</h1><table><tr><td>cell-secret</td></tr></table>", () -> false);
         edt(() -> {
-            TrafficInspector inspector = new TrafficInspector(() -> {}, () -> {}, () -> {});
+            TrafficInspector inspector = new TrafficInspector(() -> {}, () -> {}, () -> {}, () -> {});
             inspector.preview(projection);
             JPanel oldRoot = (JPanel) GuardPanelV2Test.find(inspector, "traffic.preview.document");
             JTextPane retainedHeading = (JTextPane) GuardPanelV2Test.find(oldRoot, "traffic.preview.h1");
@@ -712,5 +712,273 @@ class GuardPanelTrafficViewTest {
             assertFalse(table.getSelectionModel().getValueIsAdjusting());
             assertEquals(2, table.getRowCount()); assertTrue(dialogs.errors.isEmpty()); return null;
         });
+    }
+
+    @Test void messageFindUsesAllSixFieldsInIndependentInspectorRoots() throws Exception {
+        try (var f = new TrafficInspectorFindTest.Fixture()) {
+            edt(() -> { TrafficInspectorFindTest.entry(f.inspector, "requestRaw"); return null; });
+            try (var popout = new TrafficInspectorFindTest.Popout(f)) {
+                for (TrafficInspector root : List.of(f.inspector, popout.inspector())) for (String field : TrafficInspectorFindTest.FIELDS) {
+                    TrafficInspectorFindTest.search(root, field, "needle");
+                    TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(root, field), TrafficInspectorFindTest.needleOffset(root, field), 6);
+                }
+                TrafficInspectorFindTest.search(f.inspector, "requestBody", "banana");
+                TrafficInspectorFindTest.search(popout.inspector(), "responseBody", "needle");
+                edt(() -> {
+                    assertNotSame(f.inspector.request.getDocument(), popout.inspector().request.getDocument());
+                    assertNotSame(TrafficInspectorFindTest.query(f.inspector).getDocument(), TrafficInspectorFindTest.query(popout.inspector()).getDocument());
+                    assertNotSame(TrafficInspectorFindTest.pump(f.inspector), TrafficInspectorFindTest.pump(popout.inspector()));
+                    assertEquals("banana", TrafficInspectorFindTest.query(f.inspector).getText()); assertEquals("needle", TrafficInspectorFindTest.query(popout.inspector()).getText());
+                    assertEquals(1, f.table().getSelectedRowCount()); assertEquals("", TrafficInspectorFindTest.ui(f.panel, "traffic.search", JTextField.class).getText());
+                    f.panel.refreshNow(); assertEquals("banana", TrafficInspectorFindTest.query(f.inspector).getText()); assertEquals("needle", TrafficInspectorFindTest.query(popout.inspector()).getText()); return null;
+                });
+            }
+        }
+    }
+
+    @Test void popoutCloseBlanksOnlyOwnedFindAndReopenStartsEmpty() throws Exception {
+        try (var f = new TrafficInspectorFindTest.Fixture()) {
+            TrafficInspectorFindTest.search(f.inspector, "requestBody", "banana");
+            Object content = edt(() -> TrafficInspectorFindTest.field(f.panel, "presentedContent"));
+            TrafficSearch.Pump inline = edt(() -> TrafficInspectorFindTest.pump(f.inspector));
+            TrafficInspector retained;
+            TrafficSearch.Pump owned;
+            try (var popout = new TrafficInspectorFindTest.Popout(f)) {
+                retained = popout.inspector(); TrafficInspectorFindTest.search(retained, "responseBody", "needle");
+                var documents = edt(() -> TrafficInspectorFindTest.documents(retained));
+                try (var hold = TrafficInspectorFindTest.HeldWork.start(retained, "needle", false)) {
+                    owned = hold.pump;
+                    popout.close();
+                    edt(() -> { for (var d : documents) assertEquals(0, d.getLength()); assertEquals("banana", TrafficInspectorFindTest.query(f.inspector).getText());
+                        retained.install((TrafficInspector.Content) content); TrafficInspectorFindTest.entry(retained, "responseBody").doClick(0);
+                        assertEquals("", retained.response.getText()); assertFalse(owned.retainsPending()); assertSame(content, TrafficInspectorFindTest.field(f.panel, "presentedContent")); return null; });
+                    hold.release();
+                }
+            }
+            assertTrue(owned.awaitExit(5000)); assertFalse((boolean) TrafficInspectorFindTest.field(inline, "closed"));
+            TrafficInspectorFindTest.search(f.inspector, "requestBody", "needle"); TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(f.inspector, "requestBody"), 7, 6);
+            try (var reopened = new TrafficInspectorFindTest.Popout(f)) {
+                edt(() -> { assertNotSame(retained, reopened.inspector()); assertEquals("", TrafficInspectorFindTest.query(reopened.inspector()).getText()); assertFalse(TrafficInspectorFindTest.bar(reopened.inspector()).isVisible()); return null; });
+            }
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest(name = "I03-{0}")
+    @org.junit.jupiter.params.provider.MethodSource("observedFindTransitions")
+    void heldFindRetiresAcrossObservedSourceAndLifecycleTransitions(String row, String phase, String transition) throws Exception {
+        try (var f = new TrafficInspectorFindTest.Fixture(); var popout = new TrafficInspectorFindTest.Popout(f)) {
+            String other = TrafficInspectorFindTest.addRow(f.access, "/find-b", "other needle");
+            edt(() -> { f.panel.refreshNow(); return null; });
+            TrafficInspectorFindTest.search(f.inspector, "requestBody", "needle"); TrafficInspectorFindTest.search(popout.inspector(), "requestBody", "needle");
+            TrafficInspector target = transition.equals("popoutDialogReturn") ? popout.inspector() : f.inspector;
+            var queryDocument = edt(() -> TrafficInspectorFindTest.query(target).getDocument());
+            var oldContent = edt(() -> TrafficInspectorFindTest.field(f.panel, "presentedContent"));
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(target, "needle", false)) {
+                hold.atPhase(phase, () -> {
+                    try {
+                        switch (transition) {
+                            case "selection" -> {
+                                for (int i = 0; i < f.table().getRowCount(); i++) if (f.table().getValueAt(i, 3).toString().endsWith("/find-b")) f.table().setRowSelectionInterval(i, i);
+                            }
+                            case "sameIdEqualResponseMessage" -> {
+                                JTable table = f.table();
+                                var model = (javax.swing.table.TableModel) TrafficInspectorFindTest.field(f.panel, "trafficModel");
+                                var previousRows = (List<?>) TrafficInspectorFindTest.field(model, "rows");
+                                var previous = f.access.rows().stream().filter(e -> e.id().equals(f.id)).findFirst().orElseThrow();
+                                int selectedView = table.getSelectedRow(); assertTrue(selectedView >= 0);
+                                var selected = (dev.cairnguard.evidence.TrafficEntry) previousRows.get(table.convertRowIndexToModel(selectedView));
+                                assertEquals(f.id, selected.id()); assertSame(previous, selected);
+                                var ids = previousRows.stream().map(e -> ((dev.cairnguard.evidence.TrafficEntry) e).id()).toList();
+                                int[] selectedViews = table.getSelectedRows();
+                                var selectedIds = java.util.Arrays.stream(selectedViews).mapToObj(v -> ((dev.cairnguard.evidence.TrafficEntry) previousRows.get(table.convertRowIndexToModel(v))).id()).toList();
+                                var cells = new java.util.ArrayList<List<Object>>();
+                                var viewCells = new java.util.ArrayList<List<Object>>();
+                                for (int i = 0; i < model.getRowCount(); i++) {
+                                    var values = new java.util.ArrayList<Object>();
+                                    for (int c = 0; c < model.getColumnCount(); c++) values.add(model.getValueAt(i, c));
+                                    cells.add(values);
+                                }
+                                for (int i = 0; i < table.getRowCount(); i++) {
+                                    var values = new java.util.ArrayList<Object>();
+                                    for (int c = 0; c < table.getColumnCount(); c++) values.add(table.getValueAt(i, c));
+                                    viewCells.add(values);
+                                }
+                                int lead = table.getSelectionModel().getLeadSelectionIndex(), anchor = table.getSelectionModel().getAnchorSelectionIndex();
+                                boolean adjusting = table.getSelectionModel().getValueIsAdjusting();
+                                var sortKeys = new java.util.ArrayList<>(table.getRowSorter().getSortKeys());
+                                int[] mapping = java.util.stream.IntStream.range(0, table.getRowCount()).map(table::convertRowIndexToModel).toArray();
+                                var events = new java.util.concurrent.atomic.AtomicInteger();
+                                javax.swing.event.TableModelListener listener = event -> events.incrementAndGet();
+                                model.addTableModelListener(listener);
+                                try {
+                                    f.access.store.response(f.id, 200, List.of(new RequestData.Header("X-Find", "needle needle"), new RequestData.Header("Content-Type", "text/html; charset=UTF-8")), "banana needle needle".getBytes(StandardCharsets.UTF_8));
+                                    var latest = f.access.rows().stream().filter(e -> e.id().equals(f.id)).findFirst().orElseThrow();
+                                    assertNotSame(previous, latest); assertEquals(previous, latest);
+                                    assertNotSame(previous.responseCapture(), latest.responseCapture()); assertEquals(previous.responseCapture(), latest.responseCapture());
+                                    assertSame(previous.requestCapture(), latest.requestCapture());
+                                    f.panel.refreshNow();
+                                    var currentRows = (List<?>) TrafficInspectorFindTest.field(model, "rows");
+                                    assertEquals(0, events.get(), "value-equal refresh must not fire a TableModelEvent");
+                                    assertEquals(ids, currentRows.stream().map(e -> ((dev.cairnguard.evidence.TrafficEntry) e).id()).toList());
+                                    assertArrayEquals(selectedViews, table.getSelectedRows());
+                                    assertEquals(selectedIds, java.util.Arrays.stream(table.getSelectedRows()).mapToObj(v -> ((dev.cairnguard.evidence.TrafficEntry) currentRows.get(table.convertRowIndexToModel(v))).id()).toList());
+                                    assertEquals(lead, table.getSelectionModel().getLeadSelectionIndex()); assertEquals(anchor, table.getSelectionModel().getAnchorSelectionIndex());
+                                    assertEquals(adjusting, table.getSelectionModel().getValueIsAdjusting()); assertEquals(sortKeys, table.getRowSorter().getSortKeys());
+                                    assertArrayEquals(mapping, java.util.stream.IntStream.range(0, table.getRowCount()).map(table::convertRowIndexToModel).toArray());
+                                    assertEquals(cells.size(), model.getRowCount()); assertEquals(viewCells.size(), table.getRowCount());
+                                    for (int i = 0; i < cells.size(); i++) for (int c = 0; c < cells.get(i).size(); c++) assertEquals(cells.get(i).get(c), model.getValueAt(i, c));
+                                    for (int i = 0; i < viewCells.size(); i++) for (int c = 0; c < viewCells.get(i).size(); c++) assertEquals(viewCells.get(i).get(c), table.getValueAt(i, c));
+                                    var currentSelected = (dev.cairnguard.evidence.TrafficEntry) currentRows.get(table.convertRowIndexToModel(table.getSelectedRow()));
+                                    assertEquals(f.id, currentSelected.id());
+                                    System.out.println("FIND_IDENTITY_CONTROLS " + row + " producerDistinctEqual=true requestSame=true dataEvents=0 cellsIdsSelectionSortMappingAdjusting=unchanged beforeReleaseOrAwait=true");
+                                    assertSame(latest.responseCapture(), currentSelected.responseCapture(), "latest store Message must replace previous value-equal selected model Message for " + row + " id=" + f.id + " selectedIsPrevious=" + (currentSelected.responseCapture() == previous.responseCapture()));
+                                    assertSame(latest, currentSelected);
+                                    assertSame(latest.responseCapture(), TrafficInspectorFindTest.recordValue(TrafficInspectorFindTest.field(f.panel, "presentationKey"), "response"));
+                                    for (TrafficInspector root : List.of(f.inspector, popout.inspector())) {
+                                        assertEquals("", TrafficInspectorFindTest.query(root).getText()); assertFalse(TrafficInspectorFindTest.bar(root).isVisible());
+                                        assertFalse(TrafficInspectorFindTest.pending(root)); assertNull(TrafficInspectorFindTest.field(TrafficInspectorFindTest.findState(root), "active"));
+                                        for (String field : TrafficInspectorFindTest.FIELDS) assertEquals(0, TrafficInspectorFindTest.area(root, field).getHighlighter().getHighlights().length);
+                                    }
+                                } finally { model.removeTableModelListener(listener); }
+                            }
+                            case "syntheticFirstLine" -> { f.urlOverride.set("https://example.test/changed-first-line"); f.panel.refreshNow(); }
+                            case "metadataChange" -> { f.access.store.context(f.id, "exempt", "PROTECTED", "synthetic-metadata"); f.panel.refreshNow(); }
+                            case "filterHideThenRestore" -> { TrafficInspectorFindTest.ui(f.panel, "traffic.method", JTextField.class).setText("NO-MATCH"); TrafficInspectorFindTest.ui(f.panel, "traffic.method", JTextField.class).setText(""); }
+                            case "invalidHistoryInput" -> { TrafficInspectorFindTest.ui(f.panel, "traffic.searchMode", JComboBox.class).setSelectedItem(RE2); TrafficInspectorFindTest.ui(f.panel, "traffic.search", JTextField.class).setText("["); }
+                            case "confirmedEvidenceClear" -> TrafficInspectorFindTest.ui(f.panel, "settings.clear", JButton.class).doClick(0);
+                            case "directPresentationFailure" -> failActualFindPresentation(f);
+                            case "popoutDialogReturn" -> popout.loop.exit();
+                            case "panelClose" -> f.panel.close();
+                            default -> throw new AssertionError(transition);
+                        }
+                    } catch (Exception failure) { throw new AssertionError(failure); }
+                });
+                hold.release();
+                if (transition.equals("popoutDialogReturn")) await(() -> TrafficInspectorFindTest.field(f.panel, "popoutInspector") == null);
+                await(() -> queryDocument.getLength() == 0);
+                edt(() -> {
+                    assertEquals("", TrafficInspectorFindTest.query(target).getText(), row); assertFalse(TrafficInspectorFindTest.bar(target).isVisible(), row);
+                    assertFalse(TrafficInspectorFindTest.pending(target)); assertFalse(hold.pump.retainsPending());
+                    if (!transition.equals("popoutDialogReturn")) assertEquals("", TrafficInspectorFindTest.query(popout.inspector()).getText());
+                    else assertEquals("needle", TrafficInspectorFindTest.query(f.inspector).getText());
+                    if (transition.equals("sameIdEqualResponseMessage")) assertNotSame(oldContent, TrafficInspectorFindTest.field(f.panel, "presentedContent"));
+                    if (transition.equals("directPresentationFailure")) { assertTrue((boolean) TrafficInspectorFindTest.field(f.panel, "presentationFailed")); assertEquals("", f.inspector.request.getText()); }
+                    assertTrue(f.access.rows().isEmpty() || f.access.rows().stream().anyMatch(e -> e.id().equals(other))); return null;
+                });
+            }
+            edt(() -> { f.panel.close(); return null; }); assertTrue(TrafficInspectorFindTest.pump(target).awaitExit(5000));
+            System.out.println("FIND_OBSERVED " + row + " actualTaskAndConsumer=true retired=true");
+        }
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> observedFindTransitions() {
+        return java.util.stream.Stream.of("actualRunningWork", "actualQueuedEdtDelivery").flatMap(phase ->
+                java.util.stream.Stream.of("selection", "sameIdEqualResponseMessage", "syntheticFirstLine", "metadataChange", "filterHideThenRestore", "invalidHistoryInput", "confirmedEvidenceClear", "directPresentationFailure", "popoutDialogReturn", "panelClose")
+                        .map(transition -> org.junit.jupiter.params.provider.Arguments.of(phase + "-" + transition, phase, transition)));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest(name = "I04-{0}")
+    @org.junit.jupiter.params.provider.MethodSource("externalFindTransitions")
+    void externalRetirementIsObservedBeforeCurrentCompletionWithoutManualRefresh(String row, String phase, String scenario) throws Exception {
+        try (var f = new TrafficInspectorFindTest.Fixture()) {
+            TrafficInspectorFindTest.search(f.inspector, "requestBody", "needle");
+            var oldDocument = edt(() -> TrafficInspectorFindTest.query(f.inspector).getDocument());
+            String needle = scenario.endsWith("NoMatch") ? "not-present-in-this-field" : "needle";
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(f.inspector, needle, scenario.endsWith("Failed"))) {
+                int before = f.reads.get();
+                hold.atPhase(phase, () -> {
+                    if (scenario.startsWith("externalClear")) f.access.store.clear();
+                    else if (scenario.startsWith("project")) f.access.project = "next-project";
+                    else if (scenario.startsWith("revision")) f.access.revision++;
+                    else if (scenario.startsWith("rawLoss")) f.access.rawUnavailable = true;
+                    else if (scenario.startsWith("refreshFailure")) f.access.failStatus = true;
+                    else throw new AssertionError(scenario);
+                    assertEquals(before, f.reads.get(), "NO refresh or access read before release");
+                    assertEquals(needle, TrafficInspectorFindTest.query(f.inspector).getText(), "source retirement must be discovered by completion, not a test refresh");
+                });
+                hold.release(); await(() -> oldDocument.getLength() == 0);
+                edt(() -> { assertTrue(f.reads.get() > before); assertFalse(TrafficInspectorFindTest.bar(f.inspector).isVisible());
+                    assertFalse(TrafficInspectorFindTest.pending(f.inspector)); assertFalse(TrafficInspectorFindTest.ui(f.inspector, "traffic.find.next", JButton.class).isEnabled());
+                    assertEquals(0, TrafficInspectorFindTest.area(f.inspector, "requestBody").getHighlighter().getHighlights().length);
+                    if (scenario.startsWith("rawLoss")) assertTrue(f.inspector.request.getText().contains("원문 없음")); else assertEquals("", f.inspector.request.getText()); return null; });
+            }
+            System.out.println("FIND_EXTERNAL " + row + " manualRefreshBeforeDelivery=false currentCompletionReconciled=true retired=true");
+        }
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> externalFindTransitions() {
+        return java.util.stream.Stream.of("actualRunningWork", "actualQueuedEdtDelivery").flatMap(phase ->
+                java.util.stream.Stream.of("externalClearFound", "projectFound", "revisionFound", "rawLossFound", "refreshFailureFound", "externalClearNoMatch", "externalClearFailed")
+                        .map(scenario -> org.junit.jupiter.params.provider.Arguments.of(phase + "-" + scenario, phase, scenario)));
+    }
+
+    @Test void locallyStaleDeliverySkipsRefreshAndCannotClearNewPendingState() throws Exception {
+        for (String invalidation : List.of("queryGeneration", "targetBinding", "newContent", "newDocument", "hiddenTarget", "closedOwner")) try (var f = new TrafficInspectorFindTest.Fixture()) {
+            TrafficInspectorFindTest.search(f.inspector, "requestBody", "needle");
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(f.inspector, "needle", false)) {
+                edt(() -> {
+                    switch (invalidation) {
+                        case "queryGeneration" -> TrafficInspectorFindTest.query(f.inspector).setText("banana");
+                        case "targetBinding" -> TrafficInspectorFindTest.openTarget(f.inspector, "responseBody");
+                        case "newContent" -> f.inspector.install(TrafficInspector.project(f.access.rows().getFirst().requestCapture(), f.access.rows().getFirst().responseCapture(), "equal request", "equal response", () -> false));
+                        case "newDocument" -> TrafficInspectorFindTest.area(f.inspector, "requestBody").setDocument(new javax.swing.text.PlainDocument());
+                        case "hiddenTarget" -> TrafficInspectorFindTest.ui(f.inspector, "traffic.details", JTabbedPane.class).setSelectedIndex(1);
+                        case "closedOwner" -> f.panel.close();
+                        default -> throw new AssertionError(invalidation);
+                    }
+                    int reads = f.reads.get(); String status = TrafficInspectorFindTest.status(f.inspector);
+                    hold.accept.accept(new TrafficSearch.Pump.Result(null, true));
+                    assertEquals(reads, f.reads.get(), invalidation); assertEquals(status, TrafficInspectorFindTest.status(f.inspector));
+                    if (invalidation.equals("queryGeneration")) { assertTrue(TrafficInspectorFindTest.pending(f.inspector)); assertTrue(status.contains("Searching")); }
+                    assertFalse(TrafficInspectorFindTest.ui(f.inspector, "traffic.find.next", JButton.class).isEnabled()); return null;
+                });
+            }
+        }
+    }
+
+    @Test void findHasNoControlRawOrExportAuthorityAndKeepsOriginalBytes() throws Exception {
+        try (var f = new TrafficInspectorFindTest.Fixture()) {
+            var before = findOriginalBytes(f);
+            edt(() -> {
+                f.action.set(true); int observed = f.reads.get(); f.checked.status(); assertTrue(f.reads.get() > observed, "the access tripwire observes actual calls");
+                assertThrows(AssertionError.class, () -> f.checked.rawRequest(f.id), "the forbidden-call tripwire has a positive self-check"); return null;
+            });
+            try {
+                for (String field : TrafficInspectorFindTest.FIELDS) {
+                    TrafficInspectorFindTest.search(f.inspector, field, "needle");
+                    TrafficInspectorFindTest.move(f.inspector, "next"); TrafficInspectorFindTest.move(f.inspector, "previous");
+                    edt(() -> { TrafficInspectorFindTest.query(f.inspector).setText(""); TrafficInspectorFindTest.ui(f.inspector, "traffic.find.close", JButton.class).doClick(0); return null; });
+                }
+                edt(() -> { assertNull(TrafficInspectorFindTest.field(f.panel, "exportWorker")); assertTrue(f.dialogs.confirmations.isEmpty()); assertNull(f.dialogs.target); return null; });
+            } finally { f.action.set(false); }
+            var after = findOriginalBytes(f); assertEquals(before.size(), after.size());
+            for (int i = 0; i < before.size(); i++) assertArrayEquals(before.get(i), after.get(i), "original/stable export bytes " + i);
+            assertTrue(f.calls.contains("rawUrl")); assertTrue(f.calls.contains("rawCaptureInfo")); assertEquals(0, f.access.updates); assertEquals(0, f.access.runtimeCalls);
+        }
+    }
+
+    static List<byte[]> findOriginalBytes(TrafficInspectorFindTest.Fixture f) {
+        var rows = f.access.rows(); var human = f.access.store.humanEvidence(rows.stream().map(dev.cairnguard.evidence.TrafficEntry::id).toList());
+        var stable = java.util.Map.<String, Object>of("projectId", "p", "revision", 7L);
+        return List.of(f.access.store.rawUrl(f.id).getBytes(StandardCharsets.UTF_8), f.access.store.rawRequest(f.id).getBytes(StandardCharsets.UTF_8), f.access.store.rawResponse(f.id).getBytes(StandardCharsets.UTF_8),
+                dev.cairnguard.model.Json.write(rows).getBytes(StandardCharsets.UTF_8), f.access.store.exportJson(rows).getBytes(StandardCharsets.UTF_8), f.access.store.exportHar(rows).getBytes(StandardCharsets.UTF_8), human.json(stable), human.har(stable));
+    }
+
+    static void failActualFindPresentation(TrafficInspectorFindTest.Fixture fixture) throws Exception {
+        var pump = (TrafficSearch.Pump) TrafficInspectorFindTest.field(fixture.panel, "presentation");
+        var entered = new java.util.concurrent.CountDownLatch(1); var released = new java.util.concurrent.CountDownLatch(1);
+        pump.submit(cancelled -> { entered.countDown(); TrafficInspectorFindTest.waitIgnoringInterrupts(released); return null; }, result -> fail("retired presentation blocker"));
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            TrafficInspectorFindTest.ui(fixture.inspector, "traffic.responseTabs", JTabbedPane.class).setSelectedIndex(3);
+            synchronized (pump) {
+                Object job = TrafficInspectorFindTest.field(pump, "pending"); assertNotNull(job);
+                @SuppressWarnings("unchecked") var accept = (java.util.function.Consumer<TrafficSearch.Pump.Result>) TrafficInspectorFindTest.recordValue(job, "accept");
+                TrafficInspectorFindTest.replaceJob(pump, job, cancelled -> { throw new IllegalStateException("synthetic-presentation-failure"); }, accept);
+            }
+        } finally { released.countDown(); }
+        TrafficInspectorFindTest.awaitDelivery(pump);
+        var drain = TrafficSearch.Pump.class.getDeclaredMethod("drain"); drain.setAccessible(true); drain.invoke(pump);
+        assertTrue((boolean) TrafficInspectorFindTest.field(fixture.panel, "presentationFailed"), "the actual presentation failure consumer must execute");
     }
 }

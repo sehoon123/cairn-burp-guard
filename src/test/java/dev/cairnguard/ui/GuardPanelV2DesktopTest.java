@@ -392,4 +392,199 @@ class GuardPanelV2DesktopTest {
         @Override public void edit(Component parent, String title, String label, EditorForm<?> form, Runnable save) { real.edit(parent, title, label, form, save); }
         @Override public void closeEditors() { real.closeEditors(); }
     }
+
+    @ParameterizedTest(name = "D01-font{0}") @ValueSource(ints = {14, 28})
+    void messageFindKeysTargetExactFieldAndKeepCurrentHighlightVisible(int font) throws Exception {
+        findActualScale();
+        try (View v = new View(false)) {
+            seedFindView(v, "banana\n" + "scroll-line\n".repeat(180) + "needle needle");
+            TrafficInspector inline = TrafficInspectorFindTest.inspector(v.panel);
+            edt(() -> { TrafficInspectorFindTest.entry(inline, "requestRaw"); fonts(v.panel, font); v.frame.validate(); return null; });
+            java.awt.Robot robot = new java.awt.Robot(); robot.setAutoDelay(15);
+            for (boolean popout : List.of(false, true)) {
+                JDialog dialog = null;
+                if (popout) { v.open("traffic.detail"); dialog = await("editor.dialog"); }
+                Component root = popout ? dialog : v.panel;
+                TrafficInspector owner = TrafficInspectorFindTest.inspector(root);
+                Window window = popout ? dialog : v.frame;
+                edt(() -> { fonts(window, font); window.validate(); return null; });
+                for (String field : TrafficInspectorFindTest.FIELDS) {
+                    JTextArea area = TrafficInspectorFindTest.area(owner, field);
+                    edt(() -> { TrafficInspectorFindTest.selectField(owner, field); area.select(0, 3); return null; });
+                    findFocus(window, area);
+                    findChord(robot, java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_F);
+                    JTextArea query = edt(() -> TrafficInspectorFindTest.query(owner));
+                    GuardPanelTrafficViewTest.await(query::isFocusOwner);
+                    edt(() -> {
+                        assertNotNull(area.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F, java.awt.event.InputEvent.CTRL_DOWN_MASK)));
+                        assertNotNull(area.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F, java.awt.event.InputEvent.META_DOWN_MASK)));
+                        query.setText("needle"); return null;
+                    });
+                    TrafficInspectorFindTest.settled(owner);
+                    int first = TrafficInspectorFindTest.needleOffset(owner, field);
+                    TrafficInspectorFindTest.assertRange(area, first, 6);
+                    press(robot, java.awt.event.KeyEvent.VK_ENTER); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(area, first + 7, 6);
+                    findChord(robot, java.awt.event.KeyEvent.VK_SHIFT, java.awt.event.KeyEvent.VK_ENTER); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(area, first, 6);
+                    edt(() -> {
+                        assertTrue(query.isFocusOwner()); assertEquals(0, area.getSelectionStart()); assertEquals(3, area.getSelectionEnd());
+                        var rectangle = area.modelToView2D(first); assertNotNull(rectangle);
+                        assertTrue(area.getVisibleRect().intersects(rectangle.getBounds()), field + " current occurrence must actually be visible");
+                        assertEquals(1, get(v.panel, "traffic.table", JTable.class).getSelectedRowCount()); assertEquals("", get(v.panel, "traffic.search", JTextField.class).getText()); return null;
+                    });
+                }
+                findScreenshot(robot, window, "D01-" + (popout ? "popout" : "inline"), font);
+                if (dialog != null) { final JDialog current = dialog; edt(() -> { get(current, "editor.save", JButton.class).doClick(0); return null; }); awaitClosed(dialog); }
+            }
+            assertTrue(v.dialogs.errors.isEmpty());
+            System.out.printf("FIND_KEYS scale=%s font=%d roots=2 fields=12 robotCtrlF=true enterAndShiftEnter=true actualFocusAndRangeAndViewport=true%n", System.getProperty("sun.java2d.uiScale"), font);
+        }
+    }
+
+    @ParameterizedTest(name = "D02-font{0}") @ValueSource(ints = {14, 28})
+    void pendingKeysNeverCloseRestartOrReplayAndFooterEscapeDismissesFirst(int font) throws Exception {
+        findActualScale();
+        try (View v = new View(false)) {
+            seedFindView(v, "banana needle needle"); v.open("traffic.detail"); JDialog dialog = await("editor.dialog");
+            TrafficInspector owner = TrafficInspectorFindTest.inspector(dialog);
+            edt(() -> { TrafficInspectorFindTest.entry(owner, "requestRaw"); fonts(dialog, font); dialog.validate(); return null; });
+            java.awt.Robot robot = new java.awt.Robot(); robot.setAutoDelay(15);
+            TrafficInspectorFindTest.search(owner, "requestBody", "needle");
+            JButton next = edt(() -> get(owner, "traffic.find.next", JButton.class));
+            findFocus(dialog, next);
+            JButton defaultClose = edt(() -> dialog.getRootPane().getDefaultButton());
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(owner, "needle", false)) {
+                JTextArea query = edt(() -> TrafficInspectorFindTest.query(owner));
+                GuardPanelTrafficViewTest.await(query::isFocusOwner);
+                long generation = TrafficInspectorFindTest.pumpGeneration(hold.pump);
+                for (int i = 0; i < 4; i++) { press(robot, java.awt.event.KeyEvent.VK_ENTER); findChord(robot, java.awt.event.KeyEvent.VK_SHIFT, java.awt.event.KeyEvent.VK_ENTER); }
+                edt(() -> { assertTrue(dialog.isShowing()); assertSame(defaultClose, dialog.getRootPane().getDefaultButton()); assertFalse(next.isEnabled());
+                    assertTrue(TrafficInspectorFindTest.status(owner).contains("Searching")); assertEquals(generation, TrafficInspectorFindTest.pumpGeneration(hold.pump));
+                    for (String button : List.of("previous", "next", "close")) {
+                        JComponent control = get(owner, "traffic.find." + button, JComponent.class);
+                        Object key = control.getInputMap(JComponent.WHEN_FOCUSED).get(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0)); assertNotNull(key); assertTrue(control.getActionMap().get(key).isEnabled());
+                    }
+                    return null;
+                });
+                hold.release(); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(owner, "requestBody"), 7, 6); assertEquals(1, hold.executions.get());
+            }
+            findFocus(dialog, next); press(robot, java.awt.event.KeyEvent.VK_SPACE); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(owner, "requestBody"), 14, 6);
+            JButton previous = edt(() -> get(owner, "traffic.find.previous", JButton.class));
+            findFocus(dialog, previous); press(robot, java.awt.event.KeyEvent.VK_SPACE); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(owner, "requestBody"), 7, 6);
+            JButton closeFind = edt(() -> get(owner, "traffic.find.close", JButton.class));
+            findFocus(dialog, closeFind); press(robot, java.awt.event.KeyEvent.VK_ENTER); TrafficInspectorFindTest.settled(owner); TrafficInspectorFindTest.assertRange(TrafficInspectorFindTest.area(owner, "requestBody"), 14, 6);
+            findFocus(dialog, closeFind); press(robot, java.awt.event.KeyEvent.VK_SPACE);
+            GuardPanelTrafficViewTest.await(() -> !TrafficInspectorFindTest.bar(owner).isVisible()); assertTrue(edt(dialog::isShowing));
+            TrafficInspectorFindTest.search(owner, "requestBody", "needle"); findFocus(dialog, defaultClose);
+            press(robot, java.awt.event.KeyEvent.VK_ESCAPE);
+            edt(() -> { assertTrue(dialog.isShowing(), "footer first Escape dismisses Find, not the modal"); assertFalse(TrafficInspectorFindTest.bar(owner).isVisible()); assertEquals("", TrafficInspectorFindTest.query(owner).getText()); assertSame(defaultClose, dialog.getRootPane().getDefaultButton()); return null; });
+            press(robot, java.awt.event.KeyEvent.VK_ESCAPE); awaitClosed(dialog);
+            v.open("traffic.detail"); JDialog reopened = await("editor.dialog");
+            findFocus(reopened, edt(() -> get(reopened, "editor.save", JButton.class))); press(robot, java.awt.event.KeyEvent.VK_ENTER); awaitClosed(reopened);
+            v.open("settings.edit"); JDialog unrelated = await("editor.dialog");
+            findFocus(unrelated, edt(() -> get(unrelated, "editor.cancel", JButton.class))); press(robot, java.awt.event.KeyEvent.VK_ESCAPE); awaitClosed(unrelated);
+            assertEquals(0, v.access.updates); assertTrue(v.dialogs.errors.isEmpty());
+            System.out.printf("FIND_PENDING_KEYS scale=%s font=%d realTask=true noRestartOrReplay=true spaceSemantics=true footerFirstEscape=true secondEscape=true unchangedDefaultAndOtherDialog=true%n", System.getProperty("sun.java2d.uiScale"), font);
+        }
+    }
+
+    @ParameterizedTest(name = "D03-font{0}") @ValueSource(ints = {14, 28})
+    void findControlsRemainReachableAndFrameRetirementNeverRestoresState(int font) throws Exception {
+        findActualScale();
+        try (View v = new View(false)) {
+            seedFindView(v, "banana needle needle"); TrafficInspector owner = TrafficInspectorFindTest.inspector(v.panel);
+            edt(() -> { TrafficInspectorFindTest.entry(owner, "requestRaw"); fonts(v.panel, font); v.frame.setSize(720, 540); v.frame.validate(); return null; });
+            java.awt.Robot robot = new java.awt.Robot(); robot.setAutoDelay(15);
+            for (boolean popout : List.of(false, true)) {
+                JDialog dialog = null;
+                if (popout) { v.open("traffic.detail"); dialog = await("editor.dialog"); }
+                TrafficInspector current = popout ? TrafficInspectorFindTest.inspector(dialog) : owner; Window window = popout ? dialog : v.frame;
+                edt(() -> { fonts(window, font); window.setSize(700, 520); window.validate(); return null; });
+                for (String side : List.of("requestRaw", "responseRaw")) {
+                    JButton entry = edt(() -> TrafficInspectorFindTest.entry(current, side)); findFocus(window, entry); press(robot, java.awt.event.KeyEvent.VK_ENTER);
+                    GuardPanelTrafficViewTest.await(() -> TrafficInspectorFindTest.query(current).isFocusOwner());
+                    for (String control : List.of("traffic.find.target", "traffic.find.query", "traffic.find.status", "traffic.find.previous", "traffic.find.next", "traffic.find.close")) {
+                        JComponent component = edt(() -> get(current, control, JComponent.class)); findReachable(window, component);
+                        edt(() -> { assertNotNull(component.getAccessibleContext().getAccessibleName(), control); assertEquals(Boolean.TRUE, component.getClientProperty("html.disable")); return null; });
+                    }
+                    edt(() -> { assertSame(TrafficInspectorFindTest.query(current), get(current, "traffic.find.query.label", JLabel.class).getLabelFor()); return null; });
+                }
+                edt(() -> {
+                    JSplitPane pair = get(current, "traffic.pair", JSplitPane.class); pair.setDividerLocation(0.0); window.validate(); pair.setDividerLocation(0.5); window.validate();
+                    if (!popout) { JSplitPane history = get(v.panel, "traffic.history", JSplitPane.class); history.setDividerLocation(1.0); history.setDividerLocation(0.4); }
+                    window.setSize(740, 540); window.validate(); return null;
+                });
+                findReachable(window, edt(() -> TrafficInspectorFindTest.entry(current, "requestRaw"))); findReachable(window, edt(() -> TrafficInspectorFindTest.entry(current, "responseRaw")));
+                findScreenshot(robot, window, "D03-" + (popout ? "popout" : "inline"), font);
+                if (dialog != null) { final JDialog closing = dialog; edt(() -> { get(closing, "editor.save", JButton.class).doClick(0); return null; }); awaitClosed(dialog); }
+            }
+            TrafficInspectorFindTest.search(owner, "requestBody", "needle");
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(owner, "needle", false)) {
+                edt(() -> { v.frame.setVisible(false); assertEquals("", TrafficInspectorFindTest.query(owner).getText()); assertFalse(TrafficInspectorFindTest.bar(owner).isVisible()); v.frame.setVisible(true); return null; });
+                hold.release(); edt(() -> { assertEquals("", TrafficInspectorFindTest.query(owner).getText()); return null; });
+            }
+            TrafficInspectorFindTest.search(owner, "requestBody", "needle");
+            edt(() -> { v.frame.setContentPane(new JPanel()); v.frame.setContentPane(v.panel); v.frame.validate(); assertEquals("", TrafficInspectorFindTest.query(owner).getText()); return null; });
+            v.open("traffic.detail"); JDialog nested = await("editor.dialog"); TrafficInspector popout = TrafficInspectorFindTest.inspector(nested);
+            TrafficInspectorFindTest.search(popout, "responseBody", "needle"); var documents = edt(() -> TrafficInspectorFindTest.documents(popout));
+            try (var hold = TrafficInspectorFindTest.HeldWork.start(popout, "needle", false)) {
+                edt(() -> { v.panel.close(); for (var document : documents) assertEquals(0, document.getLength()); return null; });
+                awaitClosed(nested); hold.release(); assertTrue(hold.pump.awaitExit(5000)); assertFalse(hold.pump.retainsPending());
+            }
+            assertEquals(0, v.access.updates); assertTrue(v.dialogs.errors.isEmpty());
+            System.out.printf("FIND_LAYOUT scale=%s font=%d roots=2 reachable=true resizedAndCollapsed=true actualHideAndRemovalRetire=true nestedPanelCloseBlanks=true laneExited=true%n", System.getProperty("sun.java2d.uiScale"), font);
+        }
+    }
+
+    private static void seedFindView(View view, String body) throws Exception {
+        edt(() -> { TrafficInspectorFindTest.addRow(view.access, "/find-desktop", body); view.panel.refreshNow(); get(view.panel, "tabs", JTabbedPane.class).setSelectedIndex(3);
+            get(view.panel, "traffic.table", JTable.class).setRowSelectionInterval(0, 0); return null; });
+        GuardPanelTrafficViewTest.await(() -> get(view.panel, "traffic.request", JTextArea.class).getDocument().getLength() > 0);
+    }
+    private static void findActualScale() throws Exception {
+        assertFalse(java.awt.GraphicsEnvironment.isHeadless());
+        double scale = edt(() -> java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration().getDefaultTransform().getScaleX());
+        assertEquals(Double.parseDouble(System.getProperty("sun.java2d.uiScale")), scale, 0.0001);
+    }
+    private static void findChord(java.awt.Robot robot, int modifier, int key) { robot.keyPress(modifier); robot.keyPress(key); robot.keyRelease(key); robot.keyRelease(modifier); robot.waitForIdle(); }
+    private static void findFocus(Window window, JComponent control) throws Exception {
+        findReachable(window, control);
+        edt(() -> { window.toFront(); return null; });
+        GuardPanelTrafficViewTest.await(window::isFocused);
+        edt(() -> { assertTrue(control.isFocusOwner() || control.requestFocusInWindow(), control.getName()); return null; });
+        GuardPanelTrafficViewTest.await(control::isFocusOwner);
+    }
+    private static void findReachable(Window window, JComponent control) throws Exception {
+        edt(() -> {
+            TrafficInspector owner = (TrafficInspector) SwingUtilities.getAncestorOfClass(TrafficInspector.class, control);
+            String field = switch (control.getName() == null ? "" : control.getName()) {
+                case "traffic.request" -> "request"; case "traffic.request.headers" -> "requestHeaders"; case "traffic.request.body" -> "requestBody";
+                case "traffic.response" -> "response"; case "traffic.response.headers" -> "responseHeaders"; case "traffic.response.body" -> "responseBody";
+                default -> "";
+            };
+            if (control instanceof JTextArea && owner != null && !field.isEmpty() && control == TrafficInspectorFindTest.field(owner, field)) {
+                JTabbedPane tabs = field.startsWith("request") ? owner.requestTabs : owner.responseTabs;
+                JScrollPane scroll = (JScrollPane) tabs.getComponentAt(field.endsWith("Headers") ? 1 : field.endsWith("Body") ? 2 : 0);
+                assertTrue(control.getParent() instanceof JViewport, control.getName());
+                JViewport viewport = (JViewport) control.getParent();
+                assertSame(scroll.getViewport(), viewport, control.getName()); assertSame(control, viewport.getView(), control.getName());
+                scroll.scrollRectToVisible(new Rectangle(0, 0, scroll.getWidth(), scroll.getHeight())); window.validate();
+                Rectangle extent = new Rectangle(0, 0, viewport.getWidth(), viewport.getHeight());
+                assertTrue(control.isShowing(), control.getName());
+                assertTrue(viewport.getExtentSize().width > 0 && viewport.getExtentSize().height > 0 && viewport.getVisibleRect().contains(extent),
+                        control.getName() + " viewport clipped " + viewport.getBounds() + " visible " + viewport.getVisibleRect());
+                Rectangle visible = viewport.getViewRect().intersection(new Rectangle(0, 0, control.getWidth(), control.getHeight()));
+                assertTrue(visible.width > 0 && visible.height > 0, control.getName()); assertEquals(visible, control.getVisibleRect(), control.getName());
+                return null;
+            }
+            control.scrollRectToVisible(new Rectangle(0, 0, control.getWidth(), control.getHeight())); window.validate();
+            assertTrue(control.isShowing(), control.getName()); assertTrue(control.getWidth() > 0 && control.getHeight() > 0 && control.getVisibleRect().contains(new Rectangle(0, 0, control.getWidth(), control.getHeight())), control.getName() + " clipped " + control.getBounds() + " visible " + control.getVisibleRect()); return null; });
+    }
+    private static void findScreenshot(java.awt.Robot robot, Window window, String name, int font) throws Exception {
+        String evidence = System.getProperty("cairn.find.evidence");
+        if (evidence != null) {
+            java.nio.file.Path directory = java.nio.file.Path.of(evidence); java.nio.file.Files.createDirectories(directory);
+            java.awt.Rectangle bounds = edt(window::getBounds);
+            assertTrue(javax.imageio.ImageIO.write(robot.createScreenCapture(bounds), "png", directory.resolve(name + "-font" + font + "-scale" + System.getProperty("sun.java2d.uiScale") + ".png").toFile()));
+        }
+    }
 }

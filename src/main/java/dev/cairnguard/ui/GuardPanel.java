@@ -356,10 +356,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             }
         });
         installOpenAction(trafficTable, this::openTrafficDetail, "두 번 클릭 또는 Enter: 민감정보가 포함된 메모리 원문 요청·응답 (화면 전용)");
-        inlineInspector = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail);
+        inlineInspector = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail, this::refreshNow);
         JSplitPane history = named(new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(trafficTable), inlineInspector), "traffic.history");
         history.setResizeWeight(0.55); history.setOneTouchExpandable(true); history.setContinuousLayout(true);
-        history.setMinimumSize(new Dimension(80, 80));
         panel.add(history, BorderLayout.CENTER);
         trafficTable.getTableHeader().setReorderingAllowed(true);
         trafficTable.getRowSorter().addRowSorterListener(e -> {
@@ -723,13 +722,13 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private void openTrafficDetail() {
         if (selectedTrafficAnchor() == null) throw failure("SELECT_TRAFFIC_FIRST");
         if (popoutInspector != null) return;
-        TrafficInspector owned = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail);
+        TrafficInspector owned = new TrafficInspector(() -> stepTraffic(-1), () -> stepTraffic(1), this::showTrafficDetail, this::refreshNow);
         popoutInspector = owned;
         try {
             showTrafficDetail();
             showReadOnly("요청 상세 · 민감정보 포함 원문 화면 (내보내기는 평문 동의 후)", owned);
         } finally {
-            owned.clear("");
+            owned.close();
             if (popoutInspector == owned) popoutInspector = null;
             if (!closed) showTrafficDetail();
         }
@@ -1596,6 +1595,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         for (JButton action : policyActions) action.setEnabled(false);
         pause.setEnabled(false); passthrough.setEnabled(false); approve.setEnabled(false); deny.setEnabled(false);
         protectionState.setText("확장 종료 · 보호 상태 확인 불가");
+        if (inlineInspector != null) inlineInspector.close();
+        if (popoutInspector != null) popoutInspector.close();
         invalidateHistory(""); contentSearch.close(); presentation.close();
         trafficModel.setRows(List.of()); traffic = List.of();
         setDetail(approvalDetail, "");
@@ -1693,7 +1694,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             JPanel footer = new JPanel(new BorderLayout()); footer.add(feedback, BorderLayout.NORTH); footer.add(buttons(cancel, submit), BorderLayout.SOUTH);
             content.add(footer, BorderLayout.SOUTH); dialog.setContentPane(content);
             dialog.getRootPane().setDefaultButton(submit);
-            dialog.getRootPane().registerKeyboardAction(e -> dialog.dispose(), KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
+            dialog.getRootPane().registerKeyboardAction(e -> {
+                if (!(editor instanceof TrafficInspector inspector && inspector.dismissFind())) dialog.dispose();
+            }, KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
             fitDialog(dialog, parent, 980, 800);
             editors.add(dialog);
             try { dialog.setVisible(true); } finally { editors.remove(dialog); dialog.dispose(); }
@@ -1714,7 +1717,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         private final String[] columns; private final Class<?>[] types; private final java.util.function.Function<T, Object[]> values;
         private List<T> rows = List.of();
         RowsModel(String[] columns, Class<?>[] types, java.util.function.Function<T, Object[]> values) { this.columns = columns; this.types = types; this.values = values; }
-        void setRows(List<T> rows) { List<T> next = List.copyOf(rows); if (!this.rows.equals(next)) { this.rows = next; fireTableDataChanged(); } }
+        void setRows(List<T> rows) {
+            List<T> next = List.copyOf(rows);
+            boolean changed = !this.rows.equals(next);
+            this.rows = next;
+            if (changed) fireTableDataChanged();
+        }
         @Override public int getRowCount() { return rows.size(); }
         @Override public int getColumnCount() { return columns.length; }
         @Override public String getColumnName(int column) { return columns[column]; }

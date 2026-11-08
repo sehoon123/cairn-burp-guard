@@ -375,6 +375,50 @@ claim remains. Legacy reason enum/zero counter decoding is not active enforcemen
 Same-project save preserves manual rate/intent usage; project uncertainty clears
 old original/observer state and fails closed, without guessing native completion.
 
+### Selected-message literal Find
+
+`ui.TrafficInspector` is an owned UI view, not a public search or control API.
+Each inline or popout inspector owns one Find bar, one query Document, and one
+lazy search lane. Its six request and response Raw, Headers, and Body / HEX
+Documents are passive targets. Each side's Find button selects only that side's
+visible eligible field. Metadata, reasons, and static HTML preview are not targets.
+
+Find matches exact, case-sensitive displayed UTF-16 literals. Starts may overlap,
+Next and Previous wrap, and each query edit searches from offset zero. One owned
+highlight marks the current match without changing ordinary selection or unrelated
+highlights. The query is unfiltered and untrimmed, including pasted whitespace and
+line breaks. Empty text cancels the search. There is no regex, match count,
+all-match list, or query persistence. History row filtering is a separate search.
+
+Installed Message facts determine eligibility, not placeholder text. An absent
+side is ineligible. UNAVAILABLE excludes only Body; present Raw and retained
+Headers remain eligible. Genuinely empty Headers and EMPTY Body are eligible
+empty fields.
+Present Raw can match its displayed availability notices and labeled synthetic
+first line. Raw is an inspection projection, not a wire transcript. HEX matching
+uses the displayed contiguous characters, including odd starts, not decoded bytes.
+
+Workers receive only immutable displayed text, query text, scalar scan parameters,
+and cancellation. They never read live Swing Documents, runtime access, or whole
+raw getters. Query notifications snapshot the query and installed String without
+refreshing the source or mutating the notifying Document. Before publishing a
+match, no-match, or failure, the EDT rejects locally stale generation, Binding,
+Content, actual Document, visibility, eligibility, or closed-owner state. Only a
+locally current delivery calls the existing source-owner refresh, then repeats
+those checks before changing status, buttons, or marks. This sampled check is not
+an atomic authorization boundary.
+
+Valid identical Content preserves Find state. Semantic source replacement,
+retargeting, Document edits or replacement, hiding or removal, clear, source loss,
+failed refresh, project transition, and close retire obsolete state. Permanent
+close blanks owned Documents, detaches owned hooks, and signals its lane without
+joining on the EDT. Retired work may retain copied plaintext until cooperative
+exit. This is not zeroization of Strings, the clipboard, or exported files.
+Projection, layout, query paste, and source refresh remain unbounded; literal
+scanning can take O(n*m) comparisons without a fixed cancellation latency. Find
+changes no capture, forwarding, approval, pacing, OFF, policy, authentication, or
+export bytes.
+
 ## Validation and nonclaims
 
 See [test inventory](AUTOBLOCK_REMOVAL_TEST_MAP.md), [controller test boundaries](CONTROLLER_TESTS.md)
