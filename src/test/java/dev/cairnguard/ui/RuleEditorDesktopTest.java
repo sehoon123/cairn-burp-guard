@@ -40,7 +40,7 @@ class RuleEditorDesktopTest {
         CompletableFuture<Void> finished = new CompletableFuture<>();
         try {
             SwingUtilities.invokeLater(() -> {
-                try { dialogs.edit(frame.getContentPane(), "규칙 만들기", "저장하고 적용", editor, () -> saved.set(editor.value())); finished.complete(null); }
+                try { dialogs.edit(frame.getContentPane(), "규칙 만들기", "저장하고 적용", editor, confirmation -> saved.set(editor.value())); finished.complete(null); }
                 catch (Throwable e) { finished.completeExceptionally(e); }
             });
             JDialog dialog = awaitDialog();

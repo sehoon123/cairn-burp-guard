@@ -5,6 +5,7 @@ import dev.cairnguard.evidence.TrafficEntry;
 import dev.cairnguard.model.Decision;
 import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Condition;
+import dev.cairnguard.model.GuardConfig.DestinationScopeMode;
 import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.GuardConfig.Logic;
 import dev.cairnguard.model.GuardConfig.Match;
@@ -59,12 +60,31 @@ class GuardPanelTest {
         if (panel != null) edt(() -> { panel.close(); return null; });
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"project", "revision", "off", "pause", "close", "late-controller-race"})
+    void destinationModeConsentKeepsTheOriginalSnapshotAcrossEveryTransition(String transition) throws Exception {
+        open(); GuardConfig original = access.policy;
+        dialogs.editScript = (form, save) -> { get("scope.mode.choice", JComboBox.class).setSelectedItem(DestinationScopeMode.ALL_DESTINATIONS); save.run(); };
+        if (transition.equals("late-controller-race")) access.raceOnUpdate = true;
+        else dialogs.onConfirm = () -> {
+            if (transition.equals("close")) panel.close();
+            else { access.revision++; if (transition.equals("project")) access.project = "project-two";
+                if (transition.equals("off")) access.passthrough = true;
+                if (transition.equals("pause")) access.paused = true; }
+        };
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(original, access.policy); assertEquals(0, access.updates);
+        assertEquals(transition.equals("late-controller-race") ? 1 : 0, access.updateAttempts);
+        if (transition.equals("late-controller-race")) { assertEquals("project-one", access.submittedProject); assertEquals(7, access.submittedRevision); }
+        assertEquals(1, dialogs.confirmations.size()); assertEquals(1, dialogs.errors.size());
+    }
+
     @Test void firstRunExplainsBlockAndHasDirectRegistrationWithoutJson() throws Exception {
         assertThrows(IllegalStateException.class, () -> new GuardPanel(access));
         open();
         edt(() -> {
             JTabbedPane tabs = get("tabs", JTabbedPane.class);
-            assertEquals(List.of("개요", "대상", "규칙", "요청 기록", "승인 대기", "설정", "사건 내보내기"),
+            assertEquals(List.of("개요", "대상", "규칙", "기록", "승인 대기", "설정", "사건"),
                     java.util.stream.IntStream.range(0, tabs.getTabCount()).mapToObj(tabs::getTitleAt).toList());
             assertTrue(get("dashboard.state", JLabel.class).getText().contains("모든 요청 차단"));
             assertTrue(get("dashboard.guidance", JTextArea.class).getText().contains("허용 대상 등록"));
@@ -111,7 +131,7 @@ class GuardPanelTest {
             rules.getRowSorter().toggleSortOrder(1); rules.setRowSelectionInterval(0, 0);
             Rule expected = access.policy.rules().get(rules.convertRowIndexToModel(0));
             pressEnter(rules);
-            assertEquals(List.of(d.allowScope().getFirst(), block, expected), opened);
+            assertEquals(List.of(d.allowScope(), List.of(block), expected), opened);
             return null;
         });
         assertEquals(0, access.updateAttempts); assertTrue(dialogs.errors.isEmpty());
@@ -186,6 +206,43 @@ class GuardPanelTest {
         assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("보호 중")));
     }
 
+    @Test void scopeUxOneHostPortsAndExactPathsSaveTogetherWithoutWidening() throws Exception {
+        open();
+        dialogs.editScript = (form, save) -> {
+            get("scope.host", JTextField.class).setText("example.test");
+            get("scope.port", JTextField.class).setText("80,443");
+            get("scope.path", javax.swing.text.JTextComponent.class).setText("/api\n/manager");
+            save.run();
+        };
+        edt(() -> { click("dashboard.addTarget"); return null; });
+        assertEquals(1, access.updates);
+        assertEquals(List.of(
+                new ScopeEntry(true, "example.test", "https", 80, "\\A\\Q/api\\E\\z"),
+                new ScopeEntry(true, "example.test", "https", 80, "\\A\\Q/manager\\E\\z"),
+                new ScopeEntry(true, "example.test", "https", 443, "\\A\\Q/api\\E\\z"),
+                new ScopeEntry(true, "example.test", "https", 443, "\\A\\Q/manager\\E\\z")), access.policy.allowScope());
+        PolicyEngine engine = new PolicyEngine();
+        for (int destinationPort : List.of(80, 443)) {
+            for (String target : List.of("/api", "/manager")) {
+                RequestData nativeRequest = new RequestData("GET", "https://display.invalid/unrelated", "example.test", destinationPort, true,
+                        List.of(new RequestData.Header("Host", "fuzzed.invalid")), new byte[0], true, true, target);
+                assertEquals(Mode.ALLOW, engine.evaluate(access.policy, nativeRequest).mode());
+            }
+            for (String target : List.of("/admin", "/apix", "/api/", "/api/child", "/manager/child")) {
+                RequestData nativeRequest = new RequestData("GET", "https://example.test/api", "example.test", destinationPort, true,
+                        List.of(), new byte[0], true, true, target);
+                assertEquals(Mode.BLOCK, engine.evaluate(access.policy, nativeRequest).mode());
+            }
+        }
+        for (RequestData outside : List.of(
+                new RequestData("GET", "https://example.test/api", "example.test", 8080, true, List.of(), new byte[0], true, true, "/api"),
+                new RequestData("GET", "https://example.test/api", "outside.test", 443, true,
+                        List.of(new RequestData.Header("Host", "example.test")), new byte[0], true, true, "/api"),
+                new RequestData("GET", "https://example.test/api", "example.test", 80, false, List.of(), new byte[0], true, true, "/api")))
+            assertEquals(Mode.BLOCK, engine.evaluate(access.policy, outside).mode());
+        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
+    }
+
     @Test void cancelTargetFormChangesNothingAndQueryIsNotSilentlyDiscarded() throws Exception {
         open();
         dialogs.editScript = (form, save) -> {
@@ -201,7 +258,7 @@ class GuardPanelTest {
     @Test void scopeEditPreservesArbitraryRegexAndCancelToggleDeleteRequireConsent() throws Exception {
         access.policy = policyWithAllow(); open();
         edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 0); return null; });
-        dialogs.editScript = (form, save) -> { assertEquals(access.policy.allowScope().getFirst(), form.value()); save.run(); };
+        dialogs.editScript = (form, save) -> { assertEquals(access.policy.allowScope(), form.value()); save.run(); };
         edt(() -> { click("scope.allow.edit"); return null; });
         assertEquals(0, access.updates, "unchanged form must not cancel approvals or bump revision");
         dialogs.confirmed = false;
@@ -225,6 +282,116 @@ class GuardPanelTest {
         assertEquals("SCOPE_BLOCKED", new PolicyEngine().evaluate(access.policy, request("/admin")).reason());
         assertEquals(Mode.ALLOW, new PolicyEngine().evaluate(access.policy, request("/safe")).mode());
     }
+
+    @Test void explicitSortedMultiSelectionReopensBothListsAndGuardsSingleRowMutations() throws Exception {
+        ScopeEntry untouched = new ScopeEntry(false, "unrelated.test", "AnY", 0, "(?i)/line\n\r\t");
+        List<ScopeEntry> original = List.of(scopePair(80, "/api"), untouched, scopePair(80, "/manager"), scopePair(443, "/api"), scopePair(443, "/manager"), untouched);
+        GuardConfig defaults = GuardConfig.defaults();
+        access.policy = new GuardConfig(2, original, List.of(), defaults.rules(), Mode.ALLOW, defaults.limits());
+        open();
+        edt(() -> {
+            JTable table = get("scope.allow.table", JTable.class);
+            table.getRowSorter().toggleSortOrder(3);
+            for (int model : List.of(0, 2, 3, 4)) { int row = table.convertRowIndexToView(model); table.addRowSelectionInterval(row, row); }
+            click("scope.allow.toggle"); click("scope.allow.delete");
+            assertEquals(2, dialogs.errors.size()); assertEquals(0, access.updateAttempts);
+            dialogs.editScript = (form, save) -> {
+                assertEquals("80,443", get("scope.port", JTextField.class).getText());
+                assertEquals("/api\n/manager", get("scope.path", JTextArea.class).getText());
+                assertEquals(original, form.value());
+                get("scope.path", JTextArea.class).setText("/api");
+                assertTrue(get("scope.preview", JTextArea.class).getText().contains("제거·교체 2개"));
+                save.run();
+            };
+            pressEnter(table);
+            return null;
+        });
+        assertEquals(1, access.updates);
+        assertEquals(List.of(original.get(0), untouched, original.get(3), untouched), access.policy.allowScope());
+        assertEquals("project-one", access.submittedProject); assertEquals(7, access.submittedRevision);
+    }
+
+    @Test void sparseMemberSaveNeverAddsTheTwoMissingPortPathPermissions() throws Exception {
+        List<ScopeEntry> original = List.of(scopePair(80, "/api"), scopePair(443, "/manager"));
+        GuardConfig defaults = GuardConfig.defaults();
+        access.policy = new GuardConfig(2, original, List.of(), defaults.rules(), Mode.ALLOW, defaults.limits());
+        open();
+        dialogs.editScript = (form, save) -> {
+            assertEquals(original, form.value());
+            JTable members = get("scope.members.table", JTable.class);
+            get("scope.host", JTextField.class).setText("Changed.test.");
+            click("scope.member.apply");
+            members.setRowSelectionInterval(1, 1);
+            get("scope.host", JTextField.class).setText("Changed.test.");
+            click("scope.member.apply");
+            save.run();
+        };
+        edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 1); click("scope.allow.edit"); return null; });
+        assertEquals(1, access.updates); assertEquals(2, access.policy.allowScope().size());
+        PolicyEngine engine = new PolicyEngine();
+        for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) {
+            RequestData request = new RequestData("GET", "https://display.invalid/", "changed.test", port, true, List.of(), new byte[0], true, true, path);
+            assertEquals(port == 80 && path.equals("/api") || port == 443 && path.equals("/manager") ? Mode.ALLOW : Mode.BLOCK, engine.evaluate(access.policy, request).mode());
+        }
+    }
+
+    @Test void invalidBulkInputAndCancelledDraftNeverSaveAnyPartialSection() throws Exception {
+        open();
+        GuardConfig original = access.policy;
+        for (String invalid : List.of("", "80,", "80,,443", "80,080", "80,65536")) {
+            dialogs.editScript = (form, save) -> {
+                get("scope.host", JTextField.class).setText("example.test");
+                get("scope.port", JTextField.class).setText(invalid);
+                get("scope.path", JTextArea.class).setText("/api\n/manager"); save.run();
+            };
+            edt(() -> { click("scope.allow.add"); return null; });
+            assertEquals(original, access.policy); assertEquals(0, access.updateAttempts);
+        }
+        dialogs.editScript = (form, save) -> {
+            get("scope.host", JTextField.class).setText("example.test"); get("scope.port", JTextField.class).setText("80,443");
+            get("scope.path", JTextArea.class).setText("/api\n/manager");
+        };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(original, access.policy); assertEquals(0, access.updateAttempts);
+    }
+
+    @Test void bulkSaveKeepsTheOpeningSnapshotAcrossLiveProjectAndOffTransitions() throws Exception {
+        for (boolean projectChange : List.of(false, true)) {
+            if (panel != null) edt(() -> { panel.close(); return null; });
+            access.project = "project-one"; access.passthrough = false; access.policy = policyWithAllow(); open();
+            GuardConfig original = access.policy;
+            dialogs.editScript = (form, save) -> {
+                get("scope.host", JTextField.class).setText("example.test"); get("scope.port", JTextField.class).setText("80,443");
+                get("scope.path", JTextArea.class).setText("/api\n/manager");
+                access.revision++;
+                if (projectChange) access.project = "project-two"; else access.passthrough = true;
+                panel.refreshNow(); save.run();
+            };
+            edt(() -> { click("scope.allow.add"); return null; });
+            assertEquals(original, access.policy); assertEquals(0, access.updateAttempts);
+        }
+    }
+
+    @Test void expandedCapacityAndWholePolicyCompileBudgetRejectAtomically() throws Exception {
+        GuardConfig d = GuardConfig.defaults();
+        List<ScopeEntry> retained = java.util.stream.IntStream.range(0, 253).mapToObj(i -> new ScopeEntry(false, "h" + i + ".test", "https", 443, "")).toList();
+        access.policy = new GuardConfig(2, retained, List.of(), d.rules(), Mode.ALLOW, d.limits()); open();
+        dialogs.editScript = (form, save) -> {
+            get("scope.host", JTextField.class).setText("example.test"); get("scope.port", JTextField.class).setText("80,443");
+            get("scope.path", JTextArea.class).setText("/api\n/manager"); save.run();
+        };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(retained, access.policy.allowScope()); assertEquals(0, access.updateAttempts);
+        access.policy = d; edt(() -> { panel.refreshNow(); return null; });
+        dialogs.editScript = (form, save) -> {
+            get("scope.host", JTextField.class).setText("example.test"); get("scope.port", JTextField.class).setText("80,443");
+            get("scope.path", JTextArea.class).setText(String.join("\n", java.util.stream.IntStream.range(0, 64).mapToObj(i -> "/" + i + "a".repeat(590)).toList())); save.run();
+        };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(d, access.policy); assertEquals(0, access.updateAttempts);
+    }
+
+    private static ScopeEntry scopePair(int port, String path) { return new ScopeEntry(true, "example.test", "https", port, "\\A\\Q" + path + "\\E\\z"); }
 
     @Test void newRuleIsVisualAndToggleDeleteSaveOnlyTheIntendedRule() throws Exception {
         open();
@@ -431,7 +598,8 @@ class GuardPanelTest {
         edt(() -> { click("protection.passthrough"); return null; });
         assertTrue(access.passthrough); assertFalse(access.paused); assertEquals(0, access.updates);
         assertTrue(edt(() -> get("dashboard.state", JLabel.class).getText().contains("보호 꺼짐")));
-        assertTrue(edt(() -> get("scope.state", JTextArea.class).getText().contains("검사하지 않습니다")));
+        assertEquals("보호끔·미수집 | 저장방식 미적용·별도허가", edt(() -> get("scope.state", JLabel.class).getText()));
+        assertTrue(edt(() -> get("scope.help", JTextArea.class).getText().contains("검사하지 않습니다")));
         edt(() -> {
             JTabbedPane tabs = get("tabs", JTabbedPane.class);
             for (int index = 0; index < tabs.getTabCount(); index++) {
@@ -455,6 +623,37 @@ class GuardPanelTest {
         edt(() -> { click("protection.passthrough"); return null; });
         assertFalse(access.passthrough); assertEquals(0, access.modeChanges);
         assertFalse(dialogs.errors.toString().contains(SECRET));
+    }
+
+    @Test void readyFooterKeepsAuthorizedTargetAndProtectionInstructionsOnOneLine() throws Exception {
+        open();
+        edt(() -> {
+            JLabel footer = get("message", JLabel.class);
+            String text = footer.getText();
+            for (String meaning : List.of("준비", "허가받은 대상", "등록", "보호 상태", "확인"))
+                assertTrue(text.contains(meaning), meaning);
+            for (int font : List.of(14, 28)) {
+                footer.setFont(footer.getFont().deriveFont((float) font));
+                panel.setSize(718, 535); panel.doLayout();
+                var metrics = footer.getFontMetrics(footer.getFont());
+                var insets = footer.getInsets();
+                java.awt.Rectangle view = SwingUtilities.calculateInnerArea(footer, new java.awt.Rectangle());
+                java.awt.Rectangle glyphs = new java.awt.Rectangle();
+                String rendered = SwingUtilities.layoutCompoundLabel(footer, metrics, text, footer.getIcon(),
+                        footer.getVerticalAlignment(), footer.getHorizontalAlignment(), footer.getVerticalTextPosition(),
+                        footer.getHorizontalTextPosition(), view, new java.awt.Rectangle(), glyphs, footer.getIconTextGap());
+                assertEquals(metrics.getHeight() + insets.top + insets.bottom, footer.getPreferredSize().height, "one-line preferred height");
+                assertEquals(footer.getPreferredSize().height, footer.getHeight(), "do not borrow scope-row height");
+                System.out.printf("FOOTER_READY_GLYPHS font=%d width=%d available=%d height=%d rendered=%s full=%s%n",
+                        font, metrics.stringWidth(text), view.width, footer.getHeight(), rendered, text);
+                assertAll("font=" + font,
+                        () -> assertEquals(text, rendered, "complete visible instruction, not an ellipsis"),
+                        () -> assertTrue(metrics.stringWidth(text) <= view.width, "complete current-font glyph width"),
+                        () -> assertTrue(view.contains(glyphs), "complete current-font glyph rectangle"));
+            }
+            assertEquals(0, access.updates); assertEquals(0, access.updateAttempts); assertTrue(access.decisions.isEmpty());
+            return null;
+        });
     }
 
     @Test void failedModeChangeNeverPretendsProtectionIsOffAndUnavailabilityDisablesControl() throws Exception {
@@ -944,7 +1143,7 @@ class GuardPanelTest {
         @Override public boolean confirm(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); confirmations.add(text); onConfirm.run(); return confirmed; }
         @Override public Path chooseExport(Component parent, String extension) { assertTrue(SwingUtilities.isEventDispatchThread()); chosenExtensions.add(extension); return target; }
         @Override public void error(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); errors.add(text); }
-        @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save) { assertTrue(SwingUtilities.isEventDispatchThread()); this.form = form; edits++; editScript.accept(form, save); }
+        @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, java.util.function.Consumer<GuardPanel.SubmitConfirmation> save) { assertTrue(SwingUtilities.isEventDispatchThread()); this.form = form; edits++; editScript.accept(form, () -> save.accept((text, label) -> confirm(parent, text, label))); }
         @Override public void closeEditors() { closedEditors++; }
     }
     private static final class FakeAccess implements GuardUiAccess {

@@ -1,0 +1,44 @@
+{
+  "schemaVersion" : 2,
+  "allowScope" : [ ],
+  "blockScope" : [ ],
+  "rules" : [ {
+    "id" : "delete-method",
+    "name" : "Block DELETE method",
+    "enabled" : true,
+    "mode" : "BLOCK",
+    "condition" : {
+      "logic" : "LEAF",
+      "field" : "METHOD",
+      "name" : "",
+      "match" : "EXACT",
+      "value" : "DELETE",
+      "caseSensitive" : false,
+      "children" : [ ]
+    }
+  } ],
+  "defaultMode" : "ALLOW",
+  "limits" : {
+    "globalRps" : 0,
+    "perHostRps" : 0,
+    "hostRps" : { },
+    "maxConcurrent" : 5,
+    "maxQueued" : 100,
+    "queueTimeoutMillis" : 30000,
+    "approvalTimeoutMillis" : 30000,
+    "requestTimeoutMillis" : 60000,
+    "perPathMaxResponseBytes" : 5242880,
+    "autoBlockMillis" : 600000,
+    "circuit5xx" : null,
+    "fanout" : {
+      "windowMillis" : 60000,
+      "distinctPaths" : 100,
+      "action" : "WARN"
+    },
+    "perIntentMaxRequests" : 0,
+    "healthProbePassthrough" : false,
+    "healthProbePaths" : [ ],
+    "heavyPathLimits" : [ ]
+  },
+  "guardListenerPorts" : [ ]
+}

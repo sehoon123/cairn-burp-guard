@@ -1,6 +1,6 @@
-# V2 integration contracts for v0.3.0 development source
+# V2 integration contracts for v0.4.0 development source
 
-These are the APIs in the **v0.3.0 development source**. They are not proof of
+These are the APIs in the **v0.4.0 development source**. They are not proof of
 installed/native behavior or stable integration certification. Java package:
 `dev.cairnguard`. Source is authoritative. See [VERIFICATION.md](VERIFICATION.md)
 for the frozen-snapshot results and pending acceptance gates. No worker/network
@@ -16,11 +16,26 @@ save is introduced by these interfaces.
 ```java
 record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope,
     List<ScopeEntry> blockScope, List<Rule> rules, Mode defaultMode,
-    Limits limits, List<Integer> guardListenerPorts)
+    Limits limits, List<Integer> guardListenerPorts,
+    DestinationScopeMode destinationScopeMode)
 ```
 
-The original six-argument constructor remains; it supplies an empty listener list
-and **does not silently upgrade** its schema argument. Collections are copied.
+The six- and seven-argument compatibility constructors remain; both select
+`DestinationScopeMode.ALLOWLIST` and **do not silently upgrade** the supplied schema.
+Six arguments also supply an empty listener list. The full constructor does not
+coalesce an explicit null mode; validation rejects it. Collections are copied.
+
+- `DestinationScopeMode { ALLOWLIST, ALL_DESTINATIONS }` is destination admission,
+  not the separate rule/default `Mode`, OFF, EXEMPT or target authorization.
+  ALLOWLIST requires one enabled entry covering all routing views and empty denies.
+  ALL_DESTINATIONS skips only that positive allow proof/work after valid actual
+  target and hard block/unresolved-path checks. Stored allow rows remain intact
+  and compile/validate even while unused. Schema1 ALL is invalid before conversion.
+- All seven current-policy copy/validation sites carry the component: codec
+  `toV2`/legacy-rule removal, panel scope replacement/mutation, shared rule copy,
+  settings save, and SettingsEditor full-policy validation. A mode-only draft
+  also copies the entire opening policy. Scratch rule/limit validators can keep
+  safe compatibility construction; no controller flag or targeted setter exists.
 
 - `Mode { EXEMPT, ALLOW, BLOCK, MONITOR, ASK }`. EXEMPT is a v2 rule action,
   never a default mode. Ordinary priority is **EXEMPT > BLOCK > ASK > ALLOW**;
@@ -32,7 +47,8 @@ and **does not silently upgrade** its schema argument. Collections are copied.
   String pathRegex)`: actual service host/scheme/port + request-target path,
   not Host/`:authority`. Exact/IDN-canonical host or proper-subdomain wildcard;
   `http`/`https`/`any`; port `0` means any; path regex full-matches path only.
-  Empty path regex means **all paths**; empty allowlist allows nothing.
+  Empty path regex means **all paths**; empty allowlist denies in ALLOWLIST
+  (including every default/missing/legacy mode). ALL_DESTINATIONS preserves the list.
 - `Rule(String id, String name, boolean enabled, Mode mode, Condition condition)`.
 - `Condition(Logic logic, Field field, String name, Match match, String value,
   boolean caseSensitive, List<Condition> children)`. AND/OR contain children,
@@ -66,7 +82,8 @@ strictly validated/preserved on load/save but NEVER execute, even if true/positi
 No new auto-block switch or reason allowlist exists. Ordinary authored BLOCK rules
 remain active; legacy detector routes are not converted into new rules.
 
-New-profile defaults: empty allowlist, default ALLOW inside valid scope, DELETE
+New-profile defaults: ALLOWLIST with empty allowlist (deny), default ALLOW only
+following selected destination admission and hard checks, DELETE
 method BLOCK only, global/default-host rates0/0, queue100, queue/approval30000ms,
 intent0, healthfalse, empty listener selection. Legacy detector/concurrency/timeout
 values retain their serialized defaults solely for read/round-trip compatibility.
@@ -97,7 +114,16 @@ acceptance is not permission to write ambiguous probe configuration.
 - `encode(GuardConfig)` / `toV2(GuardConfig)` validate; explicit production saves
   emit full schema2. `encodeLegacy` exists for old Java fixtures only and refuses a
   policy carrying heavy=false or nonempty exceptions (never drops them silently).
-- Optional schema-2 fields, and ONLY these: `limits.circuit5xxExceptions` and
+- Optional schema2 root `destinationScopeMode`: absence alone supplies ALLOWLIST
+  in a deep-copied in-memory tree. A present value must be text exactly ALLOWLIST
+  or ALL_DESTINATIONS. Explicit null, ordinals, wrong/coerced/unknown/case/padded
+  values, duplicates and schema1 smuggling (even ALLOWLIST) reject. Every old root
+  key/list remains required. Encode omits ALLOWLIST and emits ALL_DESTINATIONS;
+  default output remains byte-identical to the pre-mode synthetic golden resource.
+  Pre-mode strict v2 readers accept default-omitted output but refuse either new
+  field value when present. This is not universal binary/record-reflection compatibility.
+  OriginalDocument remains exact; no load/save migration or storage key is added.
+- Optional schema-2 Limits fields remain `limits.circuit5xxExceptions` and
   `limits.fanoutExceptions` (absent = empty; present must be a nonnull array of
   exact `{scheme,host,port,path}` objects) and `limits.heavyResponseEnabled`
   (absent = true; present must be a JSON boolean). Encode OMITS an empty list and a
@@ -352,6 +378,103 @@ request. Raw request is null; JSON original.request is null with requestUnavaila
 HAR empty request has `_unavailable`. Ordinary raw/JSON/HAR/seal/clear/export
 checks apply to this row as well. No fabricated pair enters watcher statistics.
 
+### Human submit confirmation lifetime
+
+The package-private `Dialogs.edit` submit consumer receives a fresh, synchronous
+`SubmitConfirmation` bound only to that editor's actual Save action. Its explicit
+Cancel/default Enter/Escape decline retires that editor before closing its own
+application-modal prompt. Accepted consent and validation/error feedback never
+retire it early; native window-close retains its original path. Raw confirmations
+(including export from an open review) have no editor-retirement capability.
+There is no ambient editor lookup, worker/control API, or change to Snapshot/CAS.
+
+### Destination-mode draft and coherent presentation
+
+`scope.mode.edit` lives only in 대상 → 방식·안내. Its local
+`EditorForm<DestinationScopeMode>` uses `scope.mode.choice`, matching `.label`,
+plain enum renderer and complete selectable `scope.mode.help` in a real scroller.
+It never saves on selection/refresh. Visual and whole-policy JSON changes converge
+on shared save: original Snapshot check, full validate/encode, no-op exit, existing
+migration consent, exactly one extra Cancel-default confirmation for either mode
+direction, remaining EXEMPT/listener/health confirmations, original Snapshot check,
+one updateConfig CAS. No-op/cancel/decline/invalid/UI-detected stale writes0; a late
+controller CAS race may attempt once and write0. Native uncertain saves are not
+promised physical-write0/rollback. Saves revoke old uncommitted work/waits without
+approval and preserve pause/OFF, rate/intent debt and committed response originals.
+
+One native-font `scope.state` JLabel replaces the status scroller and per-list hints.
+The full original guidance, critical text, tuple instructions and current status
+remain selectable in `scope.help`. `updateScopePresentation` is their only writer;
+coherent OFF, invalid/unverified/closed, pause and legacy-listener states precede
+any active ALL/ALLOWLIST description. Refresh failure/close invalidate it; a UI
+failure alone does not prove blocked because prior OFF may still be active.
+Only the new scope desktop operator helper scrolls actual enclosing viewports once
+inner-to-outer using fresh converted coordinates. No focus/layout repair or production
+ScopeEditor caret/scroll workaround is added. Fixed parent720x560/modal640x600,
+fonts14/28/scales1/2, native caption/client/row floors and30s/8s remain real gates.
+
+### Persistent header and navigation
+
+The shared header uses the existing current-font wrapping action row, including
+project/settings revision, protection state, cumulative passthrough count, help,
+refresh and protection toggle. Its seven destinations remain visible as 개요,
+대상, 규칙, 기록, 승인 대기, 설정 and 사건 in the original content/index order;
+the approval tab appends its pending count when nonzero.
+The pending-v1 banner keeps a concise visible memory-only conversion notice:
+saved original/rules retained, new detectors OFF, compare/export original before
+explicit human save. Its two native action buttons sit beside the wrapping notice;
+review remains a policy action and original export keeps its plain-button
+registration/availability. Full review and consent explanations are unchanged.
+No control font, native margin/minimum, window/focus behavior or safety gate changes.
+
+### Destination-scope authoring forms
+
+`ScopeEditor(List<ScopeEntry> originalSection, List<Integer> selectedIndices)`
+implements `EditorForm<List<ScopeEntry>>`. Empty selection means Add; `value()`
+returns the entire immutable revised allow or block section. GuardPanel captures
+sorted source indices from explicit scope-table multi-selection and the original
+project/revision Snapshot, then validates/encodes and saves one full candidate.
+There is no single-entry editor result or per-expanded-entry persistence loop.
+
+Package-private `ScopeDraft` owns parsing and tuple-occurrence replacement.
+`Input(enabled,host,scheme,allPorts,portText,pathMode,pathText,regexText)` and
+`Member(sourceIndex,entry)` are editor data, not policy schema. A member's original
+index identifies its occurrence; `-1` is an explicitly new cell. Unselected rows
+and surviving original cells stay in place; new cells append in port-major order.
+Only an exactly reproducible complete rectangle with identical raw qualifiers
+opens compact lists. Sparse, duplicate, differently ordered or mixed selections
+open a member editor with explicit draft Apply/Reset. They are never host-grouped
+or widened to a product. Unapplied/invalid member fields prevent switching/save.
+
+Destination ports use ASCII comma separators, ASCII space/tab at token edges,
+one-to-five ASCII digits and range1..65535. Numeric duplicates including80/080,
+empty tokens, newlines and invalid tokens reject the whole draft. Literal paths
+use one raw path per LF/CRLF line with exactly one optional final terminator.
+No trimming, decoding, normalization or comma splitting; blank/duplicate lines
+and lone CR reject. EXACT is default; segment PREFIX, ALL and opaque multiline
+RE2 are explicit. All ports is a separate checkbox; empty/invalid is never ALL.
+URL Fill replaces the current compact draft with one exact URL pair, or fills the
+selected member's fields pending draft Apply. It does not contact the target.
+
+A new80,443 by/api,/manager selection emits four separate ScopeEntry objects,
+not one regex alternation. One allow entry must still cover every routing view;
+block scope still wins. Scheme is independent of ports. Preview and final value
+use the same validated proposed members, with full raw/canonical host, raw scheme,
+all pairs/expressions and occurrence additions/removals. Preview stays selectable.
+Path Enter inserts a line; Tab/Shift+Tab traverse. Cancel/stale project never save.
+The scope tab keeps a concise native-font status JLabel, local actions and inline
+destination/path-view, block-first and separate-permission guidance. Its selectable
+keyboard-accessible guidance tab retains the complete current status, original
+detailed explanation and multi-selection instructions. This is scope-local
+presentation only; OFF/currentness and all other tab owners remain.
+
+Port/path-list documents are bounded at2048/66048 characters; host257, URL16384,
+individual RE2 source2048/program4096, section256, aggregate policy source65536/
+program131072 and JSON2097152 remain. Rejected-paste latches prevent saving old
+or truncated text. These are authoring/enforcement bounds, not capture quotas.
+The flat schema1/2, original-policy export and all templates remain unchanged.
+Destination-server ports are not deferred Proxy-listener H.
+
 GuardUiAccess consists of config/updateConfig/status/traffic/approvals/
 decideApproval/bookmark/exportJson/exportHar/clearEvidence/pause/passthrough/
 refreshProject, resetIntentBudgets/exportIncident/migrationView/raw getters and
@@ -367,6 +490,10 @@ check-to-rename race and sampled project boundary remain. Already-exported files
 cannot be retracted. Schema2 machine JSON/HAR also contain originals; no automatic
 file write. Full formats and faithful raw-target/unknown-wire semantics:
 [EVIDENCE.md](EVIDENCE.md).
+
+`status.destinationScopeMode` is derived from the same immutable config under
+its existing mutation lock. It describes configured policy even while OFF/paused,
+not admission/effective protection. No runtime mode boolean/generation/API is added.
 
 Status keeps typed lifecycle/operator pause/revision/project/migration/listener,
 rate queue/approval/intent/evidence counters and observational watcher count/clock

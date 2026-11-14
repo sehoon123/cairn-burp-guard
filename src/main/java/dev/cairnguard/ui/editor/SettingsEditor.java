@@ -172,10 +172,10 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
         row(timing, 3, "규칙에 해당하지 않을 때", defaultMode);
         advanced.add(timing);
         advanced.add(wrapped("settings.timing.help", "전송 대기열은 켜진 수동 속도만 기다립니다. 응답 완료를 기다리지 않습니다. 전송·승인 대기 시간은 0.001~600초이며 만료 시 거절합니다."));
-        advanced.add(wrapped("settings.mode.help", "기본 동작은 등록한 허용 범위 안에서만 적용됩니다. 허용 대상이 없거나 필수 안전 검사에 실패하면 항상 차단합니다."));
+        advanced.add(wrapped("settings.mode.help", "기본 동작은 대상 적용 방식의 검사 후 적용됩니다. 목록 방식은 허용 대상이 없으면 차단하고, 전체 목적지 방식은 허용 등록 없이 규칙을 검사합니다. 차단 대상·불완전한 차단 경로 제약·필수 안전 검사는 두 방식 모두 유지됩니다."));
         JPanel hostPanel = named(new JPanel(new BorderLayout(4, 4)), "settings.hostRps", "호스트별 속도");
         hostPanel.setBorder(BorderFactory.createTitledBorder("호스트별 속도 (최대 256행)"));
-        hostPanel.add(wrapped("settings.hostRps.help", "기본 호스트 속도만 대체하며 전체 속도 제한과 허용 범위는 유지됩니다. URL·포트·경로·와일드카드 없이 호스트만 입력하세요. 각 속도는 0~1,000 정수입니다. 같은 호스트의 별칭은 중복할 수 없습니다. 기존 호스트 표기는 그대로 보존됩니다."), BorderLayout.NORTH);
+        hostPanel.add(wrapped("settings.hostRps.help", "기본 호스트 속도만 대체하며 전체 속도 제한과 선택한 대상 적용 방식은 유지됩니다. URL·포트·경로·와일드카드 없이 호스트만 입력하세요. 각 속도는 0~1,000 정수입니다. 같은 호스트의 별칭은 중복할 수 없습니다. 기존 호스트 표기는 그대로 보존됩니다."), BorderLayout.NORTH);
         hostPanel.add(scroll(hosts, "settings.hostRps.scroll"), BorderLayout.CENTER);
         JPanel hostButtons = named(new JPanel(new FlowLayout(FlowLayout.LEADING)), "settings.hostRps.buttons", "호스트별 속도 작업");
         hostButtons.add(addHost);
@@ -233,7 +233,7 @@ public final class SettingsEditor implements EditorForm<SettingsEditor.Value> {
             ports = safety.listenerPorts();
         } catch (FormValidationException e) { throw failure(e.getMessage(), true); }
         try {
-            engine.validate(new GuardConfig(initial.schemaVersion(), initial.allowScope(), initial.blockScope(), initial.rules(), mode, limits, ports));
+            engine.validate(new GuardConfig(initial.schemaVersion(), initial.allowScope(), initial.blockScope(), initial.rules(), mode, limits, ports, initial.destinationScopeMode()));
         } catch (RuntimeException e) { throw failure("안전 제어 설정을 확인하세요. 경로는 정확한 scheme/host/port/path여야 하며 쿼리·조각·중복·모호한 경로는 허용하지 않습니다. " + POLICY_ERROR, true); }
         validation.setText(" ");
         return new Value(mode, limits, ports);

@@ -1,6 +1,21 @@
 # UI/UX 재설계 — 2026-11-04 작업 기준
 
-## 사용자 문제와 완료 기준
+## 현재0.4.0 소스 계약과 아래 역사 구분
+
+현재는 선택한 목적지 적용 방식 `ALLOWLIST`(기본/빈 목록 차단)와 명시 저장
+`ALL_DESTINATIONS`(양의 허용 증명만 생략)를 사용합니다. 방식·안내 탭의 로컬
+폼과 JSON은 양방향 취소-기본 확인, 원래 Snapshot과 한 번의 CAS를 공유합니다.
+모든 현재 정책 copier는 enum을 보존합니다. scope.state는 한 native JLabel이며
+중복 하단 안내 대신 원래 설명·임계 문구·현재 상태 전체를 같은 guide에 보존합니다.
+refresh 실패/close/OFF/일시중지·정책 오류는 저장된 ALL을 유효한 보호로 표시하지
+않습니다. 신규 scope operator helper만 실제 viewport를 안쪽부터 한 번씩 변환·스크롤하고
+기존720×560/640×600·font14/28·scale1/2·native row/caption/client·30s/8s는 그대로입니다.
+실제 source/JAR GUI와 별도 독립 실행이 필요하며 source 설명은 PASS가 아닙니다.
+아래2026-11-04 마스킹/동시성·API 미변경 설계와 검사 수치는 그 역사적 산출물에만
+해당합니다. 현재는 무마스킹·무제한 원문이며 새 mode는 인증·quota·spool·응답 자동
+차단·별도 메모리 작업을 추가하거나 되살리지 않습니다. 현재 계약은 UI/INTERFACES를 따릅니다.
+
+## 사용자 문제와 완료 기준 (2026-11-04 역사)
 
 첫 버전은 JSON/내부 enum/진단 코드를 알아야 쓰는 개발자용 화면이었다. 단순 미관 수정이 아니라 일반 사용자의 흐름을 바꾼다. 기존 정책·저장 스키마·프록시 안전 경계는 변경하지 않는다.
 
@@ -19,7 +34,7 @@
 공통 새 패키지: `dev.cairnguard.ui.editor`.
 
 - `EditorForm<T>`: `JComponent component()`, `T value()`. EDT-only, 검증 실패는 `FormValidationException`의 고정·행동 가능한 한국어 설명. 원본 예외/비밀/입력값을 오류에 이어 붙이지 않는다.
-- `ScopeEditor(ScopeEntry initial)` (`null`=신규), implements `EditorForm<ScopeEntry>`. `static String summary(ScopeEntry)` plain display summary. URL에서 명시적으로 폼에 반영, enabled/host/scheme/port/path 모드와 실제 결과 미리보기. 정규식은 고급 선택지. 편집 시 기존 regex/host wildcard/any-port 의미 보존.
+- 현재 대상 폼 계약 (2026-11-11 source): `ScopeEditor(List<ScopeEntry> originalSection, List<Integer> selectedIndices)` implements `EditorForm<List<ScopeEntry>>`. 빈 선택은 추가이며 결과는 전체 수정 섹션입니다. 포트 쉼표 목록 × 한 줄당 정확 경로 목록을 별도 flat 항목으로 미리 보고 한 번 저장합니다. 저장 후 명시적 여러 행 선택으로 다시 편집합니다. 정확한 전체 조합만 목록으로 재구성하고 기존 불규칙/중복/혼합 선택은 개별 항목 Apply/Reset으로 원래 짝·위치를 보존합니다. `static String summary(ScopeEntry)`는 단일 저장 항목의 plain summary입니다. URL 반영·ALL·PREFIX·RE2는 명시적이며 raw regex/scheme/host/wildcard/IPv6/disabled 의미와 Snapshot/CAS를 유지합니다. 아래 과거 산출물의 결과는 이 신규 계약의 검증 기록이 아닙니다.
 - `RuleEditor(Rule initial)` (`null`=신규), implements `EditorForm<Rule>`. 추가 컴포넌트 `ConditionEditor`는 같은 작업자가 소유. `static String summary(Condition)` plain display summary. 기존 rule ID 보존, 신규 ID 자동 생성. 시각적 LEAF/AND/OR 조합, 사용자 친화적 field/match/mode/selector labels, toggle. 예제는 synthetic만.
 - `SettingsEditor(GuardConfig initial)`, implements `EditorForm<SettingsEditor.Value>`, nested `record Value(Mode defaultMode, Limits limits)`. seconds↔ms는 정확하게 보존/검증. `hostRps`는 bounded table/form, no JSON. 기존 설정을 바꾸지 않고 읽기만 했을 때 value는 같아야 한다.
 - 모든 폼 위젯은 고유한 `setName`과 label/accessibility를 갖고 테스트 가능해야 한다. 동적 JLabel/tree/table renderer의 Swing HTML 해석을 끈다. 텍스트·행·트리 크기는 bounded; 기존 유효한 값을 조용히 자르지 않는다.

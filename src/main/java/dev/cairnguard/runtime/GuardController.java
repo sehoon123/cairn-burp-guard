@@ -606,6 +606,7 @@ public final class GuardController implements GuardUiAccess, AutoCloseable {
             result.put("passthroughAvailable", !closed && !reloadRequired);
             result.put("migrationPending", migrationPending);
             result.put("guardListenerPorts", s.config().guardListenerPorts());
+            result.put("destinationScopeMode", s.config().destinationScopeMode().name());
             result.put("note", note);
             result.put("evidence", evidenceStats);
             result.put("reasonCounters", evidenceStats.get("reasonCounters"));

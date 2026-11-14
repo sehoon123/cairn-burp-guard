@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.cairnguard.model.GuardConfig.*;
 import dev.cairnguard.policy.PolicyEngine;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +38,8 @@ class PolicyCodecTest {
     }
     private static ObjectNode document() {
         ObjectNode node = Json.MAPPER.valueToTree(savedOn());
-        // the exact first schema-2 shape: none of the three optional fields
+        // The exact first schema-2 shape has neither the optional destination mode nor optional limit fields.
+        node.remove("destinationScopeMode");
         ((ObjectNode) node.get("limits")).remove(List.of("circuit5xxExceptions", "heavyResponseEnabled", "fanoutExceptions"));
         return node;
     }
@@ -53,6 +55,90 @@ class PolicyCodecTest {
     }
     private static void replace(ObjectNode root, String pointer, Object value) {
         parent(root, pointer).set(pointer.substring(pointer.lastIndexOf('/') + 1), Json.MAPPER.valueToTree(value));
+    }
+
+    @Test void explicitAllDestinationsRunsDefaultAndDeleteRuleWithoutAllowEntries() throws Exception {
+        ObjectNode document = (ObjectNode) Json.MAPPER.readTree(PolicyCodec.encode(GuardConfig.defaults()));
+        assertFalse(document.has("destinationScopeMode"));
+        PolicyEngine engine = new PolicyEngine();
+        RequestData get = new RequestData("GET", "https://display.invalid/", "outside.test", 8443, true,
+                List.of(), new byte[0], true, true, "/api");
+        GuardConfig missingField = decode(document).config();
+        assertTrue(missingField.allowScope().isEmpty());
+        assertEquals(Mode.BLOCK, engine.evaluate(missingField, get).mode());
+        assertEquals("SCOPE_NOT_ALLOWED", engine.evaluate(missingField, get).reason());
+
+        document.put("destinationScopeMode", "ALL_DESTINATIONS");
+        GuardConfig allDestinations = assertDoesNotThrow(() -> decode(document)).config();
+        assertTrue(allDestinations.allowScope().isEmpty());
+        assertEquals(Mode.ALLOW, engine.evaluate(allDestinations, get).mode());
+        assertEquals("DEFAULT_ALLOW", engine.evaluate(allDestinations, get).reason());
+        RequestData delete = new RequestData("DELETE", get.url(), get.host(), get.port(), get.secure(),
+                get.headers(), get.body(), true, true, get.nativeTarget());
+        assertEquals(Mode.BLOCK, engine.evaluate(allDestinations, delete).mode());
+        assertEquals("RULE_BLOCK", engine.evaluate(allDestinations, delete).reason());
+    }
+
+    @Test void destinationScopeDefaultsKeepTheExactPreModeWireAndLegacyEmptyDeny() throws Exception {
+        GuardConfig defaults = GuardConfig.defaults();
+        try (var input = getClass().getResourceAsStream("/dev/cairnguard/model/policy-before-destination-mode.json")) {
+            assertNotNull(input);
+            byte[] original = input.readAllBytes();
+            assertArrayEquals(original, PolicyCodec.encode(defaults).getBytes(StandardCharsets.UTF_8));
+            assertEquals(defaults, PolicyCodec.decode(new String(original, StandardCharsets.UTF_8)).config());
+        }
+        for (GuardConfig config : List.of(defaults,
+                new GuardConfig(2, List.of(), List.of(), defaults.rules(), Mode.ALLOW, defaults.limits()),
+                new GuardConfig(2, List.of(), List.of(), defaults.rules(), Mode.ALLOW, defaults.limits(), List.of()),
+                PolicyCodec.decode(Json.write(legacy())).config(), PolicyCodec.decode(Json.write(document())).config())) {
+            assertEquals(DestinationScopeMode.ALLOWLIST, config.destinationScopeMode());
+            GuardConfig empty = new GuardConfig(2, List.of(), config.blockScope(), config.rules(), config.defaultMode(), config.limits(), config.guardListenerPorts(), config.destinationScopeMode());
+            assertEquals("SCOPE_NOT_ALLOWED", new PolicyEngine().evaluate(empty,
+                    new RequestData("GET", "https://outside.test/", "outside.test", 443, true, List.of(), new byte[0])).reason());
+        }
+        for (String absent : new String[]{null, "", " \n"}) assertEquals(DestinationScopeMode.ALLOWLIST, PolicyCodec.decode(absent).config().destinationScopeMode());
+    }
+
+    @Test void destinationScopeModeIsStrictOptionalV2DataNeverASchemaOneField() throws Exception {
+        for (DestinationScopeMode mode : DestinationScopeMode.values()) {
+            ObjectNode raw = document(); raw.put("destinationScopeMode", mode.name());
+            String original = Json.write(raw);
+            PolicyCodec.Decoded decoded = PolicyCodec.decode(original);
+            assertEquals(mode, decoded.config().destinationScopeMode()); assertEquals(original, decoded.originalDocument());
+            assertFalse(decoded.migrationPending());
+            assertEquals(mode == DestinationScopeMode.ALL_DESTINATIONS, PolicyCodec.encode(decoded.config()).contains("destinationScopeMode"));
+            ObjectNode legacyRaw = (ObjectNode) Json.MAPPER.readTree(Json.write(legacy()));
+            legacyRaw.put("destinationScopeMode", mode.name()); invalid(legacyRaw);
+        }
+        for (Object bad : new Object[]{null, "", "all_destinations", " ALL_DESTINATIONS", "ALL_DESTINATIONS ", "allowlist", "ALL", 0, 1, 1.0, true, List.of(), Map.of()}) {
+            ObjectNode raw = document(); raw.set("destinationScopeMode", Json.MAPPER.valueToTree(bad)); invalid(raw);
+        }
+        ObjectNode all = document(); all.put("destinationScopeMode", "ALL_DESTINATIONS");
+        for (String required : List.of("schemaVersion", "allowScope", "blockScope", "rules", "defaultMode", "limits", "guardListenerPorts")) {
+            ObjectNode missing = all.deepCopy(); missing.remove(required); invalid(missing);
+        }
+        ObjectNode alias = document(); alias.put("destinationMode", "ALL_DESTINATIONS"); invalid(alias);
+        String encoded = Json.write(all);
+        invalid(encoded + " {}");
+        invalid(encoded.replace("\"destinationScopeMode\" :", "\"destinationScopeMode\" : \"ALLOWLIST\", \"destinationScopeMode\" :"));
+    }
+
+    @Test void modeCopiesKeepAllDataAndSchemaOneCannotSilentlyDropAnExplicitMode() {
+        GuardConfig original = legacy();
+        GuardConfig all = new GuardConfig(2, original.allowScope(), original.blockScope(), original.rules(), original.defaultMode(), original.limits(), List.of(8080), DestinationScopeMode.ALL_DESTINATIONS);
+        assertSame(all, PolicyCodec.toV2(all));
+        GuardConfig removed = PolicyCodec.removeLegacyDeleteString(all);
+        assertEquals(DestinationScopeMode.ALL_DESTINATIONS, removed.destinationScopeMode());
+        assertEquals(all.allowScope(), removed.allowScope()); assertEquals(all.blockScope(), removed.blockScope());
+        assertEquals(all.limits(), removed.limits()); assertEquals(all.guardListenerPorts(), removed.guardListenerPorts());
+        assertEquals(all, PolicyCodec.decode(PolicyCodec.encode(all)).config());
+        for (DestinationScopeMode invalidMode : new DestinationScopeMode[]{null, DestinationScopeMode.ALL_DESTINATIONS}) {
+            GuardConfig invalid = new GuardConfig(1, original.allowScope(), original.blockScope(), original.rules(), original.defaultMode(), original.limits(), List.of(), invalidMode);
+            assertThrows(IllegalArgumentException.class, () -> new PolicyEngine().validate(invalid));
+            assertThrows(IllegalArgumentException.class, () -> PolicyCodec.toV2(invalid));
+            assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encode(invalid));
+            assertThrows(IllegalArgumentException.class, () -> PolicyCodec.encodeLegacy(invalid));
+        }
     }
 
     @Test void disabledRatesAndSavedPositiveRatesRoundTripWithoutAControlSwitchOrLegacyLoss() {
@@ -137,6 +223,43 @@ class PolicyCodecTest {
         assertEquals(old.rules(), decoded.config().rules());
         assertEquals(old.defaultMode(), decoded.config().defaultMode());
         assertEquals(decoded.config(), PolicyCodec.decode(PolicyCodec.encode(decoded.config())).config());
+    }
+
+    @Test void flatScopeAuthoringKeepsSchemaOneAndTwoRawCorrelationsOrderingAndDuplicates() {
+        ScopeEntry raw = new ScopeEntry(false, "*.Example.test.", "AnY", 0, "(?i)/line\n\r\t");
+        List<ScopeEntry> rows = List.of(new ScopeEntry(true, "example.test", "https", 80, "\\A\\Q/api\\E\\z"), raw,
+                new ScopeEntry(true, "example.test", "https", 443, "\\A\\Q/manager\\E\\z"), raw,
+                new ScopeEntry(false, "[2001:db8::1]", "HTTP", 65535, "\\A\\Q/a\\E.*\\Q/b\\E\\z"));
+        for (int version : List.of(1, 2)) {
+            GuardConfig original = new GuardConfig(version, rows, List.of(), List.of(), Mode.ALLOW, legacy().limits());
+            String document = Json.write(original);
+            PolicyCodec.Decoded decoded = PolicyCodec.decode(document);
+            assertEquals(document, decoded.originalDocument());
+            assertEquals(version == 1, decoded.migrationPending());
+            assertEquals(rows, decoded.config().allowScope());
+            GuardConfig reread = PolicyCodec.decode(PolicyCodec.encode(decoded.config())).config();
+            assertEquals(rows, reread.allowScope());
+            for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) {
+                RequestData request = new RequestData("GET", "https://display.invalid/", "example.test", port, true, List.of(), new byte[0], true, true, path);
+                assertEquals(port == 80 && path.equals("/api") || port == 443 && path.equals("/manager") ? Mode.ALLOW : Mode.BLOCK,
+                        new PolicyEngine().evaluate(reread, request).mode());
+            }
+        }
+    }
+
+    @Test void expandedProductRemainsFourFiveFieldScopeObjectsWithoutASchemaMigration() throws Exception {
+        List<ScopeEntry> rows = new ArrayList<>();
+        for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) rows.add(new ScopeEntry(true, "example.test", "https", port, "\\A\\Q" + path + "\\E\\z"));
+        GuardConfig original = new GuardConfig(2, rows, List.of(), List.of(), Mode.ALLOW, GuardConfig.defaults().limits());
+        String document = PolicyCodec.encode(original);
+        GuardConfig reread = PolicyCodec.decode(document).config();
+        assertEquals(original, reread); assertEquals(4, reread.allowScope().size());
+        JsonNode tree = Json.MAPPER.readTree(document);
+        for (JsonNode entry : tree.get("allowScope")) {
+            java.util.Set<String> names = new java.util.HashSet<>(); entry.fieldNames().forEachRemaining(names::add);
+            assertEquals(java.util.Set.of("enabled", "host", "scheme", "port", "pathRegex"), names);
+        }
+        assertEquals(2, tree.get("schemaVersion").intValue());
     }
 
     @Test void removalDoesNotDeleteCustomizedDisabledOrLookalikeRules() {

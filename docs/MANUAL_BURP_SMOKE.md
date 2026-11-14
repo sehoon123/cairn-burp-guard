@@ -1,4 +1,4 @@
-# Owned native A–G and OFF checklist for the v0.3.0 development prerelease
+# Owned native A–G, destination mode and OFF checklist for v0.4.0 source
 
 > **2026-11-05 note (current source):** nothing is masked and there is no collection,
 > retention or export quota. Wherever a step below expects a redacted/masked "safe" export,
@@ -40,7 +40,14 @@ still apply. Do not modify live projects, auth, profiles or other people's liste
 2. A human loads only this exact JAR in the authorized disposable instance. Keep
    `guardListenerPorts=[]` (all listeners); H remains deferred. Check current manual
    scope/rules/traffic/approval/settings UI, not removed overlay/candidate tabs.
-3. On minimal exact owned services, check empty allowlist, actual-service scope,
+3. On minimal exact owned services, check default/missing/legacy ALLOWLIST empty
+   deny and actual-service scope. Then separately confirm ALL_DESTINATIONS in both
+   visual and whole-policy JSON directions: no allows reaches authored/default
+   GET behavior, DELETE still blocks, hard blocks/unresolved blocked paths and
+   invalid actual targets still deny; switch-back preserves tuples and empty deny.
+   Confirm default Enter/Escape/close cancel and stale original Snapshot writes0.
+   Mode save retains OFF/pause/debt, cancels old waits without approval and never
+   rewrites native objects/headers/target/full bodies or authentication. Continue with
    BLOCK/ASK, one-time approval, manual pause, exact configured query/body-free GET
    health exception, policy/project/final-send/shutdown protections and byte-preserving
    allowed requests/responses. An EXEMPT bypasses ordinary BLOCK/ASK, not scope,

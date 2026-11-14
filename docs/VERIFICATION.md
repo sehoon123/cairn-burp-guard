@@ -1,4 +1,34 @@
-# Verification status for the v0.3.0 development prerelease
+# Verification boundaries: v0.4.0 source and historical v0.3.0 artifact
+
+## Current v0.4.0 source/artifact ledger contract
+
+The source adds explicit destination mode and integrated multi-value scope editing.
+The source version is not publication, native acceptance or completed independent
+verification. Every final candidate must bind its complete source/test/resource/
+build/docs/legal byte-and-mode inputs to a newly derived JAR hash/class inventory.
+The pre-mode synthetic default golden is an expected wire-output fixture, not a
+new-code or GUI pass. Historical success/failure/unrun observations never transfer.
+
+Required order: focused green; clean full source headless plus JAR; separate clean
+byte-identical Twin; offline Python/templates; actual pinned pre-mode reader
+(default-omitted candidate wire accepted, both present enum values refused); exact
+new JAR headless; full unfiltered source desktops at scales1/2; full exact-JAR
+desktops at scales1/2. Both fonts14/28, real scope/mode keys, complete copyable guide,
+unchanged frames/captions/client/native-row and30s/8s floors remain required.
+One declared Test task owns argv and both XML readers; final doFirst records actual
+task/XML/CP and separate build/CLI filter channels before guards. Actual unique
+observer registration/construction/load, real UniqueId/MethodSource start-terminal,
+raw display multiplicities and all project origins must qualify. Counts are derived
+from each current subject, not copied from any table below.
+
+Author evidence requires full connected source/diff/docs/deslop and actual pixels/
+policies readback. After actual author closure and separately approved local
+commit/current HEAD, a fresh distinct non-author must actually execute the full
+source/JAR/Twin/headless/both-scale GUI/offline/compatibility plan in its own state.
+Author/static/CI/review receipts cannot substitute. Installed Burp/native and
+publication remain separate. Plaintext/unbounded heap/OOM risk is unchanged.
+
+## Historical v0.3.0 development prerelease
 
 Actual publication status and downloads belong to the [GitHub v0.3.0 release page](https://github.com/sehoon123/cairn-burp-guard/releases/tag/v0.3.0).
 Documentation and a source push do not establish publication, installation, native

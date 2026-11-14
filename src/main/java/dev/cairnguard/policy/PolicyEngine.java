@@ -6,6 +6,7 @@ import dev.cairnguard.model.Decision;
 import dev.cairnguard.model.Decision.RuleHit;
 import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Condition;
+import dev.cairnguard.model.GuardConfig.DestinationScopeMode;
 import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.GuardConfig.Limits;
 import dev.cairnguard.model.GuardConfig.Logic;
@@ -66,7 +67,7 @@ public final class PolicyEngine {
         compiled(config);
     }
 
-    /** Actual destination/routing scope gates cannot be overridden by any mode or rule order. */
+    /** Actual destination validity and hard block scope precede selected admission and all rules. */
     public Decision evaluate(GuardConfig config, RequestData request) { return evaluate(config, request, true); }
 
     /** contentInspectionAvailable=false: optional content conditions are unavailable (never EXEMPT-granting). */
@@ -83,17 +84,19 @@ public final class PolicyEngine {
                 if (scope.anyPath(target.paths(), budget)) return Decision.blocked("SCOPE_BLOCKED");
                 if (!target.routingComplete()) unresolvedBlockScope = true;
             }
-            boolean allowed = false;
-            for (CompiledScope scope : policy.allow) {
-                // Incomplete routing (undecodable, raw controls, non-origin-form) can pass ONLY an
-                // explicit all-path scope; its raw views need not literally match e.g. "/.*".
-                if (scope.authorityMatches(target) && (target.routingComplete()
-                        ? scope.allPaths(target.paths(), budget) : scope.allowsEveryPath())) {
-                    allowed = true;
-                    break;
+            if (unresolvedBlockScope) return Decision.blocked("SCOPE_NOT_ALLOWED");
+            if (policy.source.destinationScopeMode() == DestinationScopeMode.ALLOWLIST) {
+                boolean allowed = false;
+                for (CompiledScope scope : policy.allow) {
+                    // Incomplete routing needs one explicit all-path entry, never a union of entries.
+                    if (scope.authorityMatches(target) && (target.routingComplete()
+                            ? scope.allPaths(target.paths(), budget) : scope.allowsEveryPath())) {
+                        allowed = true;
+                        break;
+                    }
                 }
+                if (!allowed) return Decision.blocked("SCOPE_NOT_ALLOWED");
             }
-            if (!allowed || unresolvedBlockScope) return Decision.blocked("SCOPE_NOT_ALLOWED");
             RequestInspection inspection = RequestInspection.inspect(target, request, policy.demand, contentInspectionAvailable);
             List<RuleHit> hits = new ArrayList<>();
             Mode action = null;
@@ -146,7 +149,9 @@ public final class PolicyEngine {
 
     private static CompiledPolicy compile(GuardConfig config) {
         require(config != null && (config.schemaVersion() == 1 || config.schemaVersion() == 2)
-                && config.defaultMode() != null && config.defaultMode() != Mode.EXEMPT, "INVALID_CONFIG");
+                && config.defaultMode() != null && config.defaultMode() != Mode.EXEMPT
+                && config.destinationScopeMode() != null
+                && (config.schemaVersion() != 1 || config.destinationScopeMode() == DestinationScopeMode.ALLOWLIST), "INVALID_CONFIG");
         require(config.allowScope() != null && config.blockScope() != null && config.rules() != null
                 && config.allowScope().size() <= MAX_SCOPES && config.blockScope().size() <= MAX_SCOPES
                 && config.rules().size() <= MAX_RULES, "CONFIG_LIMIT");

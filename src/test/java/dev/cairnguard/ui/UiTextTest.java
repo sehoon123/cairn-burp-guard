@@ -12,6 +12,14 @@ class UiTextTest {
             assertFalse(UiText.next(reason).isBlank(), reason);
         }
     }
+    @Test void scopeDenialAdviceCoversBlockedPathUncertaintyWithoutSuggestingAModeBypass() {
+        String advice = UiText.next("SCOPE_NOT_ALLOWED");
+        assertTrue(advice.contains("목록 방식") && advice.contains("빈 허용 목록"));
+        assertTrue(advice.contains("차단 경로") && advice.contains("우회하지"));
+        assertTrue(UiText.reason("SCOPE_NOT_ALLOWED").contains("불완전한 차단 경로"));
+        assertTrue(UiText.reason("DEFAULT_ALLOW").contains("선택한 대상 적용 방식"));
+    }
+
     @Test void unknownInputNeverBecomesAnErrorOrHtmlMessage() {
         String unknown = "<html>synthetic-secret-untrusted</html>";
         for (String message : new String[]{UiText.error(unknown), UiText.reason(unknown), UiText.next(unknown), UiText.mode(unknown), UiText.outcome(unknown)})

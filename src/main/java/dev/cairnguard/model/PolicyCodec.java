@@ -3,6 +3,7 @@ package dev.cairnguard.model;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.cairnguard.model.GuardConfig.Condition;
+import dev.cairnguard.model.GuardConfig.DestinationScopeMode;
 import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.GuardConfig.Limits;
 import dev.cairnguard.model.GuardConfig.Match;
@@ -23,12 +24,13 @@ public final class PolicyCodec {
     private static final int MAX_DOCUMENT = 2_097_152;
     private static final Set<String> ROOT_V1 = Set.of("schemaVersion", "allowScope", "blockScope", "rules", "defaultMode", "limits");
     private static final Set<String> ROOT_V2 = Set.of("schemaVersion", "allowScope", "blockScope", "rules", "defaultMode", "limits", "guardListenerPorts");
+    private static final String DESTINATION_SCOPE_MODE = "destinationScopeMode";
     private static final Set<String> LIMITS_V1 = Set.of("globalRps", "perHostRps", "hostRps", "maxConcurrent", "maxQueued", "queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis");
     private static final String EXCEPTIONS = "circuit5xxExceptions";
     private static final String HEAVY = "heavyResponseEnabled";
     private static final String FANOUT_EXCEPTIONS = "fanoutExceptions";
     private static final Set<String> OPTIONAL_V2 = Set.of(EXCEPTIONS, HEAVY, FANOUT_EXCEPTIONS);
-    // Schema 2 as first released had no circuit5xxExceptions; absence is accepted ONLY for that one field.
+    // The original required schema-2 Limits shape; only the named optional fields may be absent.
     private static final Set<String> LIMITS_V2_BASE = Set.of("globalRps", "perHostRps", "hostRps", "maxConcurrent", "maxQueued", "queueTimeoutMillis", "approvalTimeoutMillis", "requestTimeoutMillis", "perPathMaxResponseBytes", "autoBlockMillis", "circuit5xx", "fanout", "perIntentMaxRequests", "healthProbePassthrough", "healthProbePaths", "heavyPathLimits");
     private static final Set<String> LIMITS_V2 = withExceptions();
 
@@ -45,6 +47,13 @@ public final class PolicyCodec {
         return Set.copyOf(fields);
     }
 
+    private static Set<String> rootShape(JsonNode root, int schema) {
+        if (schema == 1) return ROOT_V1;
+        java.util.HashSet<String> fields = new java.util.HashSet<>(ROOT_V2);
+        if (root.has(DESTINATION_SCOPE_MODE)) fields.add(DESTINATION_SCOPE_MODE);
+        return Set.copyOf(fields);
+    }
+
     public record Decoded(GuardConfig config, boolean migrationPending, String originalDocument) {}
 
     public static Decoded decode(String document) {
@@ -57,14 +66,14 @@ public final class PolicyCodec {
             integer(version, false);
             int schema = version.intValue();
             check(schema == 1 || schema == 2);
-            shape(root, schema == 1 ? ROOT_V1 : ROOT_V2);
+            shape(root, rootShape(root, schema));
             policyShape(root, schema);
             if (schema == 2) {
-                // Narrow compatibility for the three optional fields ONLY: absent lists are empty and an absent
-                // heavy master is ON. Null/wrong types were already rejected by policyShape.
+                // Only absence supplies compatibility defaults; explicit null/wrong types were rejected above.
                 JsonNode limits = root.get("limits");
-                if (!limits.has(EXCEPTIONS) || !limits.has(HEAVY) || !limits.has(FANOUT_EXCEPTIONS)) {
+                if (!root.has(DESTINATION_SCOPE_MODE) || !limits.has(EXCEPTIONS) || !limits.has(HEAVY) || !limits.has(FANOUT_EXCEPTIONS)) {
                     root = root.deepCopy();
+                    if (!root.has(DESTINATION_SCOPE_MODE)) ((ObjectNode) root).put(DESTINATION_SCOPE_MODE, DestinationScopeMode.ALLOWLIST.name());
                     ObjectNode copy = (ObjectNode) root.get("limits");
                     if (!copy.has(EXCEPTIONS)) copy.putArray(EXCEPTIONS);
                     if (!copy.has(HEAVY)) copy.put(HEAVY, true);
@@ -76,7 +85,7 @@ public final class PolicyCodec {
                 // Frozen DTO has ONLY the original fields. Never deserialize raw v1 as today's record.
                 LegacyPolicy legacy = Json.MAPPER.treeToValue(root, LegacyPolicy.class);
                 config = new GuardConfig(2, legacy.allowScope(), legacy.blockScope(), legacy.rules(),
-                        legacy.defaultMode(), legacy.limits().runtime(), List.of());
+                        legacy.defaultMode(), legacy.limits().runtime(), List.of(), DestinationScopeMode.ALLOWLIST);
             } else config = Json.MAPPER.treeToValue(root, GuardConfig.class);
             new PolicyEngine().validate(config);
             return new Decoded(config, schema == 1, document);
@@ -90,6 +99,7 @@ public final class PolicyCodec {
         GuardConfig v2 = toV2(config);
         try {
             JsonNode tree = Json.MAPPER.valueToTree(v2);
+            if (v2.destinationScopeMode() == DestinationScopeMode.ALLOWLIST) ((ObjectNode) tree).remove(DESTINATION_SCOPE_MODE);
             // An EMPTY exception list is omitted so no-exception policies keep the first schema-2 shape
             // (rollback to an older reader works); a non-empty list requires this or a newer reader.
             ObjectNode limits = (ObjectNode) tree.get("limits");
@@ -107,7 +117,7 @@ public final class PolicyCodec {
         new PolicyEngine().validate(config);
         if (config.schemaVersion() == 2) return config;
         return new GuardConfig(2, config.allowScope(), config.blockScope(), config.rules(),
-                config.defaultMode(), config.limits(), config.guardListenerPorts());
+                config.defaultMode(), config.limits(), config.guardListenerPorts(), config.destinationScopeMode());
     }
 
     /** Optional migration action ONLY: do not remove a customized/disabled/look-alike rule. */
@@ -117,7 +127,7 @@ public final class PolicyCodec {
                 Condition.leaf(Field.ANY, Match.CONTAINS, "delete"));
         return new GuardConfig(2, v2.allowScope(), v2.blockScope(),
                 v2.rules().stream().filter(rule -> !original.equals(rule)).toList(),
-                v2.defaultMode(), v2.limits(), v2.guardListenerPorts());
+                v2.defaultMode(), v2.limits(), v2.guardListenerPorts(), v2.destinationScopeMode());
     }
 
     /**
@@ -150,6 +160,11 @@ public final class PolicyCodec {
     }
 
     private static void policyShape(JsonNode root, int schema) {
+        if (schema == 2 && root.has(DESTINATION_SCOPE_MODE)) {
+            strings(root, DESTINATION_SCOPE_MODE);
+            String mode = root.get(DESTINATION_SCOPE_MODE).textValue();
+            check(mode.equals(DestinationScopeMode.ALLOWLIST.name()) || mode.equals(DestinationScopeMode.ALL_DESTINATIONS.name()));
+        }
         for (String scopes : List.of("allowScope", "blockScope")) {
             array(root.get(scopes));
             for (JsonNode entry : root.get(scopes)) {

@@ -55,7 +55,7 @@ final class UiText {
     static String reason(String reason) {
         if (reason == null) return "처리 상태를 확인하세요.";
         return switch (reason) {
-            case "SCOPE_NOT_ALLOWED" -> "허용 대상에 포함되지 않는 요청입니다.";
+            case "SCOPE_NOT_ALLOWED" -> "허용 대상 또는 불완전한 차단 경로 제약을 충족하지 못한 요청입니다.";
             case "SCOPE_BLOCKED" -> "차단 대상으로 등록된 주소입니다.";
             case "EXEMPT", "RULE_EXEMPT" -> "EXEMPT에 따라 일반 BLOCK·ASK를 무시했습니다. 범위·수동 일시중지·명시 속도·태그 예산은 유지됩니다.";
             case "HEAVY_ENDPOINT_AUTO_BLOCKED" -> "이전 버전의 대용량 자동 차단 기록입니다. 현재 기능은 제거되었습니다.";
@@ -67,7 +67,7 @@ final class UiText {
             case "INTENT_TAG_INVALID", "INVALID_INTENT_TAG" -> "예산 사용 중 태그가 중복·잘못된 형식이거나 헤더 검사 불완전입니다.";
             case "LISTENER_UNVERIFIED" -> "실제 인바운드 리스너를 확인하지 못해 내용 수집 없이 차단했습니다.";
             case "RESPONSE_CORRELATION_UNAVAILABLE" -> "응답과 요청을 안전하게 연결할 수 없습니다. 확인된 보호 출처의 응답만 별도로 보존하며 요청을 추측하지 않습니다.";
-            case "PATH_INTERPRETATION_INCOMPLETE" -> "경로 해석이 불완전합니다. 모든 경로 범위는 원문 전송 가능하지만 제한 경로·경로 EXEMPT를 검증할 수 없습니다.";
+            case "PATH_INTERPRETATION_INCOMPLETE" -> "경로 해석이 불완전합니다. 명시적 모든 경로·전체 목적지 방식도 차단 경로 제약을 먼저 검사하며 제한 경로·경로 EXEMPT를 검증한 뜻은 아닙니다.";
             case "HEADERS_INCOMPLETE", "BODY_INCOMPLETE" -> "선택 헤더/본문 수집이 불완전합니다. 이 표시만으로 규칙이 해당 필드를 요구했다는 뜻은 아니며 형식 자체로 자동 차단하지 않습니다.";
             case "HEADER_INSPECTION_UNAVAILABLE", "BODY_INSPECTION_UNAVAILABLE" -> "규칙이 요구한 헤더/본문 조건을 검사할 수 없어 해당 조건을 평가하지 못했습니다 (형식 자체로 자동 차단하지 않음).";
             case "RULE_BLOCK" -> "차단 규칙에 해당합니다.";
@@ -75,7 +75,7 @@ final class UiText {
             case "RULE_MATCH" -> "등록한 규칙의 조건에 해당합니다.";
             case "ASK" -> "사람의 승인을 기다리고 있습니다.";
             case "QUEUED" -> "작성한 속도 제한에 따라 전송을 기다리고 있습니다.";
-            case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION" -> "허용 범위와 정책에 따라 처리했습니다.";
+            case "DEFAULT_ALLOW", "POLICY_ALLOW", "POLICY_DECISION" -> "선택한 대상 적용 방식과 규칙·기본 동작에 따라 처리했습니다.";
             case "NATIVE_RELEASED", "NATIVE_FORWARDED" -> "Burp에 전송을 허용했습니다. 대상에 도착했다는 뜻은 아닙니다.";
             case "DENIED" -> "사용자가 이 요청을 거절했습니다.";
             case "PAUSED" -> "보호가 일시중지 상태여서 새 요청을 차단했습니다.";
@@ -122,7 +122,7 @@ final class UiText {
         switch (id) {
             case "HEADERS_INCOMPLETE": return "헤더 수집 불완전 (선택 수집, 규칙이 헤더를 요구했다는 뜻은 아님)";
             case "BODY_INCOMPLETE": return "본문 수집 불완전 (선택 수집, 규칙이 본문을 요구했다는 뜻은 아님)";
-            case "PATH_INTERPRETATION_INCOMPLETE": return "경로 해석 불완전 (모든 경로 범위는 원문 전송 가능, 제한 경로·경로 EXEMPT는 증명 불가)";
+            case "PATH_INTERPRETATION_INCOMPLETE": return "경로 해석 불완전 (명시적 모든 경로·전체 목적지에서도 차단 경로 제약 우선, 제한 경로·경로 EXEMPT는 증명 불가)";
             case "INSPECTION_UNAVAILABLE": return "규칙 조건 검사 불가 (세부 분류 미보존, 평가 완료로 보지 않음)";
             default: break;
         }
@@ -159,10 +159,10 @@ final class UiText {
             case "INTENT_BUDGET_EXCEEDED", "INTENT_TAG_INVALID", "INVALID_INTENT_TAG", "INTENT_CAPACITY", "INTENT_BUDGET_CAPACITY" -> "‘설정’의 태그 한도와 클라이언트 X-Cairn 태그를 검토하세요. 초기화는 ‘개요’에서 명시 확인해야 하며 태그는 인증이 아닙니다.";
             case "LISTENER_UNVERIFIED" -> "이전 포트 제한이 남아 있습니다. 포트별 보호는 추후 지원하므로 ‘설정’에서 기존 목록을 직접 비우고 모든 Proxy 보호 전환을 확인해 저장하세요. 자동 삭제나 리스너 추정은 하지 않습니다.";
             case "PATH_INTERPRETATION_INCOMPLETE" -> "명시적 모든 경로 범위에서 원래 target은 바꾸지 않습니다. 제한 경로·명시 차단은 계속 검사하며 불완전 경로로 EXEMPT를 부여하지 않습니다.";
-            case "SCOPE_NOT_ALLOWED" -> "허가받은 대상인지 확인한 뒤 ‘대상’에서 호스트·연결 방식·포트·경로를 등록하세요. 빈 허용 목록은 모든 요청을 차단합니다.";
+            case "SCOPE_NOT_ALLOWED" -> "테스트 허가와 실제 목적지·차단 경로의 불완전 해석을 먼저 확인하세요. 목록 방식에서는 허용 호스트·연결 방식·포트·경로를 등록하며 빈 허용 목록은 모든 요청을 차단합니다. 전체 목적지 방식도 불확실한 차단 경로 제약은 우회하지 않습니다.";
             case "SCOPE_BLOCKED" -> "‘대상 → 차단 대상’에서 해당 범위를 확인하세요. 차단 대상은 허용 대상보다 우선합니다.";
             case "RULE_BLOCK", "RULE_MATCH" -> "아래의 일치 규칙을 확인하고 ‘규칙’에서 의도한 조건인지 검토하세요. 필수 안전 차단은 승인으로 풀 수 없습니다.";
-            case "DEFAULT_BLOCK" -> "‘설정 → 설정 변경 → 상세 설정’의 기본 동작을 확인하세요. 허용 범위 밖 요청은 계속 차단됩니다.";
+            case "DEFAULT_BLOCK" -> "‘설정 → 설정 변경 → 상세 설정’의 기본 동작을 확인하세요. 선택한 대상 적용 방식과 차단 대상·필수 검사는 그대로 유지됩니다.";
             case "PAUSED" -> "‘개요’에서 일시중지 사유를 확인하고, 준비됐을 때 보호를 재개하세요.";
             case "ASK" -> "‘승인 대기’에서 이 요청의 원문 주소·이유·내용을 확인한 뒤 한 번 승인하거나 거절하세요.";
             case "QUEUED" -> "작성한 전송 간격을 기다립니다. 이전 응답·완료를 기다리지 않습니다. 도착 여부는 응답과 별도 증거로 확인하세요.";

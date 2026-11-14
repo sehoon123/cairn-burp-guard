@@ -69,6 +69,18 @@ class RoutingPrivilegeTest {
             assertEquals("RULE_EXEMPT", engine.evaluate(cfg, request).reason(), target);
     }
 
+    @Test void allDestinationModeKeepsPathUrlAndAnyExemptUniversalAcrossRoutingViews() {
+        for (Field field : List.of(Field.PATH, Field.URL, Field.ANY)) {
+            Condition exemption = Condition.leaf(field, Match.REGEX, field == Field.URL ? "^https://owned\\.test/broker/" : "^/broker/");
+            GuardConfig policy = new GuardConfig(2, List.of(), List.of(), List.of(
+                    rule("block-admin", Mode.BLOCK, path(Match.REGEX, "^/admin")), rule("exempt-broker", Mode.EXEMPT, exemption)),
+                    Mode.ALLOW, GuardConfig.defaults().limits(), List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+            engine.validate(policy);
+            assertEquals("RULE_BLOCK", engine.evaluate(policy, nativeRequest("GET", "/broker/../admin/delete")).reason());
+            assertEquals("RULE_EXEMPT", engine.evaluate(policy, nativeRequest("GET", "/broker/x")).reason());
+        }
+    }
+
     @Test void healthPresetStyleExemptIsNotGrantedThroughDotSegmentAlias() {
         Condition health = Condition.and(Condition.leaf(Field.METHOD, Match.EXACT, "GET"), path(Match.EXACT, "/health"));
         GuardConfig cfg = all(rule("block-get", Mode.BLOCK, Condition.leaf(Field.METHOD, Match.EXACT, "GET")),

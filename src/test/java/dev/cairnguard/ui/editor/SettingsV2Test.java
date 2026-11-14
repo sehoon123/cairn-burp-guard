@@ -24,6 +24,24 @@ class SettingsV2Test {
         return new GuardConfig(2, List.of(), List.of(), GuardConfig.defaults().rules(), Mode.ASK, l, List.of(8080, 8081));
     }
 
+    @Test void validationCopyRetainsAllDestinationModeAndEveryInactiveField() throws Exception {
+        edt(() -> {
+            GuardConfig original = configured();
+            GuardConfig all = new GuardConfig(2, original.allowScope(), original.blockScope(), original.rules(), original.defaultMode(), original.limits(), original.guardListenerPorts(), DestinationScopeMode.ALL_DESTINATIONS);
+            SettingsEditor editor = new SettingsEditor(all);
+            SettingsEditor.Value value = editor.value();
+            assertEquals(all.limits(), value.limits()); assertEquals(all.guardListenerPorts(), value.guardListenerPorts());
+            var engineField = SettingsEditor.class.getDeclaredField("engine"); engineField.setAccessible(true);
+            Object engine = engineField.get(editor);
+            var cachedField = dev.cairnguard.policy.PolicyEngine.class.getDeclaredField("cached"); cachedField.setAccessible(true);
+            Object compiled = cachedField.get(engine);
+            var sourceField = compiled.getClass().getDeclaredField("source"); sourceField.setAccessible(true);
+            GuardConfig validated = (GuardConfig) sourceField.get(compiled);
+            assertEquals(all, validated, "the actual full-policy validation copy must carry the nondefault mode, not just the later UI save");
+            return null;
+        });
+    }
+
     @Test void everyV2ComponentRoundTripsLosslesslyAcrossBasicHostPresetAndReopen() throws Exception {
         edt(() -> {
             GuardConfig original = configured();

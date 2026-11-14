@@ -1,4 +1,4 @@
-# Runtime / human UI contract — v0.3.0 history candidate, automatic blocking still removed
+# Runtime / human UI contract — v0.4.0 development source, automatic blocking still removed
 
 This describes current source, not a published JAR/native acceptance claim.
 `GuardUiAccess` remains in-process human-only: no worker/MCP/network control API,
@@ -71,6 +71,24 @@ exceptions remain strict, inactive, round-trippable data. They have no authoring
 controls or load/save reactivation. Full-policy advanced JSON preserves their old
 shape but cannot make them operational. No collection quota or masking is added.
 
+## Persisted destination mode, not runtime OFF
+
+The immutable policy carries `DestinationScopeMode.ALLOWLIST/ALL_DESTINATIONS`.
+ALLOWLIST is every default/legacy/missing-field behavior, including empty deny.
+ALL_DESTINATIONS skips only positive allow-entry proof/work after actual target and
+matching/unresolved hard block checks, then uses the unchanged rules/default path.
+No controller mode flag, setter, new generation owner or native bypass is added.
+The locked `status.destinationScopeMode` is configured policy, not active protection.
+
+Mode form and whole-policy JSON share one save boundary and Cancel-default extra
+confirmation whenever the mode changes in either direction. The opening Snapshot
+survives refresh/confirmations and one final CAS. No-op/cancel/invalid/stale drafts
+cannot approve or spend; successful saves revoke old waits/prepared work without
+approving it, preserve pause/OFF/rate/intent debt and retain committed originals.
+One scope-local JLabel and complete copyable guide share one presentation owner;
+refresh failure/close suppress effective ALL, without claiming a UI failure blocks
+prior OFF. Native client/caption/row/font/frame/key/focus floors are unchanged.
+
 ## Scope, explicit rules and health
 
 Scope uses actual transport host/scheme/port and untouched request path, never
@@ -104,7 +122,8 @@ uncontrolled in protected mode as well; independently quiesce traffic for rollba
 
 EDT-only forms and one-second coalescing refresh preserve the original modal
 project/revision baseline, never rebase a stale save. Explicit confirmations/CAS
-remain for EXEMPT, health, legacy listener clearing, migration, intent reset,
+remain for both destination-mode directions (including JSON), EXEMPT, health,
+legacy listener clearing, migration, intent reset,
 protection OFF, destructive clear/delete/overwrite and every plaintext export.
 V1 migration stays memory-only until explicit save; no automatic legacy rule
 removal. Risky modal Enter/Escape/close defaults to Cancel. Raw/header/body/metadata viewers remain plain selectable scrollable text. Optional

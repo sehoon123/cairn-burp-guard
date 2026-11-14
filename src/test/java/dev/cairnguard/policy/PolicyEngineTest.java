@@ -3,6 +3,7 @@ package dev.cairnguard.policy;
 import dev.cairnguard.model.Decision;
 import dev.cairnguard.model.GuardConfig;
 import dev.cairnguard.model.GuardConfig.Condition;
+import dev.cairnguard.model.GuardConfig.DestinationScopeMode;
 import dev.cairnguard.model.GuardConfig.Field;
 import dev.cairnguard.model.GuardConfig.Logic;
 import dev.cairnguard.model.GuardConfig.Match;
@@ -64,6 +65,74 @@ class PolicyEngineTest {
         assertEquals(Mode.BLOCK, result.mode());
         assertTrue(result.hits().isEmpty(), "Hard gates must precede all rule matching");
         assertTrue(result.reason().chars().allMatch(c -> c >= 'A' && c <= 'Z' || c == '_'));
+    }
+
+    private static GuardConfig allDestinations(List<ScopeEntry> allow, List<ScopeEntry> block, List<Rule> rules, Mode defaultMode) {
+        return new GuardConfig(2, allow, block, rules, defaultMode, GuardConfig.defaults().limits(), List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+    }
+
+    @Test void allDestinationsReachesEveryDefaultAtActualDnsIpv4Ipv6AndBoundaryPorts() {
+        for (Mode mode : List.of(Mode.ALLOW, Mode.BLOCK, Mode.MONITOR, Mode.ASK)) {
+            GuardConfig policy = allDestinations(List.of(scope("unused.test", "https", 443, "/never")), List.of(), List.of(), mode);
+            engine.validate(policy);
+            for (String host : List.of("outside.test", "127.0.0.1", "[2001:db8::1]")) for (int port : List.of(1, 65535)) for (boolean secure : List.of(false, true)) {
+                RequestData input = new RequestData("GET", "https://display.invalid/ignored", host, port, secure,
+                        List.of(new Header("Host", "fuzzed.invalid")), new byte[]{0, 1}, true, true, "/outside");
+                Decision decision = engine.evaluate(policy, input, false);
+                assertEquals(mode, decision.mode()); assertEquals("DEFAULT_" + mode.name(), decision.reason());
+                assertTrue(decision.hits().isEmpty()); assertEquals("/outside", input.nativeTarget());
+                assertArrayEquals(new byte[]{0, 1}, input.body()); assertEquals("fuzzed.invalid", input.header("Host"));
+            }
+        }
+    }
+
+    @Test void allDestinationsSkipsPositiveAllowWorkButValidatesDormantDataAndMandatoryTarget() {
+        List<ScopeEntry> irrelevant = java.util.stream.IntStream.range(0, 256).mapToObj(i -> scope("example.test", "https", 443, "^/a{255}$")).toList();
+        GuardConfig all = allDestinations(irrelevant, List.of(), List.of(), Mode.ALLOW);
+        RequestData longPath = request("/" + "a".repeat(12_000));
+        assertEquals("DEFAULT_ALLOW", engine.evaluate(all, longPath).reason());
+        GuardConfig listed = new GuardConfig(2, irrelevant, List.of(), List.of(), Mode.ALLOW, all.limits());
+        assertEquals(Mode.BLOCK, engine.evaluate(listed, longPath).mode());
+        for (ScopeEntry invalid : List.of(new ScopeEntry(false, "example.test", "https", 443, "("), new ScopeEntry(false, "", "https", 443, ""))) {
+            GuardConfig bad = allDestinations(List.of(invalid), List.of(), List.of(), Mode.ALLOW);
+            assertThrows(IllegalArgumentException.class, () -> engine.validate(bad));
+            assertEquals("INVALID_CONFIG", engine.evaluate(bad, request("/safe")).reason());
+        }
+        for (RequestData invalid : List.of(
+                new RequestData("GET", "https://example.test/", "", 443, true, List.of(), new byte[0], true, true, "/safe"),
+                new RequestData("GET", "https://example.test/", "example.test", 0, true, List.of(), new byte[0], true, true, "/safe"),
+                new RequestData("G ET", "https://example.test/", "example.test", 443, true, List.of(), new byte[0], true, true, "/safe"))) blocked(all, invalid);
+        GuardConfig nullMode = new GuardConfig(2, List.of(), List.of(), List.of(), Mode.ALLOW, all.limits(), List.of(), null);
+        assertThrows(IllegalArgumentException.class, () -> engine.validate(nullMode));
+    }
+
+    @Test void allDestinationsPreservesOrderedRuleHitsAndHardBlockWinsOverMethodExempt() {
+        Condition get = leaf(Field.METHOD, Match.EXACT, "GET");
+        List<Rule> rules = List.of(rule("monitor", Mode.MONITOR, get), rule("allow", Mode.ALLOW, get), rule("ask", Mode.ASK, get), rule("block", Mode.BLOCK, get), rule("exempt", Mode.EXEMPT, get));
+        GuardConfig all = allDestinations(List.of(), List.of(), rules, Mode.ALLOW);
+        Decision decision = engine.evaluate(all, request("/private"));
+        assertEquals("RULE_EXEMPT", decision.reason());
+        assertEquals(List.of("monitor", "allow", "ask", "block", "exempt"), decision.hits().stream().map(Decision.RuleHit::id).toList());
+        GuardConfig hard = allDestinations(List.of(), List.of(scope("example.test", "https", 443, "/private")), rules, Mode.ALLOW);
+        assertEquals("SCOPE_BLOCKED", engine.evaluate(hard, request("/private")).reason());
+        assertTrue(engine.evaluate(hard, request("/private")).hits().isEmpty());
+        assertEquals("RULE_BLOCK", engine.evaluate(allDestinations(List.of(), List.of(), rules.subList(0, 4), Mode.ALLOW), request("/safe")).reason());
+        assertEquals("RULE_ASK", engine.evaluate(allDestinations(List.of(), List.of(), rules.subList(0, 3), Mode.ALLOW), request("/safe")).reason());
+        assertEquals("DEFAULT_BLOCK", engine.evaluate(allDestinations(List.of(), List.of(), rules.subList(0, 1), Mode.BLOCK), request("/safe")).reason());
+    }
+
+    @Test void destinationScopeModeDoesNotLeakThroughTheIdentityCacheUnderConcurrency() throws Exception {
+        GuardConfig listed = new GuardConfig(2, List.of(), List.of(), List.of(), Mode.ALLOW, GuardConfig.defaults().limits());
+        GuardConfig all = allDestinations(List.of(), List.of(), List.of(), Mode.ALLOW);
+        try (var pool = Executors.newFixedThreadPool(4)) {
+            List<Callable<Mode>> work = new ArrayList<>();
+            for (int i = 0; i < 80; i++) {
+                GuardConfig policy = i % 2 == 0 ? all : listed;
+                work.add(() -> engine.evaluate(policy, request("/safe")).mode());
+            }
+            var values = pool.invokeAll(work);
+            for (int i = 0; i < values.size(); i++) assertEquals(i % 2 == 0 ? Mode.ALLOW : Mode.BLOCK, values.get(i).get());
+        }
     }
 
     @Test void emptyAllowScopeAllowsNothingEvenWithExplicitAllow() {
@@ -264,6 +333,40 @@ class PolicyEngineTest {
         RequestData input = request(path);
         assertEquals(Mode.ALLOW, engine.evaluate(config(List.of()), input).mode());
         assertEquals("https://example.test" + path, input.url(), "Never normalize the forwarded request");
+    }
+
+    @Test void correlatedPortPathTuplesStaySparseAndExplicitProductStillHonorsHardBlocks() {
+        ScopeEntry api = scope("example.test", "https", 80, "\\A\\Q/api\\E\\z");
+        ScopeEntry manager = scope("example.test", "https", 443, "\\A\\Q/manager\\E\\z");
+        GuardConfig sparse = config(List.of(api, manager), List.of(), List.of(), Mode.ALLOW);
+        List<ScopeEntry> product = new ArrayList<>();
+        for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) product.add(scope("example.test", "https", port, "\\A\\Q" + path + "\\E\\z"));
+        GuardConfig explicit = config(product, List.of(), List.of(), Mode.ALLOW);
+        GuardConfig blocked = new GuardConfig(2, product, List.of(manager), List.of(rule("exception", Mode.EXEMPT, leaf(Field.METHOD, Match.EXACT, "GET"))), Mode.ALLOW, GuardConfig.defaults().limits());
+        engine.validate(blocked);
+        for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) {
+            RequestData target = new RequestData("GET", "https://allowed-looking.invalid/", "example.test", port, true,
+                    List.of(new Header("Host", "fuzzed.invalid")), new byte[0], true, true, path);
+            assertEquals(port == 80 && path.equals("/api") || port == 443 && path.equals("/manager") ? Mode.ALLOW : Mode.BLOCK, engine.evaluate(sparse, target).mode());
+            assertEquals(Mode.ALLOW, engine.evaluate(explicit, target).mode());
+            if (port == 443 && path.equals("/manager")) assertEquals("SCOPE_BLOCKED", engine.evaluate(blocked, target).reason());
+        }
+        for (String path : List.of("/admin", "/apix", "/api/child", "/manager/")) blocked(explicit, request(path));
+    }
+
+    @Test void aPathListNeverDistributesTheAllRoutingViewsProofAcrossEntriesOrExempt() {
+        List<ScopeEntry> separate = List.of(scope("example.test", "https", 443, "\\A\\Q/%61pi\\E\\z"), scope("example.test", "https", 443, "\\A\\Q/api\\E\\z"));
+        Rule exemption = rule("path-exception", Mode.EXEMPT, leaf(Field.PATH, Match.EXACT, "/api"));
+        GuardConfig restricted = new GuardConfig(2, separate, List.of(), List.of(exemption), Mode.ALLOW, GuardConfig.defaults().limits());
+        engine.validate(restricted);
+        blocked(restricted, new RequestData("GET", "https://display.invalid/", "example.test", 443, true, List.of(), new byte[0], true, true, "/%61pi"));
+        assertEquals(Mode.EXEMPT, engine.evaluate(restricted, request("/api")).mode());
+        blocked(restricted, request("/%25252561pi"));
+        GuardConfig all = new GuardConfig(2, List.of(scope("example.test", "https", 443, "")), List.of(), List.of(exemption), Mode.ALLOW, GuardConfig.defaults().limits());
+        engine.validate(all);
+        Decision incomplete = engine.evaluate(all, request("/%25252561pi"));
+        assertEquals(Mode.ALLOW, incomplete.mode());
+        assertTrue(incomplete.inspectionWarnings().contains("PATH_INTERPRETATION_INCOMPLETE"));
     }
 
     @Test void scopeSchemePortAndDisabledEntriesMatter() {

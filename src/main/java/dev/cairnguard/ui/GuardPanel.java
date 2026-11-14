@@ -2,6 +2,7 @@ package dev.cairnguard.ui;
 
 import dev.cairnguard.evidence.TrafficEntry;
 import dev.cairnguard.model.GuardConfig;
+import dev.cairnguard.model.GuardConfig.DestinationScopeMode;
 import dev.cairnguard.model.GuardConfig.Mode;
 import dev.cairnguard.model.GuardConfig.Rule;
 import dev.cairnguard.model.GuardConfig.ScopeEntry;
@@ -71,6 +72,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private static final String PLAINTEXT_CONSENT = "평문 원문 내보내기: 파일에 Authorization·Cookie·토큰 등 비밀 값이 그대로 들어갑니다. 콜백으로 받은 검사 사본이며 크기 상한 없이 전부 저장하므로 큰 파일이 될 수 있습니다. 완전한 wire 캡처나 대상 도착의 증명이 아닙니다. 소유자 전용 권한으로 저장하지만 파일을 공유·게시하지 마세요. 화면을 지워도 이미 저장한 파일은 회수되지 않습니다. 계속할까요?";
     private static final String RAW_NOTICE = "민감정보 포함 · 평문 원문 · 메모리 한정(상한 없음) · 검사 사본 (wire 증거 아님)";
     private static final String SAVE_NOTICE = "저장하면 현재 Burp 프로젝트에 즉시 적용하며 기존 승인 대기를 취소합니다. 취소하면 바뀌지 않습니다.";
+    private static final String SCOPE_GUIDANCE = "실제 연결 목적지의 호스트·scheme·port와 원래 요청 path로 범위를 판정합니다 (fuzz한 Host/:authority는 대상 변경이 아님). 모든 경로를 허용하면 /c/;/main.do, /c/%2e/main.do도 원문 그대로 전송할 수 있습니다. 제한된 경로는 내부 해석 뷰 모두가 범위여야 하며 해석 불완전 경고를 숨기지 않습니다. 차단 대상·명시 규칙·수동 일시중지·작성한 속도와 태그 예산은 별도입니다. 헤더/본문 형식 자체를 자동 차단하지 않으며 편집은 명시적 저장 전에는 적용되지 않습니다.\n이 허용 대상은 Burp Target Scope와 별개입니다. Burp의 ‘Drop all out-of-scope requests’가 켜져 있으면 Burp Target Scope 밖 요청은 Cairn이 허용하거나 보호가 꺼져 있어도 Burp가 전송 전에 버릴 수 있고 클라이언트에 Burp 자체 오류가 보일 수 있습니다 (Cairn은 Burp 설정을 읽거나 바꾸지 않습니다). X-Cairn-Guard 로컬 451은 Cairn 거절의 긍정 표시이지 인증된 증명이나 모든 거절 방식의 목록이 아닙니다. 451이나 Cairn 증거 행이 없다는 사실만으로는 결론을 낼 수 없고(보호 꺼짐·지우기/프로젝트 전환·drop-only/실패 경로), 행이 있어도 대상 도착을 뜻하지 않습니다.\n각 행은 확장된 포트·경로 한 쌍입니다 (호스트 수가 아님). Shift/Ctrl/Cmd로 원하는 행들을 선택하고 편집 또는 Enter로 함께 고치세요. 두 번 클릭은 한 행만 엽니다. 사용/중지·삭제는 한 행씩 선택하세요.";
+    private static final String ALL_DESTINATIONS_HELP = "허용 목록의 호스트·포트·경로 등록 없이 모든 유효한 실제 목적지가 규칙·기본 동작 검사 대상이 됩니다. 이는 테스트 허가가 아니며 보호 OFF 또는 EXEMPT가 아닙니다. 차단 대상·불완전한 차단 경로 제약·정책/프로젝트/종료/최종 상태·일시중지·속도/태그 예산·처리/대기 용량·승인 제한은 유지됩니다. 허용 목록은 지우지 않고 보존합니다. 보호가 켜진 새 요청·응답은 비밀을 포함한 평문 원문 전체를 상한 없이 메모리에 보관하므로 OOM 위험이 있습니다. 현재 OFF·일시중지는 바뀌지 않으며 이전 승인·전송 대기는 취소됩니다.";
+    private static final String ALLOWLIST_HELP = "보존된 허용 목록의 실제 호스트·연결 방식·포트·경로 제한을 다시 적용합니다. 차단 대상·규칙·필수 검사·속도·태그 예산은 유지하며 OFF·일시중지는 바꾸지 않습니다. 저장하면 이전 승인·전송 대기는 취소됩니다.";
+    private static final String SCOPE_MODE_HELP = "실제 목적지·raw/경로뷰 · 차단우선 · 별도허가\n\n목록에 등록한 목적지만 (ALLOWLIST) · 기본값/이전 저장 자료 · 빈 허용 목록은 보호 중 차단\n" + ALLOWLIST_HELP
+            + "\n\n전체 목적지 · 규칙 검사 (ALL_DESTINATIONS) · 명시적 저장만 적용\n" + ALL_DESTINATIONS_HELP
+            + "\n\n위 등록·경로 범위 안내의 허용 목록 제한은 목록 방식에서 적용됩니다. 전체 목적지 방식에서도 차단 목록과 경로 해석 제약은 먼저 검사합니다. 저장하지 않은 선택은 적용하지 않습니다.";
 
     private final GuardUiAccess access;
     private final Dialogs dialogs;
@@ -100,9 +107,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     private final List<JButton> policyActions = new ArrayList<>();
     private final RowsModel<ScopeEntry> allowModel = scopeModel();
     private final RowsModel<ScopeEntry> blockModel = scopeModel();
-    private final JTable allowTable = table("scope.allow.table", allowModel, false);
-    private final JTable blockTable = table("scope.block.table", blockModel, false);
-    private final JTextArea scopeState = note("scope.state", "");
+    private final JTable allowTable = table("scope.allow.table", allowModel, true);
+    private final JTable blockTable = table("scope.block.table", blockModel, true);
+    private final JLabel scopeState = named(new JLabel(), "scope.state");
+    private final JTextArea scopeHelp = note("scope.help", "");
     private final RowsModel<Rule> rulesModel = new RowsModel<>(new String[]{"사용", "규칙 이름", "동작", "조건", "우선순위"},
             new Class<?>[]{String.class, String.class, String.class, String.class, Integer.class},
             r -> new Object[]{r.enabled() ? "사용 중" : "중지", displayRuleName(r.name()), UiText.mode(r.mode().name()), RuleEditor.summary(r.condition()), r.mode() == Mode.EXEMPT ? 0 : 1});
@@ -178,8 +186,8 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         requireEdt();
         this.access = Objects.requireNonNull(access);
         this.dialogs = Objects.requireNonNull(dialogs);
-        setLayout(new BorderLayout(8, 8));
-        setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        setLayout(new BorderLayout(8, 4));
+        setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
         configureRuleView();
         pause = button("dashboard.pause", "새 요청 모두 차단", this::togglePause);
         passthrough = button("protection.passthrough", "모두 통과 (보호 끔)…", this::togglePassthrough);
@@ -188,26 +196,27 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         deny = button("approval.deny", "거절", () -> decide(false));
         resolve = button("traffic.resolve", "관련 설정 열기", this::resolveSelected);
         JPanel header = new JPanel(new BorderLayout(8, 2));
-        header.add(version, BorderLayout.NORTH);
-        header.add(buttons(protectionState, passthrough, passthroughCounter,
+        header.add(buttons(version, protectionState,
                 button("help.examples", "사용 예시…", () -> showReadOnly("사용 예시 · 설정은 바뀌지 않음", UsageGuide.create())),
-                button("policy.refresh", "새로고침", () -> {
+                passthrough, passthroughCounter, button("policy.refresh", "새로고침", () -> {
                     refreshNow();
                     if (available) message.setText("현재 프로젝트의 설정과 요청 기록을 다시 확인했습니다.");
                 })), BorderLayout.CENTER);
         migrationBanner.setName("migration.banner");
-        migrationBanner.add(note("migration.notice", "v1 → v2 메모리 변환 대기 · 원본은 아직 저장소에 유지됩니다. 새 감지 기능은 OFF이며 기존 규칙을 보존합니다. 비교·원본 내보내기 후 사람이 명시적으로 저장하세요."), BorderLayout.CENTER);
-        migrationBanner.add(buttons(policyButton("migration.review", "변환 비교 / 명시적 저장…", this::reviewMigration),
-                button("migration.exportOriginal", "v1 원본 내보내기…", this::exportOriginal)), BorderLayout.SOUTH);
+        migrationBanner.add(note("migration.notice", "v1→v2 메모리 변환 대기 · 저장 원본/규칙 보존 · 새 감지 OFF · 비교·원본 내보낸 후 직접 저장"), BorderLayout.CENTER);
+        JPanel migrationActions = new JPanel(new GridLayout(0, 1, 0, 6));
+        migrationActions.add(policyButton("migration.review", "변환 비교·저장…", this::reviewMigration));
+        migrationActions.add(button("migration.exportOriginal", "v1 원본 내보내기…", this::exportOriginal));
+        migrationBanner.add(migrationActions, BorderLayout.LINE_END);
         header.add(migrationBanner, BorderLayout.SOUTH);
         add(header, BorderLayout.NORTH);
         tabs.addTab("개요", dashboardTab());
         tabs.addTab("대상", scopeTab());
         tabs.addTab("규칙", rulesTab());
-        tabs.addTab("요청 기록", trafficTab());
+        tabs.addTab("기록", trafficTab());
         tabs.addTab("승인 대기", approvalTab());
         tabs.addTab("설정", settingsTab());
-        tabs.addTab("사건 내보내기", incidentTab());
+        tabs.addTab("사건", incidentTab());
         add(tabs, BorderLayout.CENTER);
         message.setBorder(BorderFactory.createEmptyBorder(4, 2, 2, 2));
         add(message, BorderLayout.SOUTH);
@@ -234,7 +243,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         counts.setMaximumSize(new Dimension(Integer.MAX_VALUE, 160));
         content.add(counts);
         content.add(Box.createVerticalStrut(12));
-        content.add(note("dashboard.steps", "처음 사용하나요?\n1. ‘허용 대상 등록’에서 허가받은 URL과 실제 범위를 확인하고 저장하세요.\n2. 기본 차단 규칙을 ‘규칙’에서 확인하세요. 필요하면 조건과 승인 요청 규칙을 추가하세요.\n3. 이 Burp Proxy를 통해 요청을 보내고 ‘요청 기록’에서 결과와 차단 이유를 확인하세요."));
+        content.add(note("dashboard.steps", "처음 사용하나요?\n1. 목록 방식은 ‘허용 대상 등록’, 전체 목적지 방식은 ‘대상 → 방식·안내’에서 테스트 허가와 실제 적용 방식을 확인하고 저장하세요.\n2. 기본 차단 규칙을 ‘규칙’에서 확인하세요. 필요하면 조건과 승인 요청 규칙을 추가하세요.\n3. 이 Burp Proxy를 통해 요청을 보내고 ‘요청 기록’에서 결과와 차단 이유를 확인하세요."));
         content.add(buttons(button("dashboard.scope", "대상 확인", () -> tabs.setSelectedIndex(1)),
                 button("dashboard.rules", "규칙 확인", () -> tabs.setSelectedIndex(2)),
                 button("dashboard.traffic", "요청 기록 보기", () -> tabs.setSelectedIndex(3))));
@@ -258,20 +267,25 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         JTabbedPane lists = named(new JTabbedPane(), "scope.lists");
         lists.addTab("허용 대상", scopeList(false));
         lists.addTab("차단 대상", scopeList(true));
+        scopeHelp.setFocusable(true);
+        JPanel guidance = new JPanel(new BorderLayout(4, 4));
+        guidance.add(buttons(policyButton("scope.mode.edit", "적용 방식 변경…", this::editDestinationScopeMode)), BorderLayout.NORTH);
+        guidance.add(named(new JScrollPane(scopeHelp), "scope.guidanceScroll"), BorderLayout.CENTER);
+        lists.addTab("방식·안내", guidance);
+        lists.setToolTipTextAt(2, "전체 목적지·경로 안내와 적용 방식, 선택·복사 가능 (표에서 Ctrl+Tab 또는 탭 화살표로 열기)");
         panel.add(lists, BorderLayout.CENTER);
-        panel.add(note("scope.help", "실제 연결 목적지의 호스트·scheme·port와 원래 요청 path로 범위를 판정합니다 (fuzz한 Host/:authority는 대상 변경이 아님). 모든 경로를 허용하면 /c/;/main.do, /c/%2e/main.do도 원문 그대로 전송할 수 있습니다. 제한된 경로는 내부 해석 뷰 모두가 범위여야 하며 해석 불완전 경고를 숨기지 않습니다. 차단 대상·명시 규칙·수동 일시중지·작성한 속도와 태그 예산은 별도입니다. 헤더/본문 형식 자체를 자동 차단하지 않으며 편집은 명시적 저장 전에는 적용되지 않습니다.\n이 허용 대상은 Burp Target Scope와 별개입니다. Burp의 ‘Drop all out-of-scope requests’가 켜져 있으면 Burp Target Scope 밖 요청은 Cairn이 허용하거나 보호가 꺼져 있어도 Burp가 전송 전에 버릴 수 있고 클라이언트에 Burp 자체 오류가 보일 수 있습니다 (Cairn은 Burp 설정을 읽거나 바꾸지 않습니다). X-Cairn-Guard 로컬 451은 Cairn 거절의 긍정 표시이지 인증된 증명이나 모든 거절 방식의 목록이 아닙니다. 451이나 Cairn 증거 행이 없다는 사실만으로는 결론을 낼 수 없고(보호 꺼짐·지우기/프로젝트 전환·drop-only/실패 경로), 행이 있어도 대상 도착을 뜻하지 않습니다."), BorderLayout.SOUTH);
         return panel;
     }
 
     private JPanel scopeList(boolean blocked) {
         String prefix = blocked ? "scope.block" : "scope.allow";
         JPanel panel = new JPanel(new BorderLayout(4, 4));
-        panel.add(buttons(policyButton(prefix + ".add", blocked ? "차단 대상 추가…" : "허용 대상 추가…", () -> editScope(blocked, true)),
-                policyButton(prefix + ".edit", "선택 항목 편집…", () -> editScope(blocked, false)),
+        panel.add(buttons(policyButton(prefix + ".add", blocked ? "차단 추가…" : "허용 추가…", () -> editScope(blocked, true)),
+                policyButton(prefix + ".edit", "편집…", () -> editScope(blocked, false)),
                 policyButton(prefix + ".toggle", "사용 / 중지", () -> mutateScope(blocked, false)),
                 policyButton(prefix + ".delete", "삭제…", () -> mutateScope(blocked, true))), BorderLayout.NORTH);
         JTable list = blocked ? blockTable : allowTable;
-        installOpenAction(list, () -> editScope(blocked, false), "두 번 클릭 또는 Enter: 선택한 대상 편집 (저장 전에는 변경하지 않음)");
+        installOpenAction(list, () -> editScope(blocked, false), "Shift/Ctrl/Cmd로 여러 항목 선택 후 Enter: 함께 편집. 두 번 클릭: 그 항목만 편집");
         panel.add(new JScrollPane(list), BorderLayout.CENTER);
         return panel;
     }
@@ -458,9 +472,9 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             @Override public JComponent component() { return content; }
             @Override public GuardConfig value() { return remove.isSelected() ? PolicyCodec.removeLegacyDeleteString(base.policy()) : PolicyCodec.toV2(base.policy()); }
         };
-        dialogs.edit(this, "v1 → v2 변환 비교 (아직 저장 안 됨)", "v2 명시적 저장", form, () -> {
-            if (!dialogs.confirm(this, "v1 원본을 v2 정책으로 교체하여 저장할까요? 기존 규칙 제거는 별도 체크한 경우만 적용합니다. 구버전 JAR는 v2 정책을 읽지 못합니다. 원본 내보내기를 먼저 권장합니다.", "v2 저장")) return;
-            save(base, form.value(), true);
+        dialogs.edit(this, "v1 → v2 변환 비교 (아직 저장 안 됨)", "v2 명시적 저장", form, confirmation -> {
+            if (!confirmation.confirm("v1 원본을 v2 정책으로 교체하여 저장할까요? 기존 규칙 제거는 별도 체크한 경우만 적용합니다. 구버전 JAR는 v2 정책을 읽지 못합니다. 원본 내보내기를 먼저 권장합니다.", "v2 저장")) return;
+            save(base, form.value(), true, confirmation);
         });
     }
     private static String migrationText(Map<String,Object> data, String key) {
@@ -604,42 +618,72 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         showReadOnly("승인 요청 검토 · 화면 원문", new JScrollPane(approvalDetail));
     }
 
+    private static String destinationScopeModeLabel(DestinationScopeMode mode) {
+        return mode == DestinationScopeMode.ALL_DESTINATIONS ? "전체 목적지 · 규칙 검사" : "목록에 등록한 목적지만";
+    }
+
+    private void editDestinationScopeMode() {
+        Snapshot base = beginEdit();
+        JComboBox<DestinationScopeMode> choice = named(new JComboBox<>(DestinationScopeMode.values()), "scope.mode.choice");
+        choice.getAccessibleContext().setAccessibleName("대상 적용 방식");
+        choice.setRenderer(new DefaultListCellRenderer() {
+            @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focused) {
+                JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, selected, focused);
+                label.putClientProperty("html.disable", Boolean.TRUE);
+                label.setText(value instanceof DestinationScopeMode mode ? destinationScopeModeLabel(mode) : "방식을 선택하세요");
+                return label;
+            }
+        });
+        choice.setSelectedItem(base.policy().destinationScopeMode());
+        JTextArea help = note("scope.mode.help", SCOPE_MODE_HELP); help.setFocusable(true);
+        JPanel panel = named(new JPanel(new BorderLayout(6, 6)), "scope.mode.form");
+        panel.add(labeled("대상 적용 방식", choice), BorderLayout.NORTH);
+        panel.add(named(new JScrollPane(help), "scope.mode.helpScroll"), BorderLayout.CENTER);
+        EditorForm<DestinationScopeMode> form = new EditorForm<>() {
+            @Override public JComponent component() { return panel; }
+            @Override public DestinationScopeMode value() {
+                if (!(choice.getSelectedItem() instanceof DestinationScopeMode mode)) throw new FormValidationException("대상 적용 방식을 목록에서 선택하세요.");
+                return mode;
+            }
+        };
+        dialogs.edit(this, "대상 적용 방식", "저장하고 적용", form, confirmation -> {
+            GuardConfig old = base.policy();
+            save(base, new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts(), form.value()), confirmation);
+        });
+    }
+
     private void editScope(boolean blocked, boolean add) {
         Snapshot base = beginEdit();
-        RowsModel<ScopeEntry> model = blocked ? blockModel : allowModel;
         JTable table = blocked ? blockTable : allowTable;
-        int index = add ? -1 : modelIndex(table, table.getSelectedRow(), model.rows.size());
-        if (!add && index < 0) throw failure("SELECT_SCOPE_FIRST");
         List<ScopeEntry> original = blocked ? base.policy().blockScope() : base.policy().allowScope();
+        List<Integer> indices = add ? List.of() : selectedScopeIndices(table, original.size());
         if (add && original.size() >= 256) throw failure("POLICY_ROW_LIMIT");
-        ScopeEditor form = new ScopeEditor(add ? null : original.get(index));
-        dialogs.edit(this, (blocked ? "차단 대상" : "허용 대상") + (add ? " 추가" : " 편집"), "저장하고 적용", form, () -> {
-            ScopeEntry entry = form.value();
-            List<ScopeEntry> rows = new ArrayList<>(original);
-            if (add) rows.add(entry); else rows.set(index, entry);
+        ScopeEditor form = new ScopeEditor(original, indices);
+        dialogs.edit(this, (blocked ? "차단 대상" : "허용 대상") + (add ? " 추가" : " 편집"), "저장하고 적용", form, confirmation -> {
+            List<ScopeEntry> rows = form.value();
             GuardConfig old = base.policy();
             save(base, new GuardConfig(old.schemaVersion(), blocked ? old.allowScope() : rows,
-                    blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts()));
+                    blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts(), old.destinationScopeMode()), confirmation);
         });
     }
 
     private void mutateScope(boolean blocked, boolean delete) {
         Snapshot base = beginEdit();
-        RowsModel<ScopeEntry> model = blocked ? blockModel : allowModel;
         JTable table = blocked ? blockTable : allowTable;
-        int index = modelIndex(table, table.getSelectedRow(), model.rows.size());
-        if (index < 0) throw failure("SELECT_SCOPE_FIRST");
         GuardConfig old = base.policy();
         List<ScopeEntry> rows = new ArrayList<>(blocked ? old.blockScope() : old.allowScope());
+        List<Integer> indices = selectedScopeIndices(table, rows.size());
+        if (indices.size() != 1) throw new FormValidationException("사용/중지·삭제는 대상 한 행만 선택하세요. 여러 행은 편집에서 확인하세요.");
+        int index = indices.getFirst();
         ScopeEntry entry = rows.get(index);
         if (delete) rows.remove(index);
         else rows.set(index, new ScopeEntry(!entry.enabled(), entry.host(), entry.scheme(), entry.port(), entry.pathRegex()));
-        String warning = !blocked && rows.stream().noneMatch(ScopeEntry::enabled)
+        String warning = !blocked && old.destinationScopeMode() == DestinationScopeMode.ALLOWLIST && rows.stream().noneMatch(ScopeEntry::enabled)
                 ? "\n사용 중인 허용 대상이 없어 모든 새 Proxy 요청을 차단하게 됩니다." : "";
         if (!dialogs.confirm(this, (delete ? "선택한 대상을 삭제할까요?" : entry.enabled() ? "선택한 대상의 사용을 중지할까요?" : "선택한 대상을 사용할까요?")
                 + warning + "\n" + SAVE_NOTICE)) return;
         save(base, new GuardConfig(old.schemaVersion(), blocked ? old.allowScope() : rows,
-                blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts()));
+                blocked ? rows : old.blockScope(), old.rules(), old.defaultMode(), old.limits(), old.guardListenerPorts(), old.destinationScopeMode()));
     }
 
     private void editRule(boolean add) {
@@ -648,11 +692,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         if (!add && selected == null) throw failure("SELECT_RULE_FIRST");
         if (add && base.policy().rules().size() >= 256) throw failure("POLICY_ROW_LIMIT");
         RuleEditor form = new RuleEditor(add ? null : selected);
-        dialogs.edit(this, add ? "규칙 만들기" : "규칙 편집", "저장하고 적용", form, () -> {
+        dialogs.edit(this, add ? "규칙 만들기" : "규칙 편집", "저장하고 적용", form, confirmation -> {
             Rule value = form.value();
             List<Rule> rows = new ArrayList<>(base.policy().rules());
             if (add) rows.add(value); else rows.set(rows.indexOf(selected), value);
-            save(base, withRules(base.policy(), rows));
+            save(base, withRules(base.policy(), rows), confirmation);
         });
     }
 
@@ -670,16 +714,16 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
     }
 
     private static GuardConfig withRules(GuardConfig old, List<Rule> rows) {
-        return new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), rows, old.defaultMode(), old.limits(), old.guardListenerPorts());
+        return new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), rows, old.defaultMode(), old.limits(), old.guardListenerPorts(), old.destinationScopeMode());
     }
 
     private void editSettings() {
         Snapshot base = beginEdit();
         SettingsEditor form = new SettingsEditor(base.policy());
-        dialogs.edit(this, "요청 제어 설정", "저장하고 적용", form, () -> {
+        dialogs.edit(this, "요청 제어 설정", "저장하고 적용", form, confirmation -> {
             SettingsEditor.Value value = form.value();
             GuardConfig old = base.policy();
-            save(base, new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), old.rules(), value.defaultMode(), value.limits(), value.guardListenerPorts()));
+            save(base, new GuardConfig(old.schemaVersion(), old.allowScope(), old.blockScope(), old.rules(), value.defaultMode(), value.limits(), value.guardListenerPorts(), old.destinationScopeMode()), confirmation);
         });
     }
 
@@ -705,11 +749,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 return value;
             }
         };
-        dialogs.edit(this, "고급 · 전체 정책 JSON", "전체 정책 저장", form, () -> {
+        dialogs.edit(this, "고급 · 전체 정책 JSON", "전체 정책 저장", form, confirmation -> {
             GuardConfig value = form.value();
             if (PolicyCodec.decode(editor.getText()).migrationPending()
-                    && !dialogs.confirm(this, "붙여넣은 v1 정책은 메모리에서 v2로 변환합니다. 새 감지 기능은 OFF, 기존 규칙은 그대로입니다. 전체 v2 정책을 명시적으로 저장할까요?")) return;
-            save(base, value);
+                    && !confirmation.confirm("붙여넣은 v1 정책은 메모리에서 v2로 변환합니다. 새 감지 기능은 OFF, 기존 규칙은 그대로입니다. 전체 v2 정책을 명시적으로 저장할까요?", "확인")) return;
+            save(base, value, confirmation);
         });
     }
 
@@ -739,7 +783,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             @Override public JComponent component() { return component; }
             @Override public Void value() { return null; }
         };
-        dialogs.edit(this, title, "닫기", form, () -> {});
+        dialogs.edit(this, title, "닫기", form, confirmation -> {});
     }
 
     private Snapshot beginEdit() {
@@ -754,8 +798,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         return base;
     }
 
-    private void save(Snapshot base, GuardConfig candidate) { save(base, candidate, false); }
-    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed) {
+    private void save(Snapshot base, GuardConfig candidate) {
+        save(base, candidate, false, (text, label) -> dialogs.confirm(this, text, label));
+    }
+    private void save(Snapshot base, GuardConfig candidate, SubmitConfirmation confirmation) { save(base, candidate, false, confirmation); }
+    private void save(Snapshot base, GuardConfig candidate, boolean migrationConfirmed, SubmitConfirmation confirmation) {
         requireEdt();
         if (closed) throw failure("CLOSED");
         access.refreshProject();
@@ -771,18 +818,27 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             return;
         }
         if (Boolean.TRUE.equals(migration.get("pending")) && !migrationConfirmed
-                && !dialogs.confirm(this, "v1 변환 대기 중입니다. 이 명시적 저장은 v2 전체 정책으로 저장소를 교체합니다. 원본 내보내기·변환 비교를 먼저 권장합니다. 기존 delete-string 제거는 자동으로 하지 않습니다. 구버전 JAR는 v2를 읽지 못합니다. 계속 저장할까요?", "v2 저장")) return;
+                && !confirmation.confirm("v1 변환 대기 중입니다. 이 명시적 저장은 v2 전체 정책으로 저장소를 교체합니다. 원본 내보내기·변환 비교를 먼저 권장합니다. 기존 delete-string 제거는 자동으로 하지 않습니다. 구버전 JAR는 v2를 읽지 못합니다. 계속 저장할까요?", "v2 저장")) return;
+        if (base.policy().destinationScopeMode() != candidate.destinationScopeMode()) {
+            boolean all = candidate.destinationScopeMode() == DestinationScopeMode.ALL_DESTINATIONS;
+            String warning = all ? "전체 목적지에서 규칙 검사를 적용할까요?\n" + ALL_DESTINATIONS_HELP
+                    : "목록에 등록한 목적지만 검사할까요?\n" + ALLOWLIST_HELP;
+            if (!all && candidate.allowScope().stream().noneMatch(ScopeEntry::enabled)) warning += "\n사용 중인 허용 대상이 없어 보호가 켜진 모든 새 Proxy 요청을 차단합니다.";
+            if (!confirmation.confirm(warning + "\n계속 저장할까요?", all ? "전체 목적지 저장" : "목록 방식 저장")) return;
+        }
         if (candidate.rules().stream().anyMatch(r -> r.enabled() && r.mode() == Mode.EXEMPT && !base.policy().rules().contains(r))
-                && !dialogs.confirm(this, "EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
+                && !confirmation.confirm("EXEMPT 예외를 저장할까요? 일치하는 일반 BLOCK·ASK 규칙을 무시합니다. 정확한 메서드·경로 등 최소 조건인지 확인하세요. 실제 대상 범위·일시중지·속도·태그 예산은 계속 적용됩니다.", "EXEMPT 저장")) return;
         if (!candidate.guardListenerPorts().equals(base.policy().guardListenerPorts())) {
             if (!candidate.guardListenerPorts().isEmpty()) throw failure("LISTENER_SELECTION_DEFERRED");
-            if (!dialogs.confirm(this, "기존 포트 제한을 해제하고 모든 Proxy 리스너를 보호할까요? 포트별 보호는 추후 지원합니다. 이제 모든 Proxy 요청이 대상 범위·규칙·안전 제어의 검사 대상이며, 전체 통과(보호 OFF)가 아닙니다. 기존 설정을 자동 삭제하지 않고 이 명시적 저장으로만 전환합니다.", "전체 Proxy 보호로 전환")) return;
+            if (!confirmation.confirm("기존 포트 제한을 해제하고 모든 Proxy 리스너를 보호할까요? 포트별 보호는 추후 지원합니다. 이제 모든 Proxy 요청이 대상 범위·규칙·안전 제어의 검사 대상이며, 전체 통과(보호 OFF)가 아닙니다. 기존 설정을 자동 삭제하지 않고 이 명시적 저장으로만 전환합니다.", "전체 Proxy 보호로 전환")) return;
         }
         if (candidate.limits().healthProbePassthrough() && (!base.policy().limits().healthProbePassthrough()
                 || !candidate.limits().healthProbePaths().equals(base.policy().limits().healthProbePaths()))
-                && !dialogs.confirm(this, "GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지를 통과합니다. 범위·일반 규칙·다른 속도·예산은 유지됩니다.", "GET 통과 저장")) return;
+                && !confirmation.confirm("GET 상태 확인 통과를 저장할까요? GET도 부작용이 있을 수 있습니다. 명시한 정확한 경로만 운영자 일시중지를 통과합니다. 범위·일반 규칙·다른 속도·예산은 유지됩니다.", "GET 통과 저장")) return;
         access.refreshProject();
-        if (!base.matches(access.status())) { refreshNow(); throw failure("STALE_POLICY"); }
+        Map<String, Object> finalStatus = access.status();
+        if (closed) throw failure("CLOSED");
+        if (!base.matches(finalStatus) || Boolean.TRUE.equals(finalStatus.get("closed"))) { refreshNow(); throw failure("STALE_POLICY"); }
         try { access.updateConfig(candidate, base.projectId(), base.revision()); }
         catch (IllegalStateException e) { refreshNow(); throw failure("UPDATE_REJECTED"); }
         catch (IllegalArgumentException e) { throw failure("INVALID_POLICY"); }
@@ -802,7 +858,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         }
         Snapshot base = beginEdit();
         boolean next = !Boolean.TRUE.equals(latestStatus.get("paused"));
-        if (!next && view != null && view.policy().allowScope().stream().noneMatch(ScopeEntry::enabled)
+        if (!next && view != null && view.policy().destinationScopeMode() == DestinationScopeMode.ALLOWLIST && view.policy().allowScope().stream().noneMatch(ScopeEntry::enabled)
                 && !dialogs.confirm(this, "보호를 재개해도 허용 대상이 없어 모든 요청을 계속 차단합니다. 먼저 대상을 등록하는 것이 좋습니다. 그래도 재개할까요?")) return;
         access.refreshProject();
         if (!base.matches(access.status())) { refreshNow(); throw failure("MODE_CHANGE_REJECTED"); }
@@ -860,11 +916,11 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             updateOverview(config, after);
             updateSettings(config);
             if (!sameVersion(after, access.status())) throw failure("PROJECT_UNAVAILABLE");
-            version.setText("현재 Burp 프로젝트 · 설정 버전 " + view.revision());
+            version.setText("현재 프로젝트 · 설정 버전 " + view.revision());
             for (JButton action : policyActions) action.setEnabled(true);
             pause.setEnabled(true);
             passthrough.setEnabled(Boolean.TRUE.equals(after.get("passthrough")) || !Boolean.FALSE.equals(after.get("passthroughAvailable")));
-            if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됐습니다. 허가받은 대상을 등록하고 보호 상태를 확인하세요.");
+            if (message.getText().equals("현재 상태를 확인하고 있습니다…")) message.setText("준비됨 · 허가받은 대상 등록·보호 상태 확인");
         } catch (RuntimeException e) {
             available = false;
             invalidateHistory("현재 프로젝트 확인 후 요청을 다시 선택하세요.");
@@ -878,6 +934,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             version.setText("현재 프로젝트 확인 필요 · 설정 변경과 승인 불가");
             stateTitle.setText("보호 상태를 확인할 수 없습니다");
             stateHelp.setText(UiText.error("REFRESH_UNAVAILABLE"));
+            updateScopePresentation();
             message.setText("현재 상태 확인 실패 · 프로젝트를 확인하고 새로고침하세요.");
         }
     }
@@ -922,27 +979,70 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         } else if (paused) {
             stateTitle.setText("일시중지 · 보호 리스너의 새 요청 차단");
             stateHelp.setText("보호할 새 요청을 차단합니다 (명시한 상태 확인 GET은 별도). OFF 모드가 아닙니다. 이번 범위는 전체 Proxy 보호입니다. 이전 포트 제한이 남아 있으면 모두 LISTENER_UNVERIFIED로 거절되므로 설정에서 직접 비우고 전체 보호로 전환하세요. ‘보호 재개’는 운영자 일시중지만 해제하고 기존 태그 사용량은 유지합니다. OFF 후 다시 켜도 기존 운영자 일시중지를 보존합니다.");
+        } else if (!config.guardListenerPorts().isEmpty()) {
+            stateTitle.setText("이전 포트 제한 남음 · 새 Proxy 요청 차단");
+            stateHelp.setText("포트별 보호는 추후 지원합니다. 기존 제한을 직접 비우고 전체 Proxy 보호 전환을 확인하세요. 저장된 대상 적용 방식으로 이 거절을 우회하지 않습니다.");
+        } else if (config.destinationScopeMode() == DestinationScopeMode.ALL_DESTINATIONS) {
+            stateTitle.setText("보호 중 · 전체 목적지에서 규칙 검사");
+            stateHelp.setText("허용 등록 없이 모든 유효한 실제 목적지에 규칙·기본 동작을 적용합니다. 보존된 허용 확장 항목 " + allowed + "개는 현재 양의 입장 조건으로 사용하지 않습니다. 차단 대상·필수 검사·속도·태그 예산은 유지되며 테스트 허가가 아닙니다.");
         } else if (allowed == 0) {
             stateTitle.setText("허용 대상 없음 · 모든 요청 차단");
             stateHelp.setText("아직 요청을 보낼 수 없습니다. ‘허용 대상 등록’에서 허가받은 URL을 입력하고 호스트·포트·경로를 확인하세요. 등록하지 않은 대상은 계속 차단합니다.");
         } else {
             stateTitle.setText("보호 중 · 등록한 대상만 검사 후 전송");
-            stateHelp.setText("허용 대상 " + allowed + "개와 사용 중인 규칙 " + rules + "개를 적용합니다. 승인 요청은 ‘승인 대기’, 차단 이유는 ‘요청 기록’에서 확인하세요."
+            stateHelp.setText("허용 확장 항목 " + allowed + "개와 사용 중인 규칙 " + rules + "개를 적용합니다. 승인 요청은 ‘승인 대기’, 차단 이유는 ‘요청 기록’에서 확인하세요."
                     + (note.equals("PROTECTION_RESTORED") ? " 전체 통과 중 이미 시작한 요청은 취소·추적하지 않으며 새 요청부터 보호합니다." : ""));
         }
         if (ended) stateHelp.setText("전체 통과가 프로젝트 변경 또는 상태 불확실성으로 자동 종료되었습니다. " + stateHelp.getText());
         pause.setText(paused ? "보호 재개" : "새 요청 모두 차단");
-        scopeCount.setText("대상 · 허용 " + allowed + "개 / 차단 " + blocked + "개");
+        scopeCount.setText("확장 항목 · 허용 " + allowed + "개 / 차단 " + blocked + "개");
         ruleCount.setText("규칙 · " + rules + "개 사용 중");
         gateCount.setText("수동 속도 전송 대기 " + count(gate, "queued") + " / 승인 대기 " + approvalModel.rows.size());
         evidenceCount.setText("누적 · 차단 " + count(evidence, "blocked") + " / 전송 해제 " + count(evidence, "forwarded") + " / 보관 " + traffic.size());
         tabs.setTitleAt(4, "승인 대기" + (approvalModel.rows.isEmpty() ? "" : " (" + approvalModel.rows.size() + ")"));
-        scopeState.setText(off ? "전체 통과 · 보호 꺼짐: 아래 범위를 검사하지 않습니다. 상단 ‘보호 다시 켜기’ 후 새 요청에 적용합니다."
-                : allowed == 0 ? "사용 중인 허용 대상이 없습니다. 모든 Proxy 요청을 차단합니다. ‘허용 대상 추가’로 시작하세요."
-                : "허용 대상 " + allowed + "개 · 차단 대상 " + blocked + "개 사용 중. 차단 대상과 필수 안전 검사가 항상 우선합니다.");
+        updateScopePresentation();
         TrafficEntry latest = traffic.stream().filter(e -> e.projectId().equals(view.projectId()) && "BLOCKED".equals(e.disposition())).findFirst().orElse(null);
         recentBlock.setText(latest == null ? "현재 프로젝트의 보관 기록에 차단된 요청이 없습니다. 요청 결과는 ‘요청 기록’에서 확인하세요."
                 : UiText.reason(latest.reason()) + "\n" + UiText.next(latest.reason()));
+    }
+
+    private void updateScopePresentation() {
+        String caption, detail;
+        if (closed || !available || view == null) {
+            caption = "상태불가 | 검사 미확인·별도허가";
+            detail = "현재 보호 상태와 저장 방식을 확인할 수 없습니다. 이전 전체 통과가 여전히 적용될 수 있으므로 요청을 멈추고 프로젝트를 확인하세요.";
+        } else {
+            GuardConfig config = view.policy();
+            boolean all = config.destinationScopeMode() == DestinationScopeMode.ALL_DESTINATIONS;
+            long allowed = config.allowScope().stream().filter(ScopeEntry::enabled).count();
+            long blocked = config.blockScope().stream().filter(ScopeEntry::enabled).count();
+            String guard = Objects.toString(latestStatus.get("guardState"), "PROTECTED");
+            if (Boolean.TRUE.equals(latestStatus.get("passthrough"))) {
+                caption = "보호끔·미수집 | 저장방식 미적용·별도허가";
+                detail = "전체 통과 · 보호 꺼짐: 아래 범위를 검사하지 않습니다. 저장된 방식은 미적용이며 새 요청·응답 내용을 수집하지 않습니다. 상단 ‘보호 다시 켜기’ 후 새 요청에 적용합니다.";
+            } else if (Set.of("POLICY_INVALID", "POLICY_SAVE_UNCERTAIN", "PROJECT_UNVERIFIED", "SHUTDOWN").contains(guard)) {
+                caption = "정책·상태 차단 | 저장방식 미적용·별도허가";
+                detail = "정책·프로젝트·종료 상태 때문에 새 요청을 차단합니다. 저장된 방식을 유효한 검사 또는 허가로 보지 마세요.";
+            } else if (Boolean.TRUE.equals(latestStatus.get("paused"))) {
+                caption = all ? "중지·전체목적지 | 경로뷰 | 차단우선·별도허가" : "중지·목록 | 목적지·경로뷰 | 차단우선·별도허가";
+                detail = "운영자 일시중지로 새 요청을 차단합니다. 명시적으로 설정한 정확한 상태 확인 GET만 별도이며 다른 필수 검사는 유지됩니다.";
+            } else if (!config.guardListenerPorts().isEmpty()) {
+                caption = "이전포트제한·차단 | 목적지·경로뷰·별도허가";
+                detail = "기존 포트 제한이 남아 모든 새 Proxy 요청을 LISTENER_UNVERIFIED로 거절합니다. 방식 변경으로 우회하지 않습니다.";
+            } else if (all) {
+                caption = "전체목적지·규칙 | 경로뷰 | 차단우선·별도허가";
+                detail = "전체 목적지 · 규칙 검사: 유효한 실제 목적지를 검사합니다. 보존된 허용 목록은 현재 양의 입장 조건으로 사용하지 않으며 차단 대상·불완전한 차단 경로 제약이 먼저 적용됩니다.";
+            } else {
+                caption = allowed == 0 ? "목록·빈차단 | 목적지·경로뷰 | 차단우선·별도허가" : "목록·검사 | 목적지·경로뷰 | 차단우선·별도허가";
+                detail = allowed == 0 ? "사용 중인 허용 대상이 없습니다. 보호가 켜진 모든 새 Proxy 요청을 차단합니다. 허가받은 실제 목적지를 등록하세요."
+                        : "등록한 허용 목록에서 한 항목이 모든 경로 뷰를 포함해야 합니다. 차단 대상과 필수 안전 검사가 먼저 적용됩니다.";
+            }
+            detail += "\n저장된 대상 적용 방식: " + destinationScopeModeLabel(config.destinationScopeMode()) + " (" + config.destinationScopeMode().name() + ")"
+                    + "\n사용 중인 확장 항목 · 허용 " + allowed + "개 / 차단 " + blocked + "개 (호스트 수가 아님). 현재 OFF·일시중지는 방식 저장으로 바뀌지 않습니다.";
+        }
+        scopeState.setText(caption);
+        scopeState.getAccessibleContext().setAccessibleDescription(detail);
+        setDetail(scopeHelp, SCOPE_GUIDANCE + "\n\n대상 적용 방식\n" + SCOPE_MODE_HELP + "\n\n현재 상태\n" + detail);
     }
 
     private void updateSettings(GuardConfig config) {
@@ -951,6 +1051,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
                 + "\n기본 호스트 RPS: " + l.perHostRps() + "\n호스트별 RPS (독립, 0=끔): " + l.hostRps()
                 + "\n전송 대기열: " + l.maxQueued() + " / 제한 " + seconds(l.queueTimeoutMillis()) + "초"
                 + "\n승인 대기 제한: " + seconds(l.approvalTimeoutMillis()) + "초"
+                + "\n대상 적용 방식 (저장 정책): " + destinationScopeModeLabel(config.destinationScopeMode())
                 + "\n기본 동작: " + UiText.mode(config.defaultMode().name())
                 + "\n(Run, Intent) 요청 예산: " + l.perIntentMaxRequests() + " (0=끔; 개요에서 명시적 초기화)"
                 + "\n상태 확인 GET의 운영자 일시중지 통과: " + l.healthProbePassthrough()
@@ -1523,6 +1624,16 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         });
     }
     private static <T> T selected(JTable table, RowsModel<T> model) { int index = modelIndex(table, table.getSelectedRow(), model.rows.size()); return index < 0 ? null : model.rows.get(index); }
+    private static List<Integer> selectedScopeIndices(JTable table, int size) {
+        int[] selected = table.getSelectedRows();
+        if (selected.length == 0) throw failure("SELECT_SCOPE_FIRST");
+        Set<Integer> indices = new HashSet<>();
+        for (int row : selected) {
+            int index = modelIndex(table, row, size);
+            if (index < 0 || !indices.add(index)) throw failure("SELECT_SCOPE_FIRST");
+        }
+        return indices.stream().sorted().toList();
+    }
     private static int modelIndex(JTable table, int view, int size) {
         if (view < 0 || view >= table.getRowCount()) return -1;
         try { int index = table.convertRowIndexToModel(view); return index >= 0 && index < size ? index : -1; }
@@ -1603,6 +1714,12 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         migration = Map.of();
         dialogs.closeEditors();
         version.setText("확장 종료 · 설정 변경과 승인 불가");
+        updateScopePresentation();
+    }
+
+    @FunctionalInterface
+    interface SubmitConfirmation {
+        boolean confirm(String message, String confirmLabel);
     }
 
     interface Dialogs {
@@ -1610,7 +1727,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         default boolean confirm(Component parent, String message, String confirmLabel) { return confirm(parent, message); }
         Path chooseExport(Component parent, String extension);
         void error(Component parent, String message);
-        void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save);
+        void edit(Component parent, String title, String saveLabel, EditorForm<?> form, java.util.function.Consumer<SubmitConfirmation> save);
         default void closeEditors() {}
     }
     static final class SwingDialogs implements Dialogs {
@@ -1618,11 +1735,16 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
         @Override public void closeEditors() { for (JDialog dialog : List.copyOf(editors)) dialog.dispose(); }
         @Override public boolean confirm(Component parent, String message) { return confirm(parent, message, "확인"); }
         @Override public boolean confirm(Component parent, String message, String confirmLabel) {
+            return confirm(parent, message, confirmLabel, () -> {});
+        }
+        private boolean confirm(Component parent, String message, String confirmLabel, Runnable onDecline) {
             boolean[] accepted = {false};
             JDialog dialog = messageDialog(parent, confirmLabel.equals("모두 통과") ? "경고 · 보호를 끄고 모두 통과" : "확인");
             JButton cancel = named(new JButton("취소"), "dialog.cancel");
             JButton confirm = named(new JButton(confirmLabel), "dialog.confirm");
-            cancel.addActionListener(e -> dialog.dispose());
+            Runnable decline = () -> { try { onDecline.run(); } finally { dialog.dispose(); } };
+            cancel.addActionListener(e -> decline.run());
+            dialog.getRootPane().registerKeyboardAction(e -> decline.run(), KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), JComponent.WHEN_IN_FOCUSED_WINDOW);
             confirm.addActionListener(e -> { accepted[0] = true; dialog.dispose(); });
             dialog.setContentPane(new MessagePane(message, cancel, confirm));
             dialog.getRootPane().setDefaultButton(cancel); // Enter must never accidentally disable protection.
@@ -1673,7 +1795,7 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             int y = Math.max(bounds.y + insets.top, Math.min(dialog.getY(), bounds.y + bounds.height - insets.bottom - dialog.getHeight()));
             dialog.setLocation(x, y);
         }
-        @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, Runnable save) {
+        @Override public void edit(Component parent, String title, String saveLabel, EditorForm<?> form, java.util.function.Consumer<SubmitConfirmation> save) {
             JDialog dialog = new JDialog(SwingUtilities.getWindowAncestor(parent), "Cairn Guard · " + title, Dialog.ModalityType.APPLICATION_MODAL);
             dialog.setName("editor.dialog"); dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
             JPanel content = new JPanel(new BorderLayout(8, 8)); content.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -1684,7 +1806,10 @@ public final class GuardPanel extends JPanel implements AutoCloseable {
             JButton cancel = named(new JButton("취소"), "editor.cancel");
             cancel.setToolTipText("변경하지 않고 닫기");
             submit.addActionListener(e -> {
-                try { save.run(); dialog.dispose(); }
+                try {
+                    SubmitConfirmation confirmation = (text, label) -> confirm(parent, text, label, dialog::dispose);
+                    save.accept(confirmation); dialog.dispose();
+                }
                 catch (FormValidationException failure) { feedback.setText(failure.getMessage()); }
                 catch (UiFailure failure) { feedback.setText(UiText.error(failure.category)); }
                 catch (RuntimeException failure) { feedback.setText(UiText.error("ACTION_FAILED")); }

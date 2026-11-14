@@ -65,6 +65,124 @@ class GuardPanelV2Test {
         assertEquals(0,access.updates); assertEquals(0,access.runtimeCalls); assertEquals(GuardConfig.defaults(),access.policy);
     }
 
+    private static GuardConfig destinationMode(GuardConfig config, DestinationScopeMode mode) {
+        return new GuardConfig(config.schemaVersion(), config.allowScope(), config.blockScope(), config.rules(), config.defaultMode(), config.limits(), config.guardListenerPorts(), mode);
+    }
+
+    @Test void destinationModeAndWholePolicyJsonShareBothDirectionConsentWithoutErasingSparsePairs() throws Exception {
+        GuardConfig full = fullPolicy();
+        List<ScopeEntry> sparse = List.of(new ScopeEntry(true, "example.test", "HTTPS", 80, "\\A\\Q/api\\E\\z"), new ScopeEntry(true, "example.test", "HTTPS", 443, "\\A\\Q/manager\\E\\z"));
+        access.policy = new GuardConfig(2, sparse, full.blockScope(), full.rules(), full.defaultMode(), full.limits(), full.guardListenerPorts());
+        GuardConfig original = access.policy; open();
+        dialogs.edit = (form, save) -> { get("scope.mode.choice", JComboBox.class).setSelectedItem(DestinationScopeMode.ALL_DESTINATIONS); save.run(); };
+        dialogs.confirmed = false;
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(0, access.updates); assertEquals(original, access.policy); assertEquals(1, dialogs.confirmations.size());
+        assertTrue(dialogs.confirmations.getLast().contains("OFF 또는 EXEMPT")); assertTrue(dialogs.confirmations.getLast().contains("OOM"));
+        dialogs.confirmed = true;
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(1, access.updates); assertEquals(1, access.updateAttempts); assertEquals("p", access.casProject); assertEquals(7, access.casRevision);
+        assertEquals(DestinationScopeMode.ALL_DESTINATIONS, access.policy.destinationScopeMode()); assertEquals(sparse, access.policy.allowScope());
+        assertEquals(original.limits(), access.policy.limits()); assertEquals(original.guardListenerPorts(), access.policy.guardListenerPorts());
+        GuardConfig restricted = destinationMode(access.policy, DestinationScopeMode.ALLOWLIST);
+        dialogs.edit = (form, save) -> { get("advanced.policyJson", JTextArea.class).setText(PolicyCodec.encode(restricted)); save.run(); };
+        dialogs.confirmed = false;
+        edt(() -> { click("settings.policyJson"); return null; });
+        assertEquals(1, access.updates); assertTrue(dialogs.confirmations.getLast().startsWith("목록에 등록한 목적지만"));
+        dialogs.confirmed = true;
+        edt(() -> { click("settings.policyJson"); return null; });
+        assertEquals(2, access.updates); assertEquals(restricted, access.policy); assertEquals(sparse, access.policy.allowScope());
+        for (int port : List.of(80, 443)) for (String path : List.of("/api", "/manager")) {
+            RequestData request = new RequestData("GET", "https://display.invalid/", "example.test", port, true, List.of(), new byte[0], true, true, path);
+            assertEquals(port == 80 && path.equals("/api") || port == 443 && path.equals("/manager") ? Mode.ALLOW : Mode.BLOCK, new PolicyEngine().evaluate(access.policy, request).mode());
+        }
+        int prompts = dialogs.confirmations.size();
+        dialogs.edit = (form, save) -> save.run();
+        edt(() -> { click("scope.mode.edit"); click("settings.policyJson"); return null; });
+        assertEquals(2, access.updates); assertEquals(prompts, dialogs.confirmations.size()); assertEquals(0, access.runtimeCalls);
+    }
+
+    @Test void destinationModeDraftCancelInvalidAndRefreshNeverAutosaveOrRebase() throws Exception {
+        open(); GuardConfig original = access.policy;
+        dialogs.edit = (form, save) -> {
+            JComboBox<?> choice = get("scope.mode.choice", JComboBox.class);
+            assertSame(choice, get("scope.mode.choice.label", JLabel.class).getLabelFor());
+            JTextArea help = get("scope.mode.help", JTextArea.class);
+            assertFalse(help.isEditable()); assertTrue(help.isFocusable()); assertTrue(help.getText().contains("OOM"));
+            choice.setSelectedItem(DestinationScopeMode.ALL_DESTINATIONS); panel.refreshNow();
+            assertEquals(DestinationScopeMode.ALL_DESTINATIONS, choice.getSelectedItem());
+        };
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(original, access.policy); assertEquals(0, access.updateAttempts); assertTrue(dialogs.confirmations.isEmpty());
+        dialogs.edit = (form, save) -> { get("scope.mode.choice", JComboBox.class).setSelectedItem(null); save.run(); };
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(0, access.updateAttempts); assertEquals(1, dialogs.errors.size());
+        dialogs.edit = (form, save) -> save.run();
+        edt(() -> { click("scope.mode.edit"); return null; });
+        assertEquals(0, access.updates); assertTrue(dialogs.confirmations.isEmpty());
+    }
+
+    @Test void allDestinationOrdinaryPolicyCopiesPreserveRawTuplesEveryLimitAndLegacyListeners() throws Exception {
+        GuardConfig full = fullPolicy();
+        List<ScopeEntry> original = List.of(new ScopeEntry(true, "example.test", "HTTPS", 80, "\\A\\Q/api\\E\\z"),
+                new ScopeEntry(true, "example.test", "HTTPS", 443, "\\A\\Q/manager\\E\\z"),
+                new ScopeEntry(false, "*.Example.test.", "AnY", 0, "(?i)/line\n\r\t"),
+                new ScopeEntry(false, "[2001:db8::1]", "HTTP", 65535, "\\A\\Q/a\\E.*\\Q/b\\E\\z"));
+        access.policy = new GuardConfig(2, original, full.blockScope(), full.rules(), full.defaultMode(), full.limits(), full.guardListenerPorts(), DestinationScopeMode.ALL_DESTINATIONS);
+        open();
+        dialogs.edit = (form, save) -> { get("scope.host", JTextField.class).setText("extra.test"); save.run(); };
+        edt(() -> { click("scope.allow.add"); return null; });
+        assertEquals(DestinationScopeMode.ALL_DESTINATIONS, access.policy.destinationScopeMode());
+        dialogs.edit = (form, save) -> {
+            JTable members = get("scope.members.table", JTable.class);
+            get("scope.port", JTextField.class).setText("81"); click("scope.member.apply");
+            members.setRowSelectionInterval(1, 1); get("scope.path", JTextArea.class).setText("/manager2"); click("scope.member.apply"); save.run();
+        };
+        edt(() -> {
+            JTable table = get("scope.allow.table", JTable.class); table.setRowSelectionInterval(0, 1); click("scope.allow.edit");
+            table.setRowSelectionInterval(table.convertRowIndexToView(access.policy.allowScope().size() - 1), table.convertRowIndexToView(access.policy.allowScope().size() - 1));
+            click("scope.allow.toggle"); table.setRowSelectionInterval(table.getRowCount() - 1, table.getRowCount() - 1); click("scope.allow.delete"); return null;
+        });
+        assertEquals(original.subList(2, 4), access.policy.allowScope().subList(2, 4));
+        assertEquals(List.of(81, 443), access.policy.allowScope().subList(0, 2).stream().map(ScopeEntry::port).toList());
+        dialogs.edit = (form, save) -> { get("rule.name", JTextField.class).setText("Mode copy rule"); save.run(); };
+        edt(() -> { click("rules.add"); return null; });
+        String added = access.policy.rules().getLast().id();
+        dialogs.edit = (form, save) -> { get("rule.name", JTextField.class).setText("Mode copy edited rule"); save.run(); };
+        edt(() -> { selectRule(added); click("rules.edit"); selectRule(added); click("rules.toggle"); selectRule(added); click("rules.delete"); return null; });
+        assertEquals(full.rules(), access.policy.rules()); assertEquals(full.limits(), access.policy.limits());
+        dialogs.edit = (form, save) -> { get("settings.globalRps", JSpinner.class).setValue(2); save.run(); };
+        edt(() -> { click("settings.edit"); return null; });
+        Limits l = full.limits();
+        assertEquals(new Limits(2, l.perHostRps(), l.hostRps(), l.maxConcurrent(), l.maxQueued(), l.queueTimeoutMillis(), l.approvalTimeoutMillis(), l.requestTimeoutMillis(),
+                l.perPathMaxResponseBytes(), l.autoBlockMillis(), l.circuit5xx(), l.fanout(), l.perIntentMaxRequests(), l.healthProbePassthrough(), l.healthProbePaths(), l.heavyPathLimits(), l.circuit5xxExceptions(), l.heavyResponseEnabled(), l.fanoutExceptions()), access.policy.limits());
+        assertEquals(9, access.updates); assertEquals(9, access.updateAttempts); assertEquals(DestinationScopeMode.ALL_DESTINATIONS, access.policy.destinationScopeMode());
+        assertEquals(full.guardListenerPorts(), access.policy.guardListenerPorts()); assertEquals(full.blockScope(), access.policy.blockScope());
+        assertTrue(dialogs.confirmations.stream().noneMatch(text -> text.startsWith("전체 목적지에서 규칙 검사") || text.startsWith("목록에 등록한 목적지만")));
+        assertTrue(dialogs.errors.isEmpty(), dialogs.errors.toString());
+    }
+
+    @Test void scopeStatusAndCompleteGuideNeverShowStaleEffectiveAllAfterFailureOrClose() throws Exception {
+        access.policy = destinationMode(GuardConfig.defaults(), DestinationScopeMode.ALL_DESTINATIONS); open();
+        edt(() -> {
+            JLabel state = get("scope.state", JLabel.class); JTextArea guide = get("scope.help", JTextArea.class);
+            assertEquals("전체목적지·규칙 | 경로뷰 | 차단우선·별도허가", state.getText());
+            assertTrue(guide.isFocusable()); assertFalse(guide.isEditable());
+            for (String text : List.of("Drop all out-of-scope requests", "X-Cairn-Guard 로컬 451", "대상 도착을 뜻하지", "Shift/Ctrl/Cmd", "허용 목록은 지우지", "OOM")) assertTrue(guide.getText().contains(text), text);
+            guide.select(10, 30); String selected = guide.getSelectedText(); panel.refreshNow(); assertEquals(selected, guide.getSelectedText());
+            access.paused = true; panel.refreshNow(); assertTrue(state.getText().startsWith("중지·전체목적지"));
+            access.guard = "POLICY_INVALID"; panel.refreshNow(); assertTrue(state.getText().startsWith("정책·상태 차단"));
+            access.off = true; panel.refreshNow(); assertTrue(state.getText().startsWith("보호끔·미수집")); assertTrue(guide.getText().contains("검사하지 않습니다"));
+            access.off = false; access.paused = false; access.guard = "PROTECTED";
+            GuardConfig d = access.policy; access.policy = new GuardConfig(2, d.allowScope(), d.blockScope(), d.rules(), d.defaultMode(), d.limits(), List.of(8080), d.destinationScopeMode());
+            panel.refreshNow(); assertTrue(state.getText().startsWith("이전포트제한·차단"));
+            access.failStatus = true; panel.refreshNow(); assertEquals("상태불가 | 검사 미확인·별도허가", state.getText()); assertFalse(get("scope.mode.edit", JButton.class).isEnabled());
+            access.failStatus = false; panel.refreshNow(); panel.close();
+            assertEquals("상태불가 | 검사 미확인·별도허가", state.getText()); assertFalse(get("scope.mode.edit", JButton.class).isEnabled()); return null;
+        });
+        assertEquals(0, access.updates); assertEquals(0, access.runtimeCalls);
+    }
+
     @Test void everyOrdinaryPolicyCopyPreservesLimitsAndListenerSelection() throws Exception {
         access.policy=fullPolicy(); open(); Limits original=access.policy.limits();
         dialogs.edit=(form,save)-> {
@@ -79,6 +197,30 @@ class GuardPanelV2Test {
         Limits l=access.policy.limits();assertEquals(original.perPathMaxResponseBytes(),l.perPathMaxResponseBytes());
         assertEquals(original.circuit5xx(),l.circuit5xx());assertEquals(original.fanout(),l.fanout());assertEquals(original.healthProbePaths(),l.healthProbePaths());assertEquals(original.heavyPathLimits(),l.heavyPathLimits());
         assertEquals(original.perIntentMaxRequests(),l.perIntentMaxRequests());assertEquals(List.of(8080),access.policy.guardListenerPorts());
+    }
+
+    @Test void multiMemberScopeSavePreservesEveryLimitAndLegacyListenerValueInOneCas() throws Exception {
+        GuardConfig full = fullPolicy();
+        List<ScopeEntry> rows = List.of(new ScopeEntry(true, "example.test", "HTTPS", 80, "\\A\\Q/api\\E\\z"),
+                new ScopeEntry(true, "example.test", "HTTPS", 443, "\\A\\Q/manager\\E\\z"));
+        access.policy = new GuardConfig(2, rows, full.blockScope(), full.rules(), full.defaultMode(), full.limits(), full.guardListenerPorts());
+        open();
+        dialogs.edit = (form, save) -> {
+            JTable members = get("scope.members.table", JTable.class);
+            for (int row = 0; row < 2; row++) {
+                members.setRowSelectionInterval(row, row);
+                get("scope.host", JTextField.class).setText("Changed.test.");
+                click("scope.member.apply");
+            }
+            save.run();
+        };
+        edt(() -> { get("scope.allow.table", JTable.class).setRowSelectionInterval(0, 1); click("scope.allow.edit"); return null; });
+        assertEquals(1, access.updates); assertEquals(1, access.updateAttempts);
+        assertEquals(full.limits(), access.policy.limits()); assertEquals(List.of(8080), access.policy.guardListenerPorts());
+        assertEquals(full.rules(), access.policy.rules()); assertEquals(full.blockScope(), access.policy.blockScope());
+        assertEquals(List.of(80, 443), access.policy.allowScope().stream().map(ScopeEntry::port).toList());
+        assertTrue(access.policy.allowScope().stream().allMatch(row -> row.scheme().equals("HTTPS")));
+        assertEquals("p", access.casProject); assertEquals(7, access.casRevision);
     }
 
     @Test void exemptPinnedAboveAllSortsButPolicyOrderUntouchedAndRiskySaveRequiresConsent() throws Exception {
@@ -367,15 +509,15 @@ class GuardPanelV2Test {
         @Override public boolean confirm(Component p,String s){assertTrue(SwingUtilities.isEventDispatchThread());confirmations.add(s);onConfirm.run();return confirmed;}
         @Override public Path chooseExport(Component p,String extension){return target;}
         @Override public void error(Component p,String s){errors.add(s);}
-        @Override public void edit(Component p,String title,String label,EditorForm<?> f,Runnable save){form=f;edit.accept(f,save);}
+        @Override public void edit(Component p,String title,String label,EditorForm<?> f,java.util.function.Consumer<GuardPanel.SubmitConfirmation> save){form=f;edit.accept(f,()->save.accept((text,confirmLabel)->confirm(p,text,confirmLabel)));}
     }
     static final class Access implements GuardUiAccess {
         GuardConfig policy=GuardConfig.defaults();volatile String project="p";volatile long revision=7;boolean paused,off,failStatus,rawUnavailable,pendingMigration;
-        int updates,updateAttempts,runtimeCalls,rawReads,incidentCalls;boolean exportOnEdt;String guard="PROTECTED",casProject,original="",persisted="";long casRevision,incidentFrom,incidentTo;
+        int updates,updateAttempts,runtimeCalls,rawReads,incidentCalls;boolean exportOnEdt;RuntimeException updateFailure;String guard="PROTECTED",casProject,original="",persisted="";long casRevision,incidentFrom,incidentTo;
         Map<String,Object> watcher=Map.of();final EvidenceStore store=new EvidenceStore();
         @Override public GuardConfig config(){return policy;}
         void cas(String p,long r){casProject=p;casRevision=r;if(!project.equals(p)||revision!=r)throw new IllegalStateException("STALE");}
-        @Override public void updateConfig(GuardConfig c,String p,long r){updateAttempts++;cas(p,r);policy=c;persisted=PolicyCodec.encode(c);updates++;revision++;pendingMigration=false;}
+        @Override public void updateConfig(GuardConfig c,String p,long r){updateAttempts++;cas(p,r);if(updateFailure!=null)throw updateFailure;policy=c;persisted=PolicyCodec.encode(c);updates++;revision++;pendingMigration=false;}
         @Override public Map<String,Object> status(){if(failStatus)throw new IllegalStateException();return Map.of("projectId",project,"revision",revision,"paused",paused,"passthrough",off,"closed",false,"guardState",guard,"watchers",watcher,"intents",Map.of("consumed",20,"rejected",2),"reasonCounters",Map.of("CIRCUIT_OPEN",3));}
         List<TrafficEntry> rows(){return store.snapshot();}
         @Override public List<TrafficEntry> traffic(){return rows();}
@@ -689,7 +831,7 @@ class GuardPanelV2Test {
             assertTrue(SwingUtilities.isEventDispatchThread()); confirmations.add(text); onConfirm.run(); return accept;
         }
         @Override public void error(Component parent, String text) { assertTrue(SwingUtilities.isEventDispatchThread()); errors.add(text); }
-        @Override public void edit(Component parent, String title, String label, EditorForm<?> form, Runnable save) {
+        @Override public void edit(Component parent, String title, String label, EditorForm<?> form, java.util.function.Consumer<GuardPanel.SubmitConfirmation> save) {
             JTextArea original = (JTextArea) find(form.component(), "migration.original");
             assertEquals(fixture.original, original.getText(), "the review retains its captured original");
             assertFalse(original.isEditable());

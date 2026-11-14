@@ -10,6 +10,17 @@ forwarded path, repair Host headers, manage authentication, or log request data.
 > it. Full controller/UI/native integration and exact-artifact verification are
 > separate acceptance gates.
 
+## Explicit destination admission mode
+
+`GuardConfig.DestinationScopeMode` has exactly ALLOWLIST and ALL_DESTINATIONS.
+Default, absent and legacy policies use ALLOWLIST, whose empty allow list denies.
+Only an explicit saved ALL_DESTINATIONS policy omits positive allow-entry matching;
+existing rules/default mode still run. This is not OFF, EXEMPT or permission to test.
+All stored allow/block data, disabled rules, limits and legacy listeners still validate.
+No wildcard entry is synthesized and switching back preserves every original tuple.
+The optional schema2 field is strict and omitted at its ALLOWLIST default; v1 cannot
+carry it, and older strict readers refuse any present field. See INTERFACES.md.
+
 ## Scope is not a pentest-path sanitizer
 
 Scope uses the **actual transport service host, scheme and port**, plus the actual
@@ -38,7 +49,8 @@ rule matching and runtime route keys**; none replaces the native target.
 For a **restricted** path scope, every known interpretation must fit one allow
 entry. A block scope matching any interpretation wins. This prevents a scope such
 as `/c/.*` from authorizing `/c/%2e%2e/private` solely because its raw spelling
-starts with `/c/`. Query data never broadens scope. Empty allow scope allows nothing.
+starts with `/c/`. Query data never broadens scope. In ALLOWLIST, empty allow
+scope allows nothing. ALL_DESTINATIONS omits only this positive entry proof.
 Empty path expression means all paths; port `0` and scheme `any` mean any port and
 HTTP(S) scheme respectively.
 
@@ -60,8 +72,11 @@ configured health probe.
 1. Validate/compile the complete configuration, including disabled entries.
    Invalid configuration gives categorical `INVALID_CONFIG`; explicit validation
    throws a fixed-category exception without offending input or a cause chain.
-2. Check actual service/routing scope. Empty allow scope allows nothing. A rule,
-   including EXEMPT, never overrides scope.
+2. Derive the valid actual service/method/native target and bounded routing views.
+   A matching block entry denies first; an uncleared authority-matching blocked-path
+   constraint with incomplete routing also denies in BOTH modes. Then ALLOWLIST
+   requires the unchanged one-entry/all-views proof (empty denies); ALL_DESTINATIONS
+   skips only positive allow work. A rule, including EXEMPT, never clears these fences.
 3. Inspect only fields demanded by enabled rules. Optional header/body/query/URL
    parsing or capture limitations are **inspection warnings, not automatic 451s**.
 4. Record enabled known matches in configuration order. Ordinary action priority

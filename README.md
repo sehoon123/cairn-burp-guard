@@ -2,11 +2,19 @@
 
 CAIRN을 수정하지 않고 Burp를 **사람이 관리하는 중앙 HTTP/HTTPS 안전 통제 계층**으로 사용하는 독립 Burp Extension 개발 프로젝트입니다. PortSwigger/CAIRN의 공식 제품이나 기존 Independent MCP Bridge의 새 버전이 아닙니다.
 
-> **v0.3.0 개발 프리릴리즈.** 실제 공개 상태와 다운로드는 아래 GitHub 릴리스 페이지에서 확인하세요. 문서·소스 푸시만으로 공개·설치나 exact JAR native 검증 완료를 뜻하지 않습니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
+> **v0.4.0 개발 소스 · 공개/설치/검증 완료 아님.** 아래 v0.3.0 링크는 이전 공개 산출물의 상태와 다운로드입니다. 새 소스의 버전 값은 새 릴리스나 해당 산출물의 검증을 뜻하지 않습니다. 문서·소스 푸시만으로 공개·설치나 exact JAR native 검증 완료를 뜻하지 않습니다. **Authorization·Cookie·토큰도 원문으로 노출되며, 수집·보관 상한이 없어 메모리 증가·OOM·UI/프록시 지연이 가능합니다. 실서비스 보호에 의존하지 마세요.** 소스 변경·자동 검사 완료는 전체 A–G 수용이나 정식 배포 승인이 아닙니다. 포트별 적용(H)은 추후 기능이며 PASS가 아닙니다. 사용자 Burp/프로젝트/프록시/데스크톱을 자동 설정하거나 설치하지 않습니다.
 
 **[v0.3.0 공개 상태·다운로드](https://github.com/sehoon123/cairn-burp-guard/releases/tag/v0.3.0)** · [v0.3.0 검증·한계·출처](docs/PRERELEASE_0.3.0.md) · [artifact별 검증](docs/VERIFICATION.md) · [이전 v0.2.0·rollback](https://github.com/sehoon123/cairn-burp-guard/releases/tag/dev-2026-11-06-no-auto-block-hotfix) · [전체 Proxy 과거 기록](docs/ALL_LISTENERS_ACCEPTANCE.md) · [v2 API](docs/INTERFACES.md)
 
-## v0.3.0 요청 기록 개선
+## v0.4.0 소스: 대상 적용 방식과 복수 포트·경로 작성
+
+기본값은 **목록에 등록한 목적지만 (`ALLOWLIST`)**입니다. 빈 허용 목록과 이전/필드 없는 저장 자료는 계속 차단합니다. **대상 → 방식·안내 → 적용 방식 변경…**에서 **전체 목적지 · 규칙 검사 (`ALL_DESTINATIONS`)**를 명시적으로 저장하면 허용 등록 없이 모든 유효한 실제 목적지에 기존 규칙·기본 동작을 적용합니다. 테스트 허가, 보호 OFF 또는 EXEMPT가 아닙니다. 실제 목적지 유효성·차단 대상·해석 불완전 차단 경로 제약·정책/프로젝트/수명/최종 상태·일시중지·처리/승인/대기 용량·속도·태그 예산은 유지됩니다.
+
+허용 목록은 지우지 않고 보존합니다. 목록 방식으로 돌아가면 그 제한을 다시 적용하며 빈 목록은 차단합니다. 양방향 변경과 전체 정책 JSON 변경은 같은 취소-기본 확인과 열었을 때의 Snapshot/CAS를 사용합니다. 저장 전 선택·취소·동일 선택은 적용하지 않습니다. 보호 중 원문은 방식과 무관하게 비밀 포함 평문 전체를 상한 없이 보관하므로 더 넓은 대상에서 메모리/OOM·노출 위험이 커질 수 있습니다. OFF·일시중지·예산 사용량은 방식 저장으로 초기화하지 않습니다.
+
+한 호스트에 `80,443`과 `/api`, `/manager`를 작성하고 전체 네 쌍을 확인한 뒤 한 번 저장·재편집합니다. 기존 `80/api + 443/manager` 같은 sparse 관계와 opaque RE2는 넓히거나 정규화하지 않습니다. [UI](docs/UI.md), [정확한 모델/codec 계약](docs/INTERFACES.md), [산출물별 검증 경계](docs/VERIFICATION.md)를 따르세요. 이 소스 설명은 실제 GUI/새 JAR/native/독립 검증 PASS나 공개를 주장하지 않습니다.
+
+## 이전 v0.3.0 요청 기록 개선
 
 Proxy-only 보관 원문의 헤더·본문까지 검색합니다. 기본 **All/Literal**은 기존의
 대소문자 구분 없는 **literal substring** 검색입니다. 위치는 전체·메타데이터·요청 헤더·
@@ -98,7 +106,7 @@ CAIRN Native Pi workers ──HTTP(S) proxy──> Burp Proxy + Cairn Proxy Guar
 | 탭/조작 | 현재 소스 기능 |
 |---|---|
 | 개요·상단 | typed 보호 상태/이유/통계, 새 요청 차단, 사람 확인을 거친 전체 통과/OFF·복원 |
-| 대상 | URL → 미저장 폼·실제 범위 미리보기 → 명시 저장; 정확한 대상부터 등록 |
+| 대상 | 목록/전체 목적지 적용 방식(별도 확인), URL → 미저장 포트·경로 폼·전체 미리보기 → 명시 저장·재편집 |
 | 규칙 | 메서드/실제 URL/경로/query/header/body/JSON/form, AND/OR·RE2, EXEMPT 위험 확인 |
 | 요청 기록 | **마스킹 없는 평문 원문 전체**(상한 없음) 위치별 Literal/선택적 RE2 검색·정렬·inline 요청/응답·선택적 static preview·별도 popout·현재 순서 이동·검사 경고·intent/run·결과·상태. JSON/HAR 내보내기는 매번 평문 비밀 경고 확인 후 원문 구조(헤더·본문 바이트)를 저장 |
 | 승인 대기 | 읽기 전용 검토 후 별도1회 승인/거절. 오래된 승인·프로젝트/버전 변경은 취소 |
@@ -128,7 +136,7 @@ python3 scripts/verify_templates.py
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-현재 후보 산출 경로는 `build/libs/cairn-proxy-guard-0.3.0.jar`입니다 (과거 프리뷰 JAR 이름은 `0.1.0-SNAPSHOT`이었음). 프로젝트 MIT `LICENSE`/`NOTICE`는 JAR의 `META-INF/cairn-proxy-guard/`에 있고, 루트 `META-INF/LICENSE`·`NOTICE`와 `META-INF/legal/`은 번들 라이브러리(Jackson/RE2J)의 원문 그대로이며 빌드가 이를 검사합니다. 이름이 같아도 hash가 다른 후보는 같은 검증 산출물이 아닙니다. 현재 v2 체크포인트와 과거 프리뷰를 태그/해시로 구분하세요. 다운로드만으로 설치되지는 않습니다.
+현재 소스를 빌드하는 산출 경로는 `build/libs/cairn-proxy-guard-0.4.0.jar`입니다 (과거 프리뷰 JAR 이름은 `0.1.0-SNAPSHOT`이었음). 프로젝트 MIT `LICENSE`/`NOTICE`는 JAR의 `META-INF/cairn-proxy-guard/`에 있고, 루트 `META-INF/LICENSE`·`NOTICE`와 `META-INF/legal/`은 번들 라이브러리(Jackson/RE2J)의 원문 그대로이며 빌드가 이를 검사합니다. 이름이 같아도 hash가 다른 후보는 같은 검증 산출물이 아닙니다. 현재 v2 체크포인트와 과거 프리뷰를 태그/해시로 구분하세요. 다운로드만으로 설치되지는 않습니다.
 
 사람이 새 후보를 검증할 때만 실제 대상과 분리된 임시 Burp HOME/profile/project/display와 **소유 loopback fixture**를 사용하세요. EULA·라이선스 입력이 필요하면 멈추고 사용자에게 요청하며 동의/활성화 자료를 복사하거나 우회하지 않습니다. 정확한 JAR hash를 기록하고 [자동 차단 제거 후보의 현재 native 절차](docs/MANUAL_BURP_SMOKE.md#current-removal-aware-procedure)를 따릅니다. 같은 문서의 과거 자동 제어/permit 단계와 helper는 현재 후보 절차나 성공 증거가 아닙니다. 현재 후보의 installed-Burp/native 전달·도착은 UNVERIFIED입니다. 프리릴리즈 공개는 사용자 Burp 설치, exact-JAR native 수용 또는 실서비스 안전 보증이 아닙니다. 확장 언로드 후에는 보호가 없습니다.
 

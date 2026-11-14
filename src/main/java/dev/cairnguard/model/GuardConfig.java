@@ -5,18 +5,24 @@ import java.util.Map;
 
 /** Operator-authored project policy. No credentials or authentication state. */
 public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<ScopeEntry> blockScope,
-                          List<Rule> rules, Mode defaultMode, Limits limits, List<Integer> guardListenerPorts) {
+                          List<Rule> rules, Mode defaultMode, Limits limits, List<Integer> guardListenerPorts,
+                          DestinationScopeMode destinationScopeMode) {
     public GuardConfig {
         allowScope = List.copyOf(allowScope);
         blockScope = List.copyOf(blockScope);
         rules = List.copyOf(rules);
         guardListenerPorts = List.copyOf(guardListenerPorts);
     }
-    /** Compatibility constructor; the supplied schema is deliberately NOT silently upgraded. */
+    /** Compatibility constructors keep empty-deny admission and never silently upgrade the schema. */
+    public GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<ScopeEntry> blockScope,
+                       List<Rule> rules, Mode defaultMode, Limits limits, List<Integer> guardListenerPorts) {
+        this(schemaVersion, allowScope, blockScope, rules, defaultMode, limits, guardListenerPorts, DestinationScopeMode.ALLOWLIST);
+    }
     public GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<ScopeEntry> blockScope,
                        List<Rule> rules, Mode defaultMode, Limits limits) {
-        this(schemaVersion, allowScope, blockScope, rules, defaultMode, limits, List.of());
+        this(schemaVersion, allowScope, blockScope, rules, defaultMode, limits, List.of(), DestinationScopeMode.ALLOWLIST);
     }
+    public enum DestinationScopeMode { ALLOWLIST, ALL_DESTINATIONS }
     public enum Mode { EXEMPT, ALLOW, BLOCK, MONITOR, ASK }
     public enum FanoutAction { BLOCK, PAUSE, WARN }
     public enum Field { METHOD, URL, PATH, QUERY, HEADER, BODY, JSON, FORM, ANY }
@@ -101,6 +107,7 @@ public record GuardConfig(int schemaVersion, List<ScopeEntry> allowScope, List<S
                         Condition.leaf(Field.METHOD, Match.EXACT, "DELETE"))), Mode.ALLOW,
                 new Limits(0, 0, Map.of(), 5, 100, 30_000, 30_000, 60_000,
                         5L * 1_048_576, 600_000, null, // 5xx circuit is OPTIONAL and OFF by default
-                        new Fanout(60_000, 100, FanoutAction.WARN), 0, false, List.of(), List.of(), List.of(), true, List.of()));
+                        new Fanout(60_000, 100, FanoutAction.WARN), 0, false, List.of(), List.of(), List.of(), true, List.of()),
+                List.of(), DestinationScopeMode.ALLOWLIST);
     }
 }

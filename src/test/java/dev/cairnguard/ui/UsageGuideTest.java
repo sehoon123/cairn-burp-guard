@@ -74,6 +74,25 @@ class UsageGuideTest {
         });
     }
 
+    @Test void scopeGuideExplainsOneHostListsAllPairsLaterEditingAndSparseLegacySafety() throws Exception {
+        edt(() -> {
+            List<JTextArea> pages = new ArrayList<>(); collect(UsageGuide.create(), pages);
+            String text = pages.getFirst().getText();
+            for (String required : List.of("80,443", "/api", "/manager", "80/api, 80/manager, 443/api, 443/manager", "Shift/Ctrl/Cmd", "개별 항목", "자동으로 네 쌍이 되지", "빈 입력", "연결 방식은 포트와 독립", "마지막 LF/CRLF", "쉼표는 경로", "초안을 URL의 한 쌍으로 교체")) assertTrue(text.contains(required), required);
+            return null;
+        });
+    }
+
+    @Test void scopeModeGuideSeparatesExplicitRulesOnlyFromOffAndKeepsEmptyDenyAndFullOriginalRisks() throws Exception {
+        edt(() -> {
+            List<JTextArea> pages = new ArrayList<>(); collect(UsageGuide.create(), pages);
+            String text = pages.getFirst().getText();
+            for (String required : List.of("방식·안내", "ALLOWLIST", "ALL_DESTINATIONS", "빈 허용 목록", "테스트 허가", "보호 OFF", "EXEMPT", "불완전한 차단 경로", "두 방향", "JSON", "취소", "프로젝트·버전", "상한 없이", "OOM")) assertTrue(text.contains(required), required);
+            assertTrue(text.contains("80/api + 443/manager")); assertTrue(text.contains("trim/디코딩하지"));
+            return null;
+        });
+    }
+
     @Test void examplesRemainScrollableAtSmallOrLargeFonts() throws Exception {
         edt(() -> {
             for (float size : new float[]{14f, 28f}) {

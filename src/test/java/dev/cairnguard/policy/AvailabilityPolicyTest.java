@@ -24,6 +24,24 @@ class AvailabilityPolicyTest {
         return Condition.and(leaf(Field.METHOD, Match.EXACT, "GET"), leaf(Field.PATH, Match.EXACT, "/safe"));
     }
 
+    @Test void allDestinationModeReportsUnavailableInspectionWithoutDroppingOrPrivilegingTheOriginal() {
+        byte[] original = "delete synthetic complete supplied bytes".getBytes(StandardCharsets.UTF_8);
+        RequestData input = new RequestData("GET", "https://display.invalid/", "outside.test", 443, true,
+                List.of(new Header("Content-Type", "application/json; charset=unsupported")), original, false, false, "/safe");
+        Rule bodyBlock = rule("body", Mode.BLOCK, leaf(Field.BODY, Match.CONTAINS, "delete"));
+        Rule privileged = rule("exempt", Mode.EXEMPT, Condition.or(leaf(Field.METHOD, Match.EXACT, "GET"), leaf(Field.BODY, Match.CONTAINS, "delete")));
+        for (boolean available : List.of(false, true)) {
+            GuardConfig all = new GuardConfig(2, List.of(), List.of(), List.of(bodyBlock, privileged), Mode.ALLOW, GuardConfig.defaults().limits(), List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+            engine.validate(all);
+            Decision decision = engine.evaluate(all, input, available);
+            assertEquals("DEFAULT_ALLOW", decision.reason()); assertTrue(decision.hits().isEmpty());
+            assertTrue(decision.inspectionWarnings().stream().anyMatch(id -> id.startsWith("BODY_INSPECTION_UNAVAILABLE_")));
+            GuardConfig known = new GuardConfig(2, List.of(), List.of(), List.of(bodyBlock, privileged, rule("method", Mode.BLOCK, leaf(Field.METHOD, Match.EXACT, "GET"))), Mode.ALLOW, all.limits(), List.of(), all.destinationScopeMode());
+            assertEquals("RULE_BLOCK", engine.evaluate(known, input, available).reason());
+            assertArrayEquals(original, input.body()); assertEquals("/safe", input.nativeTarget()); assertFalse(input.bodyComplete());
+        }
+    }
+
     @Test void exemptBeatsAllOrdinaryRulesAndDefaultRegardlessOfOrderButRetainsHits() {
         List<Rule> rules = List.of(rule("block", Mode.BLOCK, safeGet()), rule("ask", Mode.ASK, safeGet()),
                 rule("allow", Mode.ALLOW, safeGet()), rule("monitor", Mode.MONITOR, safeGet()), rule("exempt", Mode.EXEMPT, safeGet()));

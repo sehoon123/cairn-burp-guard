@@ -37,6 +37,60 @@ import static org.mockito.Mockito.*;
 /** Synthetic in-process adapter tests. No real Burp, target traffic, auth API or sockets involved. */
 @SuppressWarnings("try") // Explicit shutdown precedes late-response and waiter checks.
 class ProxyGuardHandlerTest {
+    @Test void allDestinationModeUsesProtectedFullOriginalCaptureAndExactNativeObjects() throws Exception {
+        GuardConfig d = GuardConfig.defaults();
+        GuardConfig all = new GuardConfig(2, List.of(), List.of(), d.rules(), d.defaultMode(), d.limits(), List.of(), GuardConfig.DestinationScopeMode.ALL_DESTINATIONS);
+        GuardController controller = new GuardController(new MemoryProject(all)); Actions actions = new Actions();
+        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
+            HttpRequestToBeSent request = request(9101);
+            when(request.httpService().host()).thenReturn("outside.test"); when(request.httpService().port()).thenReturn(8443);
+            when(request.url()).thenReturn("http://display.invalid/ignored"); when(request.path()).thenReturn("/safe?token=SYNTHETIC-TARGET");
+            when(request.headers()).thenReturn(List.of(header("Host", "fuzzed.invalid"), header("Authorization", "Bearer SYNTHETIC-ALL-SECRET"), header("Cookie", "session=SYNTHETIC-ALL-COOKIE"), header("Content-Type", "text/plain; charset=UTF-8")));
+            String body = "z".repeat(RequestData.MAX_INSPECT_BYTES + 1) + "SYNTHETIC-FULL-TAIL";
+            doReturn(bytes(body.getBytes(java.nio.charset.StandardCharsets.UTF_8))).when(request).body();
+            RequestToBeSentAction action = handler.handleHttpRequestToBeSent(request);
+            assertEquals(RequestAction.CONTINUE, action.action()); assertSame(request, action.request()); assertSame(request.annotations(), action.annotations());
+            String id = controller.traffic().getFirst().id();
+            assertEquals("NATIVE_RELEASED", controller.traffic().getFirst().reason());
+            assertEquals("FORWARDED", controller.traffic().getFirst().disposition());
+            String raw = controller.rawRequest(id); assertTrue(raw.contains(body)); assertTrue(raw.contains("SYNTHETIC-ALL-COOKIE")); assertTrue(raw.contains("Bearer SYNTHETIC-ALL-SECRET"));
+            assertTrue(controller.rawUrl(id).contains("outside.test:8443/safe?token=SYNTHETIC-TARGET"));
+            HttpResponseReceived response = response(9101, "SYNTHETIC-COMPLETE-RESPONSE");
+            when(response.headers()).thenReturn(List.of(header("Set-Cookie", "response=SYNTHETIC-ALL-COOKIE"), header("Content-Type", "text/plain; charset=UTF-8")));
+            ResponseReceivedAction received = handler.handleHttpResponseReceived(response);
+            assertSame(response, received.response()); assertSame(response.annotations(), received.annotations());
+            assertTrue(controller.rawResponse(id).contains("SYNTHETIC-COMPLETE-RESPONSE")); assertTrue(controller.rawResponse(id).contains("SYNTHETIC-ALL-COOKIE"));
+            assertEquals(false, controller.status().get("passthrough")); assertEquals(0L, controller.status().get("passthroughCount"));
+            assertTrue(mockingDetails(request).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
+            assertTrue(mockingDetails(response).getInvocations().stream().noneMatch(i -> i.getMethod().getName().startsWith("with")));
+            verifyNoInteractions(request.annotations(), response.annotations());
+        }
+    }
+
+    @Test void allDestinationModeCannotBypassFinalPolicySaveOrLegacyListenerFence() throws Exception {
+        GuardConfig d = GuardConfig.defaults();
+        GuardConfig all = new GuardConfig(2, List.of(), List.of(), d.rules(), d.defaultMode(), d.limits(), List.of(), GuardConfig.DestinationScopeMode.ALL_DESTINATIONS);
+        GuardController controller = new GuardController(new MemoryProject(all));
+        Actions actions = new Actions() {
+            @Override public RequestToBeSentAction continueRequest(HttpRequestToBeSent request, Annotations annotations) {
+                var status = controller.status(); controller.updateConfig(d, status.get("projectId").toString(), ((Number) status.get("revision")).longValue());
+                return super.continueRequest(request, annotations);
+            }
+        };
+        try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {
+            assertEquals(RequestAction.SPOOF_RESPONSE, handler.handleHttpRequestToBeSent(request(9102)).action());
+            assertNotEquals("FORWARDED", controller.traffic().getFirst().disposition()); assertEquals(0, handler.inFlightCount());
+        }
+        GuardConfig legacy = new GuardConfig(2, List.of(), List.of(), d.rules(), d.defaultMode(), d.limits(), List.of(8080), GuardConfig.DestinationScopeMode.ALL_DESTINATIONS);
+        GuardController restricted = new GuardController(new MemoryProject(legacy)); Actions denied = new Actions();
+        try (ProxyGuardHandler handler = new ProxyGuardHandler(restricted, denied)) {
+            HttpRequestToBeSent request = request(9103);
+            assertNotEquals(RequestAction.CONTINUE, handler.handleHttpRequestToBeSent(request).action());
+            verify(request, never()).body(); assertEquals("ALL_DESTINATIONS", restricted.status().get("destinationScopeMode"));
+            assertEquals("LISTENER_UNVERIFIED", restricted.traffic().getFirst().reason());
+        }
+    }
+
     @Test void allowedNativeRequestAndResponseAndAnnotationsAreTheSameObjects() throws Exception {
         GuardController controller = controller(); Actions actions = new Actions();
         try (ProxyGuardHandler handler = new ProxyGuardHandler(controller, actions)) {

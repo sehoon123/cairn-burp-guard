@@ -37,6 +37,54 @@ class GuardControllerV2Test {
         if (controller != null) controller.close();
     }
 
+    @Test void allDestinationModeKeepsFinalCommitBudgetExportCurrentnessAndPauseOffDebt() {
+        Limits d = GuardConfig.defaults().limits();
+        Limits limits = new Limits(0, 0, Map.of(), d.maxConcurrent(), d.maxQueued(), d.queueTimeoutMillis(), d.approvalTimeoutMillis(), d.requestTimeoutMillis(),
+                d.perPathMaxResponseBytes(), d.autoBlockMillis(), d.circuit5xx(), d.fanout(), 1, false, List.of(), d.heavyPathLimits(), d.circuit5xxExceptions(), d.heavyResponseEnabled(), d.fanoutExceptions());
+        GuardConfig all = new GuardConfig(2, List.of(), List.of(), List.of(), Mode.ALLOW, limits, List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+        open(all); assertEquals("ALL_DESTINATIONS", controller.status().get("destinationScopeMode")); assertEquals(0, projects.saves.get());
+        Prepared first = prepare("GET", "/outside", "one"); handoff(first);
+        String raw = controller.rawRequest(first.evidenceId());
+        Prepared uncommitted = prepare("GET", "/later", "other"); authorize(uncommitted);
+        var export = controller.humanExport(List.of(first.evidenceId()), false); assertTrue(controller.humanExportCurrent(export));
+        GuardConfig listed = new GuardConfig(2, all.allowScope(), all.blockScope(), all.rules(), all.defaultMode(), limits, List.of(), DestinationScopeMode.ALLOWLIST);
+        save(listed);
+        assertFalse(controller.commitDetailed(uncommitted).allowed()); assertEquals(1, metric("intents", "consumed"));
+        assertFalse(controller.humanExportCurrent(export)); assertEquals(raw, controller.rawRequest(first.evidenceId()));
+        assertEquals("SCOPE_NOT_ALLOWED", controller.authorize(prepare("GET", "/outside", "other")).reason());
+        save(all);
+        assertEquals("INTENT_BUDGET_EXCEEDED", controller.authorize(prepare("GET", "/outside", "one")).reason());
+        controller.pause(true); assertEquals("PAUSED", controller.authorize(prepare("GET", "/outside", "other")).reason());
+        controller.passthrough(true, projects.id, revision()); assertEquals(true, controller.status().get("operatorPaused"));
+        save(listed); assertEquals(true, controller.status().get("passthrough")); assertEquals(true, controller.status().get("operatorPaused"));
+        assertEquals("ALLOWLIST", controller.status().get("destinationScopeMode")); assertEquals(1, metric("intents", "consumed"));
+        assertEquals(3, projects.saves.get());
+    }
+
+    @Test void persistedAllDestinationModeIsReadOnlyProjectLocalAndInvalidDataStillFailsClosed() {
+        GuardConfig d = GuardConfig.defaults();
+        GuardConfig all = new GuardConfig(2, List.of(), List.of(), d.rules(), d.defaultMode(), d.limits(), List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+        open(all); assertEquals(all, controller.config()); assertEquals(0, projects.saves.get());
+        assertTrue(controller.authorize(prepare("GET", "/outside", null)).allowed());
+        projects.id = "new-project"; projects.document = null; controller.refreshProject();
+        assertEquals(DestinationScopeMode.ALLOWLIST, controller.config().destinationScopeMode()); assertTrue(controller.config().allowScope().isEmpty());
+        assertFalse(controller.authorize(prepare("GET", "/outside", null)).allowed());
+        projects.id = "invalid-project";
+        projects.document = PolicyCodec.encode(all).replace("\"ALL_DESTINATIONS\"", "null"); controller.refreshProject();
+        assertFalse(controller.authorize(prepare("GET", "/outside", null)).allowed());
+        assertNotEquals("PROTECTED", controller.status().get("guardState")); assertEquals(0, projects.saves.get());
+    }
+
+    @Test void allDestinationAskStillUsesTheRealApprovalDeadline() {
+        Limits d = GuardConfig.defaults().limits();
+        Limits limits = new Limits(0, 0, Map.of(), d.maxConcurrent(), d.maxQueued(), d.queueTimeoutMillis(), 10, d.requestTimeoutMillis(),
+                d.perPathMaxResponseBytes(), d.autoBlockMillis(), d.circuit5xx(), d.fanout(), 0, false, List.of(), d.heavyPathLimits(), d.circuit5xxExceptions(), d.heavyResponseEnabled(), d.fanoutExceptions());
+        GuardConfig all = new GuardConfig(2, List.of(), List.of(), List.of(new Rule("ask-get", "Ask GET", true, Mode.ASK, Condition.leaf(Field.METHOD, Match.EXACT, "GET"))), Mode.ALLOW, limits, List.of(), DestinationScopeMode.ALL_DESTINATIONS);
+        open(all);
+        assertEquals("APPROVAL_TIMEOUT", controller.authorize(prepare("GET", "/outside", null)).reason());
+        assertTrue(controller.approvals().isEmpty()); assertEquals(0, metric("intents", "consumed")); assertEquals(0, projects.saves.get());
+    }
+
     @Test void exemptBeatsBlockButNeverScopePauseOrAuthoredBudget() {
         Limits limits = limits(10, null, null, 1, false);
         open(policy(limits, List.of(rule("block", Mode.BLOCK, "/broker"), rule("exempt", Mode.EXEMPT, "/broker"))));
